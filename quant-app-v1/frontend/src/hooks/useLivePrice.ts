@@ -1,32 +1,38 @@
 import { useEffect, useState } from "react";
-
-import { WS_BASE } from "../lib/constants";
+import { wsManager } from "../lib/wsmanager";
 import type { TradingWsPayload } from "../types/market";
 
-/** Last trade price from the same stream as `/ws/trading`. */
-export function useLivePrice(ticker: string): number | null {
+export function useLivePrice(ticker: string) {
   const [price, setPrice] = useState<number | null>(null);
+  const [change, setChange] = useState<number | null>(null);
 
   useEffect(() => {
     const sym = ticker?.trim()?.toUpperCase();
+
     if (!sym) {
       setPrice(null);
+      setChange(null);
       return;
     }
 
-    const socket = new WebSocket(`${WS_BASE}/ws/trading`);
+    const handler = (data: TradingWsPayload) => {
+      const newPrice = Number(data.price);
 
-    socket.onmessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data as string) as TradingWsPayload;
-        if (data.symbol?.toUpperCase() === sym) setPrice(Number(data.price));
-      } catch {
-        /* ignore */
+      // prevent unnecessary re-renders
+      setPrice((prev) => (prev !== newPrice ? newPrice : prev));
+
+      if ("change" in data) {
+        const newChange = Number((data as any).change);
+        setChange((prev) => (prev !== newChange ? newChange : prev));
       }
     };
 
-    return () => socket.close();
+    wsManager.subscribe(sym, handler);
+
+    return () => {
+      wsManager.unsubscribe(sym, handler);
+    };
   }, [ticker]);
 
-  return price;
+  return { price, change };
 }
