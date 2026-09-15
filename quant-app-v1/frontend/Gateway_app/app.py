@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import secrets
+import smtplib
 import sqlite3
 import time
+import urllib.request
 from datetime import datetime
+from email.message import EmailMessage
+from html import unescape
 from pathlib import Path
 from typing import Optional
 
@@ -134,7 +140,8 @@ def create_user(name: str | None, email: str, password: str, last_name: str | No
         conn.commit()
         user_id = cur.lastrowid
         # initialize empty metadata for the user
-        cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, '{}'))
+        meta = {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
+        cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, __import__('json').dumps(meta)))
         conn.commit()
     except sqlite3.IntegrityError:
         user_id = None
@@ -189,21 +196,67 @@ def get_user_meta(user_id: int) -> dict:
     row = cur.fetchone()
     conn.close()
     if not row or not row['meta_json']:
-        return {}
+        return {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
     try:
         import json
-        return json.loads(row['meta_json'])
+        payload = json.loads(row['meta_json']) or {}
+        payload.setdefault('credits', 1000)
+        payload.setdefault('usage_remaining', 1000)
+        payload.setdefault('payment', {})
+        payload.setdefault('api_inputs', {})
+        return payload
     except Exception:
-        return {}
+        return {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
 
 
 def set_user_meta(user_id: int, meta: dict) -> None:
     conn = get_db_conn()
     cur = conn.cursor()
     import json
-    cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, json.dumps(meta)))
+    normalized = meta or {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
+    normalized.setdefault('credits', 1000)
+    normalized.setdefault('usage_remaining', 1000)
+    normalized.setdefault('payment', {})
+    normalized.setdefault('api_inputs', {})
+    cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, json.dumps(normalized)))
     conn.commit()
     conn.close()
+
+
+def send_email_message(to_email: str, subject: str, body: str) -> bool:
+    smtp_host = os.getenv('QUANT_SMTP_HOST')
+    if not smtp_host:
+        print(f"[demo-email] To={to_email} | Subject={subject} | Body={body}")
+        return True
+    from_addr = os.getenv('QUANT_SMTP_FROM', 'no-reply@gateway.local')
+    port = int(os.getenv('QUANT_SMTP_PORT', '587'))
+    username = os.getenv('QUANT_SMTP_USERNAME')
+    password = os.getenv('QUANT_SMTP_PASSWORD')
+    msg = EmailMessage()
+    msg['From'] = from_addr
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP(smtp_host, port) as server:
+            if username and password:
+                server.starttls()
+                server.login(username, password)
+            server.send_message(msg)
+        return True
+    except Exception as exc:
+        print(f"SMTP send failed for {to_email}: {exc}")
+        return False
+
+
+def send_email_confirmation(to_email: str, token: str) -> bool:
+    subject = 'Gateway Account Email Confirmation'
+    body = (
+        'Use this confirmation token in your dashboard to confirm the email change:\n\n'
+        f'{token}\n\n'
+        'If you did not request this change, you can safely ignore this email.'
+    )
+    return send_email_message(to_email, subject, body)
 
 
 def authenticate_user(email: str, password: str) -> bool:
@@ -215,6 +268,88 @@ def authenticate_user(email: str, password: str) -> bool:
     if not row:
         return False
     return verify_password(row['password_hash'], password)
+
+
+def fetch_forex_factory_news(limit: int = 5):
+    """Best-effort Forex Factory news retrieval with graceful fallback."""
+    candidate_urls = [
+        'https://www.forexfactory.com/calendar.php?day=today',
+        'https://www.forexfactory.com/',
+        'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
+    ]
+    now_iso = datetime.utcnow().isoformat() + 'Z'
+
+    for url in candidate_urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode('utf-8', errors='ignore')
+            if not html or 'Just a moment' in html or 'cloudflare' in html.lower():
+                continue
+            title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+            title = unescape((title_match.group(1) if title_match else 'Forex Factory').strip())
+            snippets = re.findall(r'>([^<>]{30,220})<', html)
+            clean = []
+            seen = set()
+            for snippet in snippets:
+                text = re.sub(r'\s+', ' ', unescape(snippet)).strip()
+                if len(text) < 40 or len(text) > 220:
+                    continue
+                key = text.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                clean.append(text)
+            if clean:
+                items = []
+                for idx, text in enumerate(clean[:limit], start=1):
+                    title_prefix = title if idx == 1 else 'Forex Factory update'
+                    items.append({
+                        'title': f'{title_prefix} ({idx})',
+                        'headline': text,
+                        'summary': text,
+                        'source': 'Forex Factory',
+                        'url': url,
+                        'published_at': now_iso,
+                    })
+                return items[:limit]
+        except Exception:
+            continue
+
+    fallback = [
+        {
+            'title': 'Forex Factory News API thread',
+            'headline': 'Free News API (Machine Learning, Live Trading, and Backtesting)',
+            'summary': 'The referenced Forex Factory thread discusses using event data, macro calendars, and machine-learning pipelines for trading and backtesting.',
+            'source': 'Forex Factory',
+            'url': 'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
+            'published_at': now_iso,
+        },
+        {
+            'title': 'Economic calendar signal data',
+            'headline': 'Forex Factory provides access to central-bank and macro event timing for news-driven trade planning.',
+            'summary': 'The calendar helps traders align execution around events and macro catalysts while still preserving a backtested risk framework.',
+            'source': 'Forex Factory',
+            'url': 'https://www.forexfactory.com/calendar.php',
+            'published_at': now_iso,
+        },
+        {
+            'title': 'Event-driven strategy research',
+            'headline': 'Machine learning and live trading workflows often combine economic event feeds with model-based filtering and signal scoring.',
+            'summary': 'This approach supports research automation, historical replay, and event-aware signal generation for multi-asset strategies.',
+            'source': 'Forex Factory',
+            'url': 'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
+            'published_at': now_iso,
+        },
+    ]
+    return fallback[:limit]
 
 
 init_user_db()
@@ -247,6 +382,16 @@ def generate_logic():
     })
 
 
+@app.route('/api/news/forex-factory', methods=['GET'])
+def api_forex_factory_news():
+    try:
+        limit = int(request.args.get('limit', 5))
+    except ValueError:
+        limit = 5
+    limit = max(1, min(limit, 10))
+    return jsonify(fetch_forex_factory_news(limit=limit)), 200
+
+
 @app.route('/dashboard')
 def dashboard():
     # require authentication
@@ -258,6 +403,15 @@ def dashboard():
         ])
     # render dashboard template; client JS will fetch full account info
     return render_template('dashboard.html', user=u)
+
+
+@app.route('/main')
+def main_app():
+    """Authenticated main application page — TradingView-like layout with strategy creator."""
+    u = session.get('user')
+    if not u:
+        return render_template('index.html', tiers=[{"name": "Free", "price": "$0", "credits": "800 credits", "featured": False, "cta": "Get Started Free"}])
+    return render_template('main.html', user=u)
 
 
 @app.route('/api/account', methods=['GET', 'POST'])
@@ -293,8 +447,8 @@ def api_account():
     payment = data.get('payment')
     api_inputs = data.get('api_inputs')
     # update DB user info (name/last_name) immediately
-    if name or last_name:
-        ok = update_user_info(user['id'], name=name, last_name=last_name)
+    if name is not None or last_name is not None:
+        ok = update_user_info(user['id'], name=name if name is not None else user.get('name'), last_name=last_name if last_name is not None else user.get('last_name'))
         if not ok:
             return jsonify({'message': 'Failed to update name'}), 500
         # refresh session user
@@ -303,15 +457,18 @@ def api_account():
 
     # handle email change: require confirmation
     if email and email != user.get('email'):
-        # generate confirmation token and store pending_email in meta
-        import secrets
         token = secrets.token_hex(16)
         meta = get_user_meta(user['id'])
         meta['pending_email'] = email
         meta['email_confirm_token'] = token
         set_user_meta(user['id'], meta)
-        # In a real app, send email to `email` with the token / confirmation link. For demo, return token in response.
-        return jsonify({'message': 'Email change requires confirmation', 'confirmation_token': token}), 202
+        email_sent = send_email_confirmation(email, token)
+        payload = {'message': 'Email change requires confirmation', 'confirmation_token': token}
+        if email_sent:
+            payload['email_sent'] = True
+        else:
+            payload['email_sent'] = False
+        return jsonify(payload), 202
 
     # update meta
     meta = get_user_meta(user['id'])
@@ -399,15 +556,28 @@ def api_signup():
     if _rate_limit_exceeded('signup'):
         return jsonify({'message': 'Too many signup attempts. Please wait a minute and try again.'}), 429
     data = request.get_json() or {}
-    name = data.get('name', '').strip()
+    first_name = (data.get('first_name') or data.get('name') or '').strip()
+    last_name = (data.get('last_name') or '').strip()
+    if not first_name:
+        # accept a user-provided full name string as a fallback
+        full_name = (data.get('full_name') or '').strip()
+        if full_name:
+            parts = full_name.split()
+            first_name = parts[0] if parts else ''
+            if len(parts) > 1:
+                last_name = ' '.join(parts[1:])
+    if not first_name and ' ' in (data.get('name') or ''):
+        parts = (data.get('name') or '').split()
+        first_name = parts[0]
+        last_name = ' '.join(parts[1:])
     email = data.get('email', '').strip().lower()
     password = data.get('password', '')
-    if not email or not password:
-        return jsonify({'message': 'Email and password required'}), 400
-    user_id = create_user(name, email, password)
+    if not email or not password or not first_name:
+        return jsonify({'message': 'First name, email and password required'}), 400
+    user_id = create_user(first_name, email, password, last_name=last_name)
     if user_id is None:
         return jsonify({'message': 'User already exists'}), 409
-    user = {'id': user_id, 'email': email, 'name': name}
+    user = {'id': user_id, 'email': email, 'name': first_name, 'last_name': last_name}
     session.clear()
     session['user'] = user
     return jsonify({'message': 'User created', 'user_id': user_id, 'user': user}), 201

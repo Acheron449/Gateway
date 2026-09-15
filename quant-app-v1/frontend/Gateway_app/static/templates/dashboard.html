@@ -40,6 +40,7 @@
         <h2>Overview</h2>
         <div class="account-card">
           <p><strong>Name:</strong> <span id="accName">—</span></p>
+          <p><strong>Last Name:</strong> <span id="accLastName">—</span></p>
           <p><strong>Email:</strong> <span id="accEmail">—</span></p>
           <p><strong>Credits:</strong> <span id="accCredits">—</span></p>
           <p><strong>Usage Remaining:</strong> <span id="accUsage">—</span></p>
@@ -71,7 +72,7 @@
       </div>
 
       <div id="billing" class="section">
-        <h2>Payment Details</h2>
+        <h2>Payment & Top-up</h2>
         <form id="paymentForm" class="account-form">
           <label>Card/Payment JSON (stored securely in demo)
             <textarea id="fieldPayment" rows="4"></textarea>
@@ -79,6 +80,17 @@
           <button type="submit" class="btn-primary">Save Payment</button>
           <div id="paymentMsg" class="auth-feedback" role="status" aria-live="polite"></div>
         </form>
+
+        <div style="margin-top:1rem;">
+          <h3>Top-up credits</h3>
+          <form id="topupForm" class="account-form">
+            <label>Amount (USD)
+              <input id="fieldTopup" type="number" step="0.01" min="0.01" value="5">
+            </label>
+            <button type="submit" class="btn-primary">Top-up</button>
+            <div id="topupMsg" class="auth-feedback" role="status" aria-live="polite"></div>
+          </form>
+        </div>
       </div>
 
       <div id="api" class="section">
@@ -115,12 +127,14 @@
       }
       const j = await res.json();
       document.getElementById('accName').innerText = j.name || '-';
+      document.getElementById('accLastName').innerText = j.last_name || '-';
       document.getElementById('accEmail').innerText = j.email || '-';
       document.getElementById('accCredits').innerText = j.meta?.credits ?? '-';
       document.getElementById('accUsage').innerText = j.meta?.usage_remaining ?? '-';
 
       // populate forms
       document.getElementById('fieldName').value = j.name || '';
+      document.getElementById('fieldLastName').value = j.last_name || '';
       document.getElementById('fieldEmail').value = j.email || '';
       document.getElementById('fieldPayment').value = JSON.stringify(j.meta?.payment || {}, null, 2);
       document.getElementById('fieldApiInputs').value = JSON.stringify(j.meta?.api_inputs || {}, null, 2);
@@ -137,10 +151,27 @@
     document.getElementById('accountForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       showMsg('accountMsg', '','');
-      const payload = { name: document.getElementById('fieldName').value.trim(), email: document.getElementById('fieldEmail').value.trim() };
+    const payload = { name: document.getElementById('fieldName').value.trim(), last_name: document.getElementById('fieldLastName').value.trim(), email: document.getElementById('fieldEmail').value.trim() };
       const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       const j = await res.json().catch(()=>({}));
-      if (res.ok) { showMsg('accountMsg','success','Saved'); loadAccount(); } else { showMsg('accountMsg','error', j.message || 'Failed to save'); }
+    if (res.status === 200) { showMsg('accountMsg','success','Saved'); loadAccount(); }
+    else if (res.status === 202) {
+      // confirmation required
+      showMsg('accountMsg','success', j.message || 'Confirmation required');
+      // show token input for demo
+      document.getElementById('emailConfirmSection').style.display = 'block';
+      document.getElementById('emailToken').value = j.confirmation_token || '';
+      document.getElementById('emailConfirmMsg').textContent = 'Paste token and press Confirm to apply the email change.';
+    } else { showMsg('accountMsg','error', j.message || 'Failed to save'); }
+    });
+
+    document.getElementById('confirmEmailBtn').addEventListener('click', async () => {
+    const token = document.getElementById('emailToken').value.trim();
+    if (!token) return showMsg('emailConfirmMsg','error','Token required');
+    const res = await fetch('/api/account/confirm_email', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token }) });
+    const j = await res.json().catch(()=>({}));
+    if (res.ok) { showMsg('emailConfirmMsg','success','Email confirmed.'); document.getElementById('emailConfirmSection').style.display='none'; loadAccount(); }
+    else { showMsg('emailConfirmMsg','error', j.message || 'Failed to confirm'); }
     });
 
     document.getElementById('paymentForm').addEventListener('submit', async (e) => {
@@ -151,6 +182,16 @@
       const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ payment }) });
       const j = await res.json().catch(()=>({}));
       if (res.ok) showMsg('paymentMsg','success','Saved'); else showMsg('paymentMsg','error', j.message || 'Failed to save');
+    });
+
+    document.getElementById('topupForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showMsg('topupMsg','', '');
+      const amount = document.getElementById('fieldTopup').value;
+      const res = await fetch('/api/billing/topup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ amount }) });
+      const j = await res.json().catch(()=>({}));
+      if (res.ok) { showMsg('topupMsg','success', `Added ${j.added_credits} credits. Total: ${j.credits}`); loadAccount(); }
+      else showMsg('topupMsg','error', j.message || 'Top-up failed');
     });
 
     document.getElementById('apiForm').addEventListener('submit', async (e) => {

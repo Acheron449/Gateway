@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Gateway — Main</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">Gateway</div>
+      <div class="symbol-search">
+        <input id="symbolSearch" placeholder="Search symbol or ticker (e.g. EURUSD, AAPL)" />
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="user-info">Hi, {{ user.name or user.email }}</div>
+      <a href="/dashboard" class="btn-ghost">Account</a>
+      <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
+    </div>
+  </header>
+
+  <main class="main-app">
+    <aside class="left-panel">
+      <div class="panel-section">
+        <h4>Watchlist</h4>
+        <ul class="watchlist">
+          <li>EURUSD</li>
+          <li>USDJPY</li>
+          <li>GBPUSD</li>
+          <li>AAPL</li>
+          <li>TSLA</li>
+        </ul>
+      </div>
+      <div class="panel-section">
+        <h4>Indicators</h4>
+        <ul>
+          <li>Moving Average</li>
+          <li>RSI</li>
+          <li>Bollinger Bands</li>
+        </ul>
+      </div>
+    </aside>
+
+    <section class="chart-area">
+      <div class="chart-topbar">
+        <div class="chart-title">EURUSD · 1H</div>
+        <div class="chart-actions">
+          <button class="btn-ghost">Timeframe</button>
+          <button class="btn-ghost">Indicators</button>
+          <button class="btn-ghost">Templates</button>
+        </div>
+      </div>
+      <div class="chart-canvas" id="chartCanvas">
+        <!-- Placeholder chart area. Replace with a real chart library (TradingView widget, Lightweight Charts, etc.) -->
+        <div class="chart-placeholder">Interactive price chart placeholder</div>
+      </div>
+
+      <div class="strategy-creator">
+        <h3>Strategy Creator</h3>
+        <p class="muted">Use natural language to create or tweak a strategy. Press Generate to populate the strategy parameters.</p>
+        <textarea id="strategyPrompt" placeholder="Describe your trading strategy, e.g. 'Buy on 1H bullish engulfing with RSI &lt; 30, TP 1.5x, SL 0.5x'" rows="3"></textarea>
+        <div class="strategy-actions">
+          <button id="generateStrategyBtn" class="btn-primary">Generate Strategy</button>
+          <button id="applyToChartBtn" class="btn-ghost">Apply to Chart</button>
+        </div>
+        <div id="strategyResults" class="strategy-results"></div>
+      </div>
+    </section>
+
+    <aside class="right-panel">
+      <div class="panel-section">
+        <h4>Order Panel</h4>
+        <div class="order-controls">
+          <label>Size <input id="orderSize" value="1000"></label>
+          <label>Type
+            <select id="orderType"><option>Market</option><option>Limit</option></select>
+          </label>
+          <button class="btn-primary">Place Order</button>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h4>Backtester</h4>
+        <button id="openBacktest" class="btn-primary">Run Backtest</button>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    document.getElementById('logoutBtnTop').addEventListener('click', async () => {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/';
+    });
+
+    document.getElementById('generateStrategyBtn').addEventListener('click', async () => {
+      const prompt = document.getElementById('strategyPrompt').value.trim();
+      if (!prompt) return;
+      document.getElementById('generateStrategyBtn').disabled = true;
+      try {
+        const res = await fetch('/api/generate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ prompt }) });
+        const j = await res.json();
+        document.getElementById('strategyResults').innerText = JSON.stringify(j.metrics || j, null, 2);
+      } catch (e) {
+        document.getElementById('strategyResults').innerText = 'Failed to generate strategy';
+      } finally {
+        document.getElementById('generateStrategyBtn').disabled = false;
+      }
+    });
+
+    document.getElementById('applyToChartBtn').addEventListener('click', () => {
+      alert('Apply to chart: demo placeholder — integrate chart drawing in production');
+    });
+  </script>
+</body>
+</html>

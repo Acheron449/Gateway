@@ -17,6 +17,7 @@ from app.api.v1.analysis import router as analysis_router
 from app.api.v1.stocks import router as stocks_router
 from app.api.v1.backtest import router as backtest_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
+from app.services.news_provider import fetch_forex_factory_news
 
 
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
@@ -210,6 +211,12 @@ def home() -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/news/forex-factory")
+async def get_forex_factory_news(limit: int = 5) -> list[dict[str, Any]]:
+    """Expose a ForexFactory-based news feed for trading and model research."""
+    return await fetch_forex_factory_news(limit=limit)
 
 
 @app.get("/history/{ticker}")

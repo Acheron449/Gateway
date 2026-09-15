@@ -50,8 +50,12 @@
 
       <form id="signupForm" class="auth-form">
         <label>
-          <span>Full Name</span>
-          <input id="signupName" type="text" placeholder="Alex Investor" required>
+          <span>First Name</span>
+          <input id="signupFirstName" type="text" placeholder="Alex" required>
+        </label>
+        <label>
+          <span>Last Name</span>
+          <input id="signupLastName" type="text" placeholder="Investor">
         </label>
         <label>
           <span>Email</span>
@@ -73,7 +77,7 @@
     
     <div class="hero-input-container">
       <input type="text" id="promptInput" placeholder="Describe your custom setup or logic here...">
-      <button onclick="submitPrompt()" class="btn-primary">Generate Plan</button>
+      <button id="generatePlanBtn" onclick="submitPrompt()" class="btn-primary">Generate Plan</button>
     </div>
     <div class="prompt-chips">
       <button onclick="setPrompt('Build a liquidity sweep reversal setup')">Liquidity Sweep</button>
@@ -90,6 +94,14 @@
       </div>
     </div>
   </header>
+
+  <section class="news-section">
+    <div class="section-heading">
+      <h2>Forex Factory News</h2>
+      <span class="news-source">Best-effort public feed</span>
+    </div>
+    <div id="newsList" class="news-list"></div>
+  </section>
 
   <section id="workflow" class="workflow-section">
     <h2>Prompt to Output in 3 Steps</h2>
@@ -186,21 +198,43 @@
         const j = await r.json();
         const navActions = document.querySelector('.nav-actions');
         if (j.authenticated) {
-          // show user badge + logout
-          navActions.innerHTML = `<a href="/dashboard" class="user-badge" id="userBadge">Hi, ${j.user.name || j.user.email}</a><button class="btn-ghost" id="logoutBtn">Log Out</button>`;
-          document.getElementById('logoutBtn').addEventListener('click', async () => {
-            await fetch('/api/auth/logout', { method: 'POST' });
-            refreshAuthUI();
-            openAuth('login');
-          });
-          // auto-close auth modal if open
+          let credits = 0;
+          let usageRemaining = 0;
+          try {
+            const accountRes = await fetch('/api/account');
+            const accountData = accountRes.ok ? await accountRes.json() : null;
+            credits = Number(accountData?.meta?.credits ?? 0);
+            usageRemaining = Number(accountData?.meta?.usage_remaining ?? 0);
+            const displayName = [accountData?.name, accountData?.last_name].filter(Boolean).join(' ') || j.user.name || j.user.email;
+            navActions.innerHTML = `<a href="/dashboard" class="user-badge" id="userBadge">Hi, ${displayName}</a><span class="credit-badge">${credits} credits</span><button class="btn-ghost" id="logoutBtn">Log Out</button>`;
+          } catch (error) {
+            const displayName = j.user.name || j.user.email;
+            navActions.innerHTML = `<a href="/dashboard" class="user-badge" id="userBadge">Hi, ${displayName}</a><span class="credit-badge">0 credits</span><button class="btn-ghost" id="logoutBtn">Log Out</button>`;
+          }
+          const logoutBtn = document.getElementById('logoutBtn');
+          if (logoutBtn) {
+            logoutBtn.addEventListener('click', async () => {
+              await fetch('/api/auth/logout', { method: 'POST' });
+              refreshAuthUI();
+              openAuth('login');
+            });
+          }
+          const generateBtn = document.getElementById('generatePlanBtn');
+          if (generateBtn) {
+            generateBtn.disabled = usageRemaining <= 0;
+            generateBtn.title = usageRemaining <= 0 ? 'No credits remaining' : 'Generate your trading plan';
+            generateBtn.textContent = usageRemaining <= 0 ? 'No Credits Left' : 'Generate Plan';
+          }
           closeAuth();
         } else {
-          // restore default buttons
           navActions.innerHTML = `<button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button><button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>`;
-          // reattach toggles
           document.querySelectorAll('.auth-toggle').forEach(b => b.addEventListener('click', () => openAuth(b.dataset.mode)));
-          // open auth modal by default
+          const generateBtn = document.getElementById('generatePlanBtn');
+          if (generateBtn) {
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Plan';
+            generateBtn.title = 'Generate your trading plan';
+          }
           openAuth('login');
         }
       } catch (e) {
@@ -208,7 +242,57 @@
       }
     }
 
-    window.addEventListener('DOMContentLoaded', () => refreshAuthUI());
+    function escapeHtml(value = '') {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function summarizeText(value = '', maxLength = 140) {
+      const text = String(value).replace(/\s+/g, ' ').trim();
+      if (!text) return 'Market update available on Forex Factory.';
+      return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
+    }
+
+    async function loadForexFactoryNews() {
+      const container = document.getElementById('newsList');
+      if (!container) return;
+      try {
+        const res = await fetch('/api/news/forex-factory?limit=3');
+        const items = await res.json();
+        if (!Array.isArray(items) || !items.length) {
+          container.innerHTML = '<p class="empty-state">No news items available right now.</p>';
+          return;
+        }
+
+        const sortedItems = [...items].sort((a, b) => new Date(b.published_at || 0) - new Date(a.published_at || 0));
+        container.innerHTML = sortedItems.map(item => {
+          const title = escapeHtml(item.title || item.headline || 'Forex Factory update');
+          const summary = escapeHtml(summarizeText(item.summary || item.headline || 'Forex Factory market update'));
+          const source = escapeHtml(item.source || 'Forex Factory');
+          const date = new Date(item.published_at || Date.now());
+          const href = item.url || 'https://www.forexfactory.com/';
+          return `
+            <article class="news-item">
+              <div class="news-meta">${source} · ${date.toLocaleString()}</div>
+              <h3>${title}</h3>
+              <p>${summary}</p>
+              <a href="${href}" target="_blank" rel="noopener noreferrer">Read more</a>
+            </article>
+          `;
+        }).join('');
+      } catch (error) {
+        container.innerHTML = '<p class="empty-state">Forex Factory news is temporarily unavailable.</p>';
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      refreshAuthUI();
+      loadForexFactoryNews();
+    });
 
     // Login handler
     document.getElementById('loginForm').addEventListener('submit', async (event) => {
@@ -224,11 +308,8 @@
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          setAuthMessage('success', 'Login successful.');
-          setTimeout(() => {
-            closeAuth();
-            refreshAuthUI();
-          }, 500);
+          setAuthMessage('success', 'Login successful. Redirecting...');
+          setTimeout(() => { window.location.href = '/main'; }, 350);
         } else {
           setAuthMessage('error', data.detail || data.message || 'Login failed.');
         }
@@ -240,7 +321,8 @@
     // Signup handler
     document.getElementById('signupForm').addEventListener('submit', async (event) => {
       event.preventDefault();
-      const name = document.getElementById('signupName').value.trim();
+      const firstName = document.getElementById('signupFirstName').value.trim();
+      const lastName = document.getElementById('signupLastName').value.trim();
       const email = document.getElementById('signupEmail').value.trim();
       const password = document.getElementById('signupPassword').value;
       clearAuthMessage();
@@ -248,15 +330,12 @@
         const res = await fetch('/api/auth/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password })
+          body: JSON.stringify({ first_name: firstName, last_name: lastName, email, password })
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 201) {
-          setAuthMessage('success', 'Account created — you are now logged in.');
-          setTimeout(() => {
-            closeAuth();
-            refreshAuthUI();
-          }, 500);
+          setAuthMessage('success', 'Account created — redirecting to main app...');
+          setTimeout(() => { window.location.href = '/main'; }, 350);
         } else {
           setAuthMessage('error', data.detail || data.message || 'Signup failed.');
         }
