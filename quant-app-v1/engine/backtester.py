@@ -1,10 +1,11 @@
 from __future__ import annotations
 import pandas as pd
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from app.quant.impact_model import calculate_final_signal
 from app.quant.risk_manager import RiskManager, RiskConfig
 from app.services.broker_service import Order, OrderSide, ExecutionReport
 from datetime import datetime
+from dataclasses import dataclasses
 
 # --- Data Structures for Backtesting ---
 

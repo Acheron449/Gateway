@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Strategy Generator Shell</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+  <nav class="navbar">
+    <div class="logo">Platform.ai</div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#workflow">How It Works</a>
+      <a href="#pricing">Pricing</a>
+    </div>
+    <div class="nav-actions">
+      <a href="#" class="btn-ghost">Log In</a>
+      <a href="#" class="btn-primary">Sign Up</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="badge">Public Beta • Instant Access</div>
+    <h1>Build & Test AI Execution Plans</h1>
+    <p>Transform raw natural-language ideas into structured output parameters instantly.</p>
+    
+    <div class="hero-input-container">
+      <input type="text" id="promptInput" placeholder="Describe your custom setup or logic here...">
+      <button onclick="submitPrompt()" class="btn-primary">Generate Plan</button>
+    </div>
+    <div class="prompt-chips">
+      <button onclick="setPrompt('Build a liquidity sweep reversal setup')">Liquidity Sweep</button>
+      <button onclick="setPrompt('Simple breakout strategy with 1:2 risk ratio')">Breakout 1:2</button>
+    </div>
+
+    <div id="resultsPanel" class="results-panel hidden">
+      <h3>Execution Results</h3>
+      <div class="metrics-grid">
+        <div><span class="label">Win Rate</span><span id="winRate" class="val">--</span></div>
+        <div><span class="label">Max Drawdown</span><span id="drawdown" class="val">--</span></div>
+        <div><span class="label">Executions</span><span id="trades" class="val">--</span></div>
+        <div><span class="label">Profit Factor</span><span id="profitFactor" class="val">--</span></div>
+      </div>
+    </div>
+  </header>
+
+  <section id="workflow" class="workflow-section">
+    <h2>Prompt to Output in 3 Steps</h2>
+    <div class="steps-grid">
+      <div class="step-card">
+        <span class="step-num">01</span>
+        <h3>Write the Logic</h3>
+        <p>Turn plain English into exact parameters.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">02</span>
+        <h3>Analyze Results</h3>
+        <p>Check key execution metrics and performance.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">03</span>
+        <h3>Refine Iterations</h3>
+        <p>Keep history and adjustments together.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing" class="pricing-section">
+    <h2>Transparent Plans</h2>
+    <div class="pricing-grid">
+      {% for tier in tiers %}
+        <div class="price-card {% if tier.featured %}featured{% endif %}">
+          {% if tier.featured %}<div class="popular-badge">Best Value</div>{% endif %}
+          <h3>{{ tier.name }}</h3>
+          <div class="price">{{ tier.price }}<span>/mo</span></div>
+          <p>{{ tier.credits }}</p>
+          <button class="btn-primary">{{ tier.cta }}</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <script>
+    function setPrompt(text) {
+      document.getElementById('promptInput').value = text;
+    }
+
+    async function submitPrompt() {
+      const input = document.getElementById('promptInput').value;
+      if (!input) return;
+
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input })
+      });
+
+      const data = await response.json();
+      if (data.status === 'completed') {
+        document.getElementById('winRate').innerText = data.metrics.win_rate;
+        document.getElementById('drawdown').innerText = data.metrics.drawdown;
+        document.getElementById('trades').innerText = data.metrics.trades;
+        document.getElementById('profitFactor').innerText = data.metrics.profit_factor;
+        document.getElementById('resultsPanel').classList.remove('hidden');
+      }
+    }
+  </script>
+</body>
+</html>
