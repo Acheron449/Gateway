@@ -414,6 +414,86 @@ def main_app():
     return render_template('main.html', user=u)
 
 
+@app.route('/api/market/history')
+def api_market_history():
+    """Return synthetic OHLC history for prototype charting.
+
+    Query params:
+    - symbol (default: EURUSD)
+    - tf (timeframe key: 1m,5m,15m,1h,4h,1d)
+    - limit (number of candles, default 500)
+    """
+    symbol = request.args.get('symbol', 'EURUSD').upper()
+    tf = request.args.get('tf', '1m')
+    try:
+        limit = int(request.args.get('limit', 500))
+    except Exception:
+        limit = 500
+    limit = max(10, min(limit, 2000))
+
+    # mapping timeframe to seconds
+    tf_map = {'1m': 60, '5m': 60 * 5, '15m': 60 * 15, '1h': 60 * 60, '4h': 60 * 60 * 4, '1d': 60 * 60 * 24}
+    step = tf_map.get(tf, 60)
+
+    # try backend history endpoint if available
+    backend_url = f"/history/{symbol}"
+    try:
+        # prefer backend fastapi history if available
+        from urllib import request as urlreq, parse
+        host = request.host_url.rstrip('/')
+        url = f"{host}/history/{symbol}"
+        # call backend (same host) — if it returns 200 we'll try to use it (but backend may require Alpaca)
+        with urlreq.urlopen(url, timeout=3) as resp:
+            import json
+            body = resp.read()
+            data = json.loads(body.decode('utf-8'))
+            if isinstance(data, list) and data:
+                # resample/convert to requested tf by simple aggregation if needed (baseline assumes 1h historical)
+                # convert incoming candles which are in 'time' (unix sec) to our timeframe by grouping
+                # naive aggregation: round down to nearest step
+                out = {}
+                for c in data:
+                    t = int(c.get('time', 0))
+                    bucket = (t // step) * step
+                    entry = out.get(bucket)
+                    if not entry:
+                        out[bucket] = {'time': bucket, 'open': c['open'], 'high': c['high'], 'low': c['low'], 'close': c['close']}
+                    else:
+                        entry['high'] = max(entry['high'], c['high'])
+                        entry['low'] = min(entry['low'], c['low'])
+                        entry['close'] = c['close']
+                items = list(out.values())
+                items.sort(key=lambda x: x['time'])
+                # trim to limit (last N)
+                items = items[-limit:]
+                return jsonify(items), 200
+    except Exception:
+        pass
+
+    # fallback: synthetic random-walk generator
+    import random, time
+    now = int(time.time())
+    # align last timestamp to timeframe boundary
+    last_ts = (now // step) * step
+    # start price (seed by symbol hash)
+    seed = abs(hash(symbol)) % 10000
+    base = 1.0 + (seed % 1000) / 1000.0 * 1.2
+    # generate moving series
+    candles = []
+    prev_close = base
+    for i in range(limit, 0, -1):
+        t = last_ts - (i - 1) * step
+        # simulate volatility depending on timeframe
+        vol = 0.0003 if tf == '1m' else 0.0008 if tf == '5m' else 0.002 if tf == '15m' else 0.006 if tf == '1h' else 0.02
+        open_p = prev_close * (1 + random.uniform(-vol, vol))
+        high_p = open_p * (1 + random.uniform(0, vol * 1.8))
+        low_p = open_p * (1 - random.uniform(0, vol * 1.8))
+        close_p = low_p + random.random() * (high_p - low_p)
+        prev_close = close_p
+        candles.append({'time': int(t), 'open': round(open_p, 5), 'high': round(high_p, 5), 'low': round(low_p, 5), 'close': round(close_p, 5)})
+    return jsonify(candles), 200
+
+
 @app.route('/api/account', methods=['GET', 'POST'])
 def api_account():
     u = session.get('user')
