@@ -16,10 +16,55 @@
       <a href="#pricing">Pricing</a>
     </div>
     <div class="nav-actions">
-      <a href="#" class="btn-ghost">Log In</a>
-      <a href="#" class="btn-primary">Sign Up</a>
+      <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+      <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
     </div>
   </nav>
+
+  <div id="authOverlay" class="auth-overlay visible" aria-hidden="false">
+    <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <button class="auth-close" type="button" aria-label="Close authentication window">×</button>
+      <div class="auth-header">
+        <div class="auth-brand">Gateway</div>
+        <h2 id="authTitle">Welcome</h2>
+      </div>
+
+      <div class="auth-tabs" aria-label="Authentication mode">
+        <button type="button" class="auth-tab active" data-mode="login">Log In</button>
+        <button type="button" class="auth-tab" data-mode="signup">Sign Up</button>
+      </div>
+
+      <div id="authFeedback" class="auth-feedback" role="status" aria-live="polite"></div>
+
+      <form id="loginForm" class="auth-form active">
+        <label>
+          <span>Email</span>
+          <input id="loginEmail" type="email" placeholder="you@example.com" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="loginPassword" type="password" placeholder="••••••••" required>
+        </label>
+        <button type="submit" class="btn-primary auth-submit">Log In</button>
+      </form>
+
+      <form id="signupForm" class="auth-form">
+        <label>
+          <span>Full Name</span>
+          <input id="signupName" type="text" placeholder="Alex Investor" required>
+        </label>
+        <label>
+          <span>Email</span>
+          <input id="signupEmail" type="email" placeholder="you@example.com" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="signupPassword" type="password" placeholder="Create a secure password" required>
+        </label>
+        <button type="submit" class="btn-primary auth-submit">Create Account</button>
+      </form>
+    </div>
+  </div>
 
   <header class="hero">
     <div class="badge">Public Beta • Instant Access</div>
@@ -83,6 +128,143 @@
   </section>
 
   <script>
+    const authOverlay = document.getElementById('authOverlay');
+    const authTabs = document.querySelectorAll('.auth-tab');
+    const authForms = document.querySelectorAll('.auth-form');
+    const authToggleButtons = document.querySelectorAll('.auth-toggle');
+    const authClose = document.querySelector('.auth-close');
+    const authFeedback = document.getElementById('authFeedback');
+
+    function setAuthMessage(type, message) {
+      if (!authFeedback) return;
+      authFeedback.textContent = message;
+      authFeedback.classList.remove('success', 'error');
+      if (type === 'success') authFeedback.classList.add('success');
+      if (type === 'error') authFeedback.classList.add('error');
+    }
+
+    function clearAuthMessage() {
+      if (!authFeedback) return;
+      authFeedback.textContent = '';
+      authFeedback.classList.remove('success', 'error');
+    }
+
+    function setAuthMode(mode) {
+      clearAuthMessage();
+      authTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.mode === mode));
+      authForms.forEach(form => form.classList.toggle('active', form.id === `${mode}Form`));
+    }
+
+    function openAuth(mode = 'login') {
+      authOverlay.classList.add('visible');
+      authOverlay.setAttribute('aria-hidden', 'false');
+      setAuthMode(mode);
+    }
+
+    function closeAuth() {
+      authOverlay.classList.remove('visible');
+      authOverlay.setAttribute('aria-hidden', 'true');
+      clearAuthMessage();
+    }
+
+    authTabs.forEach(tab => {
+      tab.addEventListener('click', () => setAuthMode(tab.dataset.mode));
+    });
+
+    authToggleButtons.forEach(button => {
+      button.addEventListener('click', () => openAuth(button.dataset.mode));
+    });
+
+    authClose.addEventListener('click', closeAuth);
+    authOverlay.addEventListener('click', (event) => {
+      if (event.target === authOverlay) closeAuth();
+    });
+
+    async function refreshAuthUI() {
+      try {
+        const r = await fetch('/api/auth/me');
+        const j = await r.json();
+        const navActions = document.querySelector('.nav-actions');
+        if (j.authenticated) {
+          // show user badge + logout
+          navActions.innerHTML = `<a href="/dashboard" class="user-badge" id="userBadge">Hi, ${j.user.name || j.user.email}</a><button class="btn-ghost" id="logoutBtn">Log Out</button>`;
+          document.getElementById('logoutBtn').addEventListener('click', async () => {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            refreshAuthUI();
+            openAuth('login');
+          });
+          // auto-close auth modal if open
+          closeAuth();
+        } else {
+          // restore default buttons
+          navActions.innerHTML = `<button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button><button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>`;
+          // reattach toggles
+          document.querySelectorAll('.auth-toggle').forEach(b => b.addEventListener('click', () => openAuth(b.dataset.mode)));
+          // open auth modal by default
+          openAuth('login');
+        }
+      } catch (e) {
+        console.warn('auth refresh failed', e);
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => refreshAuthUI());
+
+    // Login handler
+    document.getElementById('loginForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      clearAuthMessage();
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          setAuthMessage('success', 'Login successful.');
+          setTimeout(() => {
+            closeAuth();
+            refreshAuthUI();
+          }, 500);
+        } else {
+          setAuthMessage('error', data.detail || data.message || 'Login failed.');
+        }
+      } catch (e) {
+        setAuthMessage('error', 'Login failed. Please try again.');
+      }
+    });
+
+    // Signup handler
+    document.getElementById('signupForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const name = document.getElementById('signupName').value.trim();
+      const email = document.getElementById('signupEmail').value.trim();
+      const password = document.getElementById('signupPassword').value;
+      clearAuthMessage();
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 201) {
+          setAuthMessage('success', 'Account created — you are now logged in.');
+          setTimeout(() => {
+            closeAuth();
+            refreshAuthUI();
+          }, 500);
+        } else {
+          setAuthMessage('error', data.detail || data.message || 'Signup failed.');
+        }
+      } catch (e) {
+        setAuthMessage('error', 'Signup failed. Please try again.');
+      }
+    });
+
     function setPrompt(text) {
       document.getElementById('promptInput').value = text;
     }

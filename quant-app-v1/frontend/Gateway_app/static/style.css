@@ -30,6 +30,11 @@ body {
   text-decoration: none;
   margin: 0 1rem;
 }
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
 .btn-primary {
   background-color: var(--accent-color);
   color: #000;
@@ -43,6 +48,11 @@ body {
   color: var(--text-primary);
   text-decoration: none;
   margin-right: 1rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.6rem 1.2rem;
+  cursor: pointer;
 }
 
 
@@ -90,6 +100,127 @@ body {
 }
 
 
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(7, 10, 16, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+}
+.auth-overlay.visible {
+  display: flex;
+}
+.auth-modal {
+  position: relative;
+  width: min(92vw, 420px);
+  background: #111827;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  padding: 1.5rem 1.5rem 1.25rem;
+}
+.auth-close {
+  position: absolute;
+  right: 0.9rem;
+  top: 0.8rem;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.auth-header {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+.auth-brand {
+  color: var(--accent-color);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+.auth-header h2 {
+  margin: 0.5rem 0 0;
+  font-size: 1.7rem;
+}
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+.auth-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-tab.active {
+  background: rgba(0, 230, 153, 0.12);
+  color: var(--accent-color);
+}
+.auth-form {
+  display: none;
+  flex-direction: column;
+  gap: 1rem;
+}
+.auth-form.active {
+  display: flex;
+}
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+.auth-form input {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+  padding: 0.8rem 0.9rem;
+  font-size: 0.96rem;
+}
+.auth-submit {
+  margin-top: 0.5rem;
+  width: 100%;
+}
+
+.auth-feedback {
+  font-size: 0.9rem;
+  min-height: 1.2rem;
+  margin-bottom: 0.75rem;
+  color: #ffb4b4;
+}
+.auth-feedback.success {
+  color: #7df9b8;
+}
+.auth-feedback.error {
+  color: #ffb4b4;
+}
+
+.user-badge {
+  background: rgba(255,255,255,0.04);
+  padding: 0.45rem 0.8rem;
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
 .hidden { display: none; }
 .results-panel {
   background: var(--card-bg);
@@ -112,6 +243,58 @@ body {
   padding: 4rem 5%;
   text-align: center;
 }
+
+/* Dashboard layout */
+.dashboard {
+  display: flex;
+  min-height: calc(100vh - 72px);
+}
+.sidebar {
+  width: 220px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border-right: 1px solid var(--border-color);
+  padding: 1.5rem;
+  box-sizing: border-box;
+}
+.sidebar-brand {
+  color: var(--accent-color);
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+.sidebar-menu {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.sidebar-menu li {
+  padding: 0.6rem 0.4rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.sidebar-menu li.active {
+  background: rgba(0,230,153,0.06);
+  color: var(--accent-color);
+}
+.content {
+  flex: 1;
+  padding: 2rem;
+}
+.section { display: none; }
+.section.active { display: block; }
+.account-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  padding: 1rem;
+  border-radius: 8px;
+}
+.account-form label { display:block; margin-bottom: 0.8rem; }
+.account-form input, .account-form textarea { width: 100%; box-sizing: border-box; padding: 0.6rem; background: rgba(255,255,255,0.02); border:1px solid var(--border-color); color:var(--text-primary); border-radius:6px; }
+.account-form button { margin-top:0.6rem; }
+
+.auth-feedback { margin-top: 0.6rem; }
+.auth-feedback.success { color: #7df9b8; }
+.auth-feedback.error { color: #ffb4b4; }
 .steps-grid, .pricing-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Account Dashboard - Gateway</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">Gateway</div>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="#workflow">How It Works</a>
+    </div>
+    <div class="nav-actions">
+      {% if user %}
+        <a href="/dashboard" class="user-badge">Hi, {{ user.name or user.email }}</a>
+        <button class="btn-ghost" id="logoutBtn">Log Out</button>
+      {% else %}
+        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="dashboard">
+    <aside class="sidebar">
+      <div class="sidebar-brand">Account</div>
+      <ul class="sidebar-menu">
+        <li class="active" data-section="overview">Overview</li>
+        <li data-section="settings">Account Settings</li>
+        <li data-section="billing">Payment</li>
+        <li data-section="api">API Inputs</li>
+      </ul>
+    </aside>
+
+    <section class="content">
+      <div id="overview" class="section active">
+        <h2>Overview</h2>
+        <div class="account-card">
+          <p><strong>Name:</strong> <span id="accName">—</span></p>
+          <p><strong>Email:</strong> <span id="accEmail">—</span></p>
+          <p><strong>Credits:</strong> <span id="accCredits">—</span></p>
+          <p><strong>Usage Remaining:</strong> <span id="accUsage">—</span></p>
+        </div>
+      </div>
+
+      <div id="settings" class="section">
+        <h2>Account Settings</h2>
+        <form id="accountForm" class="account-form">
+          <label>First / Full name
+            <input id="fieldName" name="name" type="text">
+          </label>
+          <label>Last name
+            <input id="fieldLastName" name="last_name" type="text">
+          </label>
+          <label>Email
+            <input id="fieldEmail" name="email" type="email">
+          </label>
+          <button type="submit" class="btn-primary">Save</button>
+          <div id="accountMsg" class="auth-feedback" role="status" aria-live="polite"></div>
+
+          <div id="emailConfirmSection" style="margin-top:0.6rem; display:none;">
+            <p>An email confirmation was sent. For demo, paste the confirmation token below to confirm your email.</p>
+            <input id="emailToken" placeholder="confirmation token">
+            <button id="confirmEmailBtn" type="button" class="btn-primary">Confirm Email</button>
+            <div id="emailConfirmMsg" class="auth-feedback"></div>
+          </div>
+        </form>
+      </div>
+
+      <div id="billing" class="section">
+        <h2>Payment Details</h2>
+        <form id="paymentForm" class="account-form">
+          <label>Card/Payment JSON (stored securely in demo)
+            <textarea id="fieldPayment" rows="4"></textarea>
+          </label>
+          <button type="submit" class="btn-primary">Save Payment</button>
+          <div id="paymentMsg" class="auth-feedback" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+
+      <div id="api" class="section">
+        <h2>API Inputs</h2>
+        <form id="apiForm" class="account-form">
+          <label>API inputs (JSON)
+            <textarea id="fieldApiInputs" rows="4"></textarea>
+          </label>
+          <button type="submit" class="btn-primary">Save API Inputs</button>
+          <div id="apiMsg" class="auth-feedback" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // sidebar navigation
+    document.querySelectorAll('.sidebar-menu li').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.sidebar-menu li').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        const sec = item.dataset.section;
+        document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === sec));
+      });
+    });
+
+    // fetch account info
+    async function loadAccount() {
+      const res = await fetch('/api/account');
+      if (!res.ok) {
+        // redirect to home / login
+        window.location.href = '/';
+        return;
+      }
+      const j = await res.json();
+      document.getElementById('accName').innerText = j.name || '-';
+      document.getElementById('accEmail').innerText = j.email || '-';
+      document.getElementById('accCredits').innerText = j.meta?.credits ?? '-';
+      document.getElementById('accUsage').innerText = j.meta?.usage_remaining ?? '-';
+
+      // populate forms
+      document.getElementById('fieldName').value = j.name || '';
+      document.getElementById('fieldEmail').value = j.email || '';
+      document.getElementById('fieldPayment').value = JSON.stringify(j.meta?.payment || {}, null, 2);
+      document.getElementById('fieldApiInputs').value = JSON.stringify(j.meta?.api_inputs || {}, null, 2);
+    }
+
+    async function showMsg(id, type, message) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = message;
+      el.classList.remove('success','error');
+      el.classList.add(type === 'success' ? 'success' : 'error');
+    }
+
+    document.getElementById('accountForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showMsg('accountMsg', '','');
+      const payload = { name: document.getElementById('fieldName').value.trim(), email: document.getElementById('fieldEmail').value.trim() };
+      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const j = await res.json().catch(()=>({}));
+      if (res.ok) { showMsg('accountMsg','success','Saved'); loadAccount(); } else { showMsg('accountMsg','error', j.message || 'Failed to save'); }
+    });
+
+    document.getElementById('paymentForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showMsg('paymentMsg','', '');
+      let payment = {};
+      try { payment = JSON.parse(document.getElementById('fieldPayment').value || '{}'); } catch (err) { showMsg('paymentMsg','error','Invalid JSON'); return; }
+      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ payment }) });
+      const j = await res.json().catch(()=>({}));
+      if (res.ok) showMsg('paymentMsg','success','Saved'); else showMsg('paymentMsg','error', j.message || 'Failed to save');
+    });
+
+    document.getElementById('apiForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showMsg('apiMsg','', '');
+      let api_inputs = {};
+      try { api_inputs = JSON.parse(document.getElementById('fieldApiInputs').value || '{}'); } catch (err) { showMsg('apiMsg','error','Invalid JSON'); return; }
+      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ api_inputs }) });
+      const j = await res.json().catch(()=>({}));
+      if (res.ok) showMsg('apiMsg','success','Saved'); else showMsg('apiMsg','error', j.message || 'Failed to save');
+    });
+
+    // logout button
+    document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/';
+    });
+
+    // initial load
+    loadAccount();
+  </script>
+</body>
+</html>
