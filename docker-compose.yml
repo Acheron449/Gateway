@@ -1,0 +1,75 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./quant-app-v1/backend
+      dockerfile: Dockerfile
+    container_name: quant-app-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://quantuser:[REDACTED]@postgres:5432/quantdb
+      PYTHONUNBUFFERED: "1"
+    env_file:
+      - .env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./quant-app-v1/backend/app:/app:ro
+    networks:
+      - quant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./quant-app-v1/frontend
+      dockerfile: Dockerfile
+    container_name: quant-app-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - quant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: quant-app-postgres
+    environment:
+      POSTGRES_USER: quantuser
+      POSTGRES_PASSWORD: quantpass
+      POSTGRES_DB: quantdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - quant-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quantuser -d quantdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  quant-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

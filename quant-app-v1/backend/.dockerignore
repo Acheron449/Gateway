@@ -1,0 +1,34 @@
+# Python backend
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+*.db
+*.sqlite
+.pytest_cache/
+htmlcov/
+.coverage
+dist/
+build/
+
+# Frontend Node
+node_modules/
+npm-debug.log
+yarn-error.log
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build outputs
+dist/
+build/
