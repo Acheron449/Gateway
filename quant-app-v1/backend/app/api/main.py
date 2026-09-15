@@ -15,6 +15,7 @@ from loguru import logger
 
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.stocks import router as stocks_router
+from app.api.v1.backtest import router as backtest_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 
 
@@ -108,12 +109,72 @@ async def lifespan(app: FastAPI):
     tasks: list[asyncio.Task] = []
     tasks.append(asyncio.create_task(dispatch_queue(), name="ws-dispatch-queue"))
 
+    finnhub_key = os.getenv('FINNHUB_API_KEY')
+
     if creds:
         tasks.append(asyncio.create_task(alpaca_streamer(), name="alpaca-queue-feed"))
+    elif finnhub_key:
+        logger.info("Alpaca creds not set — using Finnhub quote feed for /ws/trading.")
+
+        async def finnhub_feeder(api_key: str):
+            """Use Finnhub REST /quote endpoint as a fallback data source."""
+            buff: deque[dict[str, Any]] = deque(maxlen=30)
+            base = 100.0
+            # Try to use aiohttp when available for non-blocking requests
+            try:
+                import aiohttp
+                _USE_AIOHTTP = True
+            except Exception:
+                _USE_AIOHTTP = False
+                import requests
+
+            while True:
+                try:
+                    await asyncio.sleep(1.0)
+                    if _USE_AIOHTTP:
+                        async with aiohttp.ClientSession() as session:
+                            url = f"https://finnhub.io/api/v1/quote?symbol={ws_symbol}&token={api_key}"
+                            async with session.get(url, timeout=10) as resp:
+                                if resp.status != 200:
+                                    raise RuntimeError(f"Finnhub quote error: {resp.status}")
+                                data = await resp.json()
+                                price = float(data.get('c') or data.get('pc') or base)
+                    else:
+                        # synchronous fallback using requests in thread
+                        def _sync_fetch():
+                            url = f"https://finnhub.io/api/v1/quote?symbol={ws_symbol}&token={api_key}"
+                            r = requests.get(url, timeout=10)
+                            r.raise_for_status()
+                            return r.json()
+
+                        data = await asyncio.to_thread(_sync_fetch)
+                        price = float(data.get('c') or data.get('pc') or base)
+
+                    base = price
+                    buff.append({"close": base})
+                    rsi_val = 0.0
+                    if len(buff) >= RSI_PERIOD:
+                        rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
+                        last = rsi_series.iloc[-1]
+                        if pd.notna(last):
+                            rsi_val = float(last)
+
+                    await data_queue.put(
+                        {
+                            "symbol": ws_symbol,
+                            "price": round(base, 4),
+                            "rsi": round(rsi_val, 2),
+                        }
+                    )
+                except Exception as exc:
+                    logger.debug("Finnhub feeder error: {}", exc)
+                    await asyncio.sleep(2.0)
+
+        tasks.append(asyncio.create_task(finnhub_feeder(finnhub_key), name="finnhub-queue-feed"))
     else:
         logger.warning(
-            "Alpaca credentials not set — using synthetic RSI feed for /ws/trading. "
-            "Set ALPACA_API_KEY and ALPACA_SECRET_KEY."
+            "Alpaca credentials not set and FINNHUB_API_KEY not set — using synthetic RSI feed for /ws/trading. "
+            "Set ALPACA_API_KEY and ALPACA_SECRET_KEY, or FINNHUB_API_KEY."
         )
         tasks.append(asyncio.create_task(synthetic_feeder(), name="synthetic-queue-feed"))
 
@@ -138,6 +199,7 @@ app = FastAPI(title="Quant App API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(stocks_router)
 app.include_router(analysis_router)
+app.include_router(backtest_router)
 
 
 @app.get("/")

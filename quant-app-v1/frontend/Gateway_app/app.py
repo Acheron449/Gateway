@@ -1,6 +1,15 @@
-from flask import Flask, render_template, request, jsonify
+from __future__ import annotations
 
-app = Flask(__name__)
+from pathlib import Path
+
+from flask import Flask, jsonify, render_template, request
+
+BASE_DIR = Path(__file__).resolve().parent
+app = Flask(
+    __name__,
+    template_folder=str(BASE_DIR / "static" / "templates"),
+    static_folder=str(BASE_DIR / "static"),
+)
 
 @app.route("/")
 def home():

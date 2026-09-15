@@ -1,11 +1,13 @@
 from __future__ import annotations
 import dataclasses
+from dataclasses import dataclass
 
-@dataclasses.dataclass
+@dataclass
 class RiskConfig:
-    max_portfolio_risk: float = 0.02  # Max % of capital to risk per trade
+    max_portfolio_risk: float = 0.02  # Max % of capital risked PER TRADE
+    max_total_exposure: float = 0.2   # Max % of capital that can be exposed across all positions
     stop_loss_pct: float = 0.05       # 5% Stop Loss
-    take_profit_pct: float = 0.10      # 10% Take Profit
+    take_profit_pct: float = 0.10     # 10% Take Profit
 
 class RiskManager:
     def __init__(self, total_capital: float, config: RiskConfig = RiskConfig()):
