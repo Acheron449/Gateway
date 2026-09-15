@@ -10,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 import pandas_ta as ta
+import time
+import json
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from loguru import logger
 
@@ -23,7 +25,8 @@ from app.services.news_provider import fetch_forex_factory_news
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
 data_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 _ws_clients_lock = asyncio.Lock()
-_ws_clients: list[WebSocket] = []
+# each client entry is { 'ws': WebSocket, 'subs': set((symbol, tf_key), ...) }
+_ws_clients: list[dict] = []
 
 _lifespan_holder: dict[str, Any] = {}
 RSI_PERIOD = 14
@@ -92,23 +95,82 @@ async def lifespan(app: FastAPI):
                 }
             )
 
-    async def dispatch_queue():
-        """Drain the queue once and broadcast to every connected `/ws/trading` client."""
+    TF_KEYS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+
+    async def aggregation_loop():
+        """Aggregate incoming price updates into timeframe candles and push to subscribed WS clients.
+
+        Messages in data_queue are expected to be dicts: { 'symbol': str, 'price': float, 'rsi': float }
+        """
+        last_candles: dict[tuple[str, str], dict[str, Any]] = {}
         while True:
             msg = await data_queue.get()
-            async with _ws_clients_lock:
-                targets = list(_ws_clients)
-            for ws in targets:
-                try:
-                    await ws.send_json(msg)
-                except Exception as exc:
-                    logger.debug("Dropping websocket client after send failure: {}", exc)
+            try:
+                symbol = (msg.get('symbol') or '').upper()
+                price = float(msg.get('price'))
+            except Exception:
+                continue
+            ts = int(time.time())
+            # For each configured timeframe, update bucket
+            for tf_key, step in TF_KEYS.items():
+                bucket = (ts // step) * step
+                key = (symbol, tf_key)
+                prev = last_candles.get(key)
+                if prev is None or bucket > prev['time']:
+                    # close previous candle
+                    if prev is not None:
+                        closed = prev.copy()
+                        # broadcast closed candle to subscribers
+                        payload = {'type': 'candle_closed', 'symbol': symbol, 'tf': tf_key, 'candle': closed}
+                        async with _ws_clients_lock:
+                            clients = list(_ws_clients)
+                        for client in clients:
+                            try:
+                                subs = client.get('subs', set())
+                                if (symbol, tf_key) in subs or (symbol, '*') in subs or ('*', tf_key) in subs or ('*', '*') in subs:
+                                    await client['ws'].send_json(payload)
+                            except Exception:
+                                async with _ws_clients_lock:
+                                    if client in _ws_clients:
+                                        _ws_clients.remove(client)
+                    # create new candle
+                    new_candle = {'time': bucket, 'open': price, 'high': price, 'low': price, 'close': price}
+                    last_candles[key] = new_candle
+                    # broadcast initial candle update
+                    payload = {'type': 'candle_update', 'symbol': symbol, 'tf': tf_key, 'candle': new_candle}
                     async with _ws_clients_lock:
-                        if ws in _ws_clients:
-                            _ws_clients.remove(ws)
+                        clients = list(_ws_clients)
+                    for client in clients:
+                        try:
+                            subs = client.get('subs', set())
+                            if (symbol, tf_key) in subs or (symbol, '*') in subs or ('*', tf_key) in subs or ('*', '*') in subs:
+                                await client['ws'].send_json(payload)
+                        except Exception:
+                            async with _ws_clients_lock:
+                                if client in _ws_clients:
+                                    _ws_clients.remove(client)
+                else:
+                    # update existing candle
+                    updated = prev
+                    updated['close'] = price
+                    updated['high'] = max(updated['high'], price)
+                    updated['low'] = min(updated['low'], price)
+                    last_candles[key] = updated
+                    payload = {'type': 'candle_update', 'symbol': symbol, 'tf': tf_key, 'candle': updated}
+                    async with _ws_clients_lock:
+                        clients = list(_ws_clients)
+                    for client in clients:
+                        try:
+                            subs = client.get('subs', set())
+                            if (symbol, tf_key) in subs or (symbol, '*') in subs or ('*', tf_key) in subs or ('*', '*') in subs:
+                                await client['ws'].send_json(payload)
+                        except Exception:
+                            async with _ws_clients_lock:
+                                if client in _ws_clients:
+                                    _ws_clients.remove(client)
 
     tasks: list[asyncio.Task] = []
-    tasks.append(asyncio.create_task(dispatch_queue(), name="ws-dispatch-queue"))
+    tasks.append(asyncio.create_task(aggregation_loop(), name="ws-aggregation-loop"))
 
     finnhub_key = os.getenv('FINNHUB_API_KEY')
 
@@ -219,9 +281,40 @@ async def get_forex_factory_news(limit: int = 5) -> list[dict[str, Any]]:
     return await fetch_forex_factory_news(limit=limit)
 
 
+TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+
+
+def _resample_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
+    """Resample OHLC candles into a requested timeframe."""
+    tf_key = (timeframe or '1h').lower()
+    step = TF_TO_SECONDS.get(tf_key, 3600)
+    if not candles:
+        return []
+
+    bucketed: dict[int, dict[str, Any]] = {}
+    for candle in candles:
+        ts = int(candle.get('time', 0))
+        bucket = (ts // step) * step
+        if bucket not in bucketed:
+            bucketed[bucket] = {
+                'time': bucket,
+                'open': float(candle.get('open', 0.0)),
+                'high': float(candle.get('high', 0.0)),
+                'low': float(candle.get('low', 0.0)),
+                'close': float(candle.get('close', 0.0)),
+            }
+            continue
+        entry = bucketed[bucket]
+        entry['high'] = max(entry['high'], float(candle.get('high', entry['high'])))
+        entry['low'] = min(entry['low'], float(candle.get('low', entry['low'])))
+        entry['close'] = float(candle.get('close', entry['close']))
+    ordered = sorted(bucketed.values(), key=lambda x: x['time'])
+    return ordered
+
+
 @app.get("/history/{ticker}")
-async def get_history(ticker: str) -> list[dict[str, Any]]:
-    """Last ~30 days of 1-hour bars for TradingView-style charts (Alpaca historical API)."""
+async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
+    """Return historical bars, optionally resampled to the requested timeframe."""
     creds = _alpaca_credentials()
     if not creds:
         raise HTTPException(
@@ -230,7 +323,15 @@ async def get_history(ticker: str) -> list[dict[str, Any]]:
         )
 
     chart_data = await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
-    return chart_data
+    resampled = _resample_candles(chart_data, tf)
+    if limit and len(resampled) > 0:
+        resampled = resampled[-max(10, min(int(limit), 2000)):]
+    return resampled
+
+
+@app.get("/market/{ticker}/history")
+async def get_market_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
+    return await get_history(ticker=ticker, tf=tf, limit=limit)
 
 
 def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> list[dict[str, Any]]:
@@ -286,16 +387,42 @@ def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> lis
 
 @app.websocket("/ws/trading")
 async def websocket_trading(websocket: WebSocket) -> None:
-    """Clients connect here for live.symbol / price / rsi pushed from the Alpaca-backed queue."""
+    """Clients connect here for live symbol/tf subscriptions.
+
+    Clients should send JSON messages to subscribe:
+      {"action":"subscribe", "symbol":"EURUSD", "tf":"1m"}
+    or to unsubscribe:
+      {"action":"unsubscribe", "symbol":"EURUSD", "tf":"1m"}
+    Use "*" for wildcard symbol or tf.
+    """
     await websocket.accept()
+    client = { 'ws': websocket, 'subs': set() }
     async with _ws_clients_lock:
-        _ws_clients.append(websocket)
+        _ws_clients.append(client)
     try:
         while True:
-            await websocket.receive_text()
+            text = await websocket.receive_text()
+            try:
+                payload = json.loads(text)
+                action = payload.get('action')
+                if action == 'subscribe':
+                    sym = (payload.get('symbol') or '*').upper()
+                    tf = payload.get('tf') or '*'
+                    client['subs'].add((sym, tf))
+                    await websocket.send_json({'type': 'subscribed', 'symbol': sym, 'tf': tf})
+                elif action == 'unsubscribe':
+                    sym = (payload.get('symbol') or '*').upper()
+                    tf = payload.get('tf') or '*'
+                    client['subs'].discard((sym, tf))
+                    await websocket.send_json({'type': 'unsubscribed', 'symbol': sym, 'tf': tf})
+                elif action == 'ping':
+                    await websocket.send_json({'type': 'pong'})
+            except json.JSONDecodeError:
+                # ignore non-JSON pings
+                continue
     except WebSocketDisconnect:
         pass
     finally:
         async with _ws_clients_lock:
-            if websocket in _ws_clients:
-                _ws_clients.remove(websocket)
+            if client in _ws_clients:
+                _ws_clients.remove(client)

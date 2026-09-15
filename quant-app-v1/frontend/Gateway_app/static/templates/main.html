@@ -96,6 +96,7 @@
   <script>
     // Charting prototype using Lightweight Charts
     const DEFAULT_SYMBOL = 'EURUSD';
+    let currentSymbol = DEFAULT_SYMBOL;
     let currentTF = '1h';
     let candleSeries, miniSeries, chart, miniChart, ws;
 
@@ -135,16 +136,26 @@
       setupWebSocket();
     }
 
+    function subscribeToCurrentMarket() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ action: 'unsubscribe', symbol: currentSymbol, tf: currentTF }));
+      } catch (e) {}
+      try {
+        ws.send(JSON.stringify({ action: 'subscribe', symbol: currentSymbol, tf: currentTF }));
+      } catch (e) {}
+    }
+
     async function refreshChartData() {
       try {
-        const data = await loadHistory(DEFAULT_SYMBOL, currentTF, 800);
+        const data = await loadHistory(currentSymbol, currentTF, 800);
         if (!data || !data.length) return;
         candleSeries.setData(data);
-        // convert candles to line data for mini chart
         miniSeries.setData(data.map(d => ({ time: d.time, value: d.close })));
         chart.timeScale().fitContent();
         miniChart.timeScale().fitContent();
-        document.getElementById('chartTitle').innerText = DEFAULT_SYMBOL + ' · ' + currentTF;
+        document.getElementById('chartTitle').innerText = currentSymbol + ' · ' + currentTF;
+        subscribeToCurrentMarket();
       } catch (err) {
         console.warn('Chart data error', err);
       }
@@ -158,45 +169,65 @@
           currentTF = tf;
           document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
+          subscribeToCurrentMarket();
           await refreshChartData();
         });
       });
-      // mark default
       document.querySelector('.tf-btn[data-tf="1h"]').classList.add('active');
+    }
+
+    function setupSymbolControls() {
+      const searchInput = document.getElementById('symbolSearch');
+      const applySymbol = (value) => {
+        const symbol = (value || '').trim().toUpperCase();
+        if (!symbol) return;
+        currentSymbol = symbol;
+        refreshChartData();
+      };
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          applySymbol(searchInput.value);
+        }
+      });
+      document.querySelectorAll('.watchlist li').forEach(li => {
+        li.addEventListener('click', () => applySymbol(li.textContent.trim()));
+      });
     }
 
     function setupWebSocket() {
       try {
         const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
         ws = new WebSocket(`${scheme}://${location.host}/ws/trading`);
-        ws.onopen = () => console.debug('WS open');
+        ws.onopen = () => {
+          console.debug('WS open');
+          subscribeToCurrentMarket();
+        };
         ws.onmessage = (ev) => {
           try {
             const msg = JSON.parse(ev.data);
-            // msg: { symbol, price, rsi }
+            if (msg.type === 'candle_update' || msg.type === 'candle_closed') {
+              if (msg.symbol !== currentSymbol || msg.tf !== currentTF) return;
+              const c = msg.candle;
+              window._lastCandle = c;
+              if (c && candleSeries) {
+                candleSeries.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
+                miniSeries.update({ time: c.time, value: c.close });
+              }
+              return;
+            }
             const price = Number(msg.price);
             if (!price || !candleSeries) return;
-            // update last candle: read visible last time
-            const visibleRange = chart.timeScale().getVisibleRange();
-            // get last time from series by peeking (no public API), so we store last locally — simpler: fetch current last via getSeriesData? Not available. Use a trick: maintain lastCandle var.
-            if (!window._lastCandle) {
-              // initialize from series last point
-              try { const last = candleSeries.getRawData ? candleSeries.getRawData().slice(-1)[0] : null; } catch(e){}
-            }
-            // We'll update by keeping track of last candle in global
             const nowSec = Math.floor(Date.now() / 1000);
             const step = tfToSeconds(currentTF);
             const bucket = Math.floor(nowSec / step) * step;
             const last = window._lastCandle;
             if (last && last.time === bucket) {
-              // modify
               last.close = price;
               last.high = Math.max(last.high, price);
               last.low = Math.min(last.low, price);
               candleSeries.update(last);
               miniSeries.update({ time: last.time, value: last.close });
             } else {
-              // create new candle based on previous close
               const prevClose = last ? last.close : price;
               const open = prevClose;
               const high = Math.max(open, price);
@@ -224,6 +255,7 @@
     });
 
     setupTimeframeButtons();
+    setupSymbolControls();
     initCharts();
 
     // Strategy generation and apply handlers
