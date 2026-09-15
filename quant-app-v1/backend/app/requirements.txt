@@ -3,6 +3,8 @@ fastapi==0.110.0      # The core web framework
 uvicorn[standard]     # The high-performance ASGI server to run FastAPI
 python-multipart      # Required for handling form data and file uploads
 pydantic-settings     # Manages your .env variables and API keys securely
+Flask==3.0.3          # Basic web framework for serving static files and simple endpoints
+
 
 # --- Quantitative Math & Indicators ---
 pandas                # The backbone for data manipulation (DataFrames)
@@ -17,6 +19,8 @@ websockets            # For handling live market data streams
 yfinance              # Easy access to Yahoo Finance historical data
 alpaca-trade-api      # (Optional) If you choose Alpaca for real-time data
 alpaca-py             # Alpaca API client
+fastapi-utils          # Utilities for FastAPI, including rate limiting and caching
+finnhub-python         # For fetching financial data from Finnhub
 
 # --- Natural Language Processing (News/Global Events) ---
 beautifulsoup4        # For scraping news headlines if an API isn't available
