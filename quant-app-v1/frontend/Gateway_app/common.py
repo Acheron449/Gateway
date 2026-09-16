@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -12,7 +13,7 @@ from datetime import datetime
 from email.message import EmailMessage
 from html import unescape
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import bcrypt
 from flask import request

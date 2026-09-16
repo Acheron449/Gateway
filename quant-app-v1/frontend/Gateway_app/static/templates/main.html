@@ -22,9 +22,14 @@
       </div>
     </div>
     <div class="topbar-right">
-      <a href="/dashboard" id="userBadgeName" class="user-info">Hi, {{ user.name or user.email }}</a>
-      <a href="/main" class="btn-ghost">Go to App</a>
-      <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
+      {% if user and (user.email or user.name) %}
+        <a href="/dashboard" id="userBadgeName" class="user-info">Hi, {{ user.name or user.email }}</a>
+        <a href="/main" class="btn-ghost">Go to App</a>
+        <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
+      {% else %}
+        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% endif %}
     </div>
   </header>
 

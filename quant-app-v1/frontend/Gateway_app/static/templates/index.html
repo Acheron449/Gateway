@@ -18,8 +18,14 @@
       <a href="#pricing">Pricing</a>
     </div>
     <div class="nav-actions">
-      <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
-      <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% if user and (user.email or user.name) %}
+        <a href="/dashboard" class="user-badge" id="userBadge">Hi, {{ user.name or user.email }}</a>
+        <span class="credit-badge">{{ user_meta.get('credits', 0) if user_meta else 0 }} credits</span>
+        <button class="btn-ghost" id="logoutBtn">Log Out</button>
+      {% else %}
+        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% endif %}
     </div>
   </nav>
 
