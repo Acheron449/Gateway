@@ -17,7 +17,7 @@ from flask import Flask, session, jsonify
 
 from common import init_user_db
 
-from routes import register_blueprints
+from routes import dashboard_bp, landing_bp, main_bp, register_blueprints
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(

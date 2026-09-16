@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
-from flask import Blueprint, jsonify, render_template, request, session
+from flask import Flask, jsonify, render_template, request, session
 
 from ..common import (
     get_user_by_email,
@@ -117,15 +119,15 @@ def api_account_api_inputs():
     payload = request.get_json(silent=True) or {}
     meta = get_user_meta(user_id)
     api_inputs = meta.get('api_inputs', {}) or {}
-    api_inputs.update({
-        'alpaca_key': payload.get('alpaca_key', api_inputs.get('alpaca_key')),
-        'alpaca_secret': payload.get('alpaca_secret', api_inputs.get('alpaca_secret')),
-        'finnhub_key': payload.get('finnhub_key', api_inputs.get('finnhub_key')),
-        'openai_key': payload.get('openai_key', api_inputs.get('openai_key')),
+    api.inputs.update({
+        'alpaca_key': payload.get('alpaca_key', api.inputs.get('alpaca_key')),
+        'alpaca_secret': payload.get('alpaca_secret', api.inputs.get('alpaca_secret')),
+        'finnhub_key': payload.get('finnhub_key', api.inputs.get('finnhub_key')),
+        'openai_key': payload.get('openai_key', api.inputs.get('openai_key')),
     })
-    meta['api_inputs'] = api_inputs
+    meta['api_inputs'] = api.inputs
     set_user_meta(user_id, meta)
-    return jsonify({'success': True, 'api_inputs': api_inputs})
+    return jsonify({'success': True, 'api_inputs': api.inputs})
 
 
 @dashboard_bp.route('/api/account/topup', methods=['POST'])
