@@ -102,8 +102,22 @@ def api_me():
 
 @landing_bp.route('/api/news/forex-factory')
 def api_news_forex_factory():
-    items = fetch_forex_factory_news(limit=5)
-    return jsonify({'items': items})
+    raw_items = fetch_forex_factory_news(limit=5)
+
+    # --- START: Data Transformation Layer ---
+    # Apply the mapping logic to transform raw data into the clean structure
+    transformed_items = []
+    for item in raw_items:
+        # ASSUMPTION: item contains keys like 'title', 'body', and 'url'
+        # If the keys are different, they need to be adjusted here.
+        transformed_items.append({
+            'headline': item.get('title', 'No Headline Provided'),
+            'summary': item.get('summary_text', 'No summary available.'),
+            'link': item.get('full_article_url', '#')
+        })
+    # --- END: Data Transformation Layer ---
+
+    return jsonify({'items': transformed_items})
 
 
 @landing_bp.route('/api/generate', methods=['POST'])
