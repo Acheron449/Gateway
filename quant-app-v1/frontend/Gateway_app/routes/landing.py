@@ -24,7 +24,13 @@ landing_bp = Blueprint('landing', __name__)
 
 @landing_bp.route('/')
 def index():
-    return render_template('index.html')
+    user = {'name': session.get('user_name', ''), 'email': session.get('user_email', '')}
+    tiers = [
+        {'name': 'Starter', 'price': '$29', 'credits': '2,000 Credits', 'cta': 'Get Started', 'featured': False},
+        {'name': 'Pro', 'price': '$79', 'credits': '7,000 Credits', 'cta': 'Start Pro', 'featured': True},
+        {'name': 'Scale', 'price': '$149', 'credits': '16,000 Credits', 'cta': 'Scale Up', 'featured': False},
+    ]
+    return render_template('index.html', user=user, tiers=tiers)
 
 
 @landing_bp.route('/api/auth/signup', methods=['POST'])

@@ -1,0 +1,12 @@
+flask
+bcrypt
+pandas
+pandas-ta
+fastapi
+uvicorn
+loguru
+aiohttp
+requests
+alpaca-trade-api
+alpaca-py
+python-dotenv

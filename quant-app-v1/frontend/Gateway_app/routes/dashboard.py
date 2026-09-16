@@ -28,7 +28,7 @@ def _require_login():
 def dashboard():
     user_id = _require_login()
     if user_id is None:
-        return render_template('index.html')
+        return render_template('index.html', user={}, tiers=[])
     user = get_user_by_email(session.get('user_email') or '') or {}
     meta = get_user_meta(user_id)
     return render_template('dashboard.html', user=user, meta=meta)

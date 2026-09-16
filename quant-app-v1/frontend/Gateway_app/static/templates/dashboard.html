@@ -6,16 +6,19 @@
   <title>Account Dashboard - Gateway</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-page="dashboard">
   <nav class="navbar">
     <div class="logo">Gateway</div>
     <div class="nav-links">
       <a href="/">Home</a>
+      <a href="/main">Main App</a>
+      <a href="/main#backtest">Backtest</a>
       <a href="#workflow">How It Works</a>
     </div>
     <div class="nav-actions">
       {% if user %}
-        <a href="/dashboard" class="user-badge">Hi, {{ user.name or user.email }}</a>
+        <a href="/dashboard" id="userBadge" class="user-badge">Hi, {{ user.name or user.email }}</a>
+        <a href="/main" class="btn-ghost">Go to App</a>
         <button class="btn-ghost" id="logoutBtn">Log Out</button>
       {% else %}
         <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
@@ -106,112 +109,6 @@
     </section>
   </main>
 
-  <script>
-    // sidebar navigation
-    document.querySelectorAll('.sidebar-menu li').forEach(item => {
-      item.addEventListener('click', () => {
-        document.querySelectorAll('.sidebar-menu li').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-        const sec = item.dataset.section;
-        document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === sec));
-      });
-    });
-
-    // fetch account info
-    async function loadAccount() {
-      const res = await fetch('/api/account');
-      if (!res.ok) {
-        // redirect to home / login
-        window.location.href = '/';
-        return;
-      }
-      const j = await res.json();
-      document.getElementById('accName').innerText = j.name || '-';
-      document.getElementById('accLastName').innerText = j.last_name || '-';
-      document.getElementById('accEmail').innerText = j.email || '-';
-      document.getElementById('accCredits').innerText = j.meta?.credits ?? '-';
-      document.getElementById('accUsage').innerText = j.meta?.usage_remaining ?? '-';
-
-      // populate forms
-      document.getElementById('fieldName').value = j.name || '';
-      document.getElementById('fieldLastName').value = j.last_name || '';
-      document.getElementById('fieldEmail').value = j.email || '';
-      document.getElementById('fieldPayment').value = JSON.stringify(j.meta?.payment || {}, null, 2);
-      document.getElementById('fieldApiInputs').value = JSON.stringify(j.meta?.api_inputs || {}, null, 2);
-    }
-
-    async function showMsg(id, type, message) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.textContent = message;
-      el.classList.remove('success','error');
-      el.classList.add(type === 'success' ? 'success' : 'error');
-    }
-
-    document.getElementById('accountForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      showMsg('accountMsg', '','');
-    const payload = { name: document.getElementById('fieldName').value.trim(), last_name: document.getElementById('fieldLastName').value.trim(), email: document.getElementById('fieldEmail').value.trim() };
-      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-      const j = await res.json().catch(()=>({}));
-    if (res.status === 200) { showMsg('accountMsg','success','Saved'); loadAccount(); }
-    else if (res.status === 202) {
-      // confirmation required
-      showMsg('accountMsg','success', j.message || 'Confirmation required');
-      // show token input for demo
-      document.getElementById('emailConfirmSection').style.display = 'block';
-      document.getElementById('emailToken').value = j.confirmation_token || '';
-      document.getElementById('emailConfirmMsg').textContent = 'Paste token and press Confirm to apply the email change.';
-    } else { showMsg('accountMsg','error', j.message || 'Failed to save'); }
-    });
-
-    document.getElementById('confirmEmailBtn').addEventListener('click', async () => {
-    const token = document.getElementById('emailToken').value.trim();
-    if (!token) return showMsg('emailConfirmMsg','error','Token required');
-    const res = await fetch('/api/account/confirm_email', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token }) });
-    const j = await res.json().catch(()=>({}));
-    if (res.ok) { showMsg('emailConfirmMsg','success','Email confirmed.'); document.getElementById('emailConfirmSection').style.display='none'; loadAccount(); }
-    else { showMsg('emailConfirmMsg','error', j.message || 'Failed to confirm'); }
-    });
-
-    document.getElementById('paymentForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      showMsg('paymentMsg','', '');
-      let payment = {};
-      try { payment = JSON.parse(document.getElementById('fieldPayment').value || '{}'); } catch (err) { showMsg('paymentMsg','error','Invalid JSON'); return; }
-      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ payment }) });
-      const j = await res.json().catch(()=>({}));
-      if (res.ok) showMsg('paymentMsg','success','Saved'); else showMsg('paymentMsg','error', j.message || 'Failed to save');
-    });
-
-    document.getElementById('topupForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      showMsg('topupMsg','', '');
-      const amount = document.getElementById('fieldTopup').value;
-      const res = await fetch('/api/billing/topup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ amount }) });
-      const j = await res.json().catch(()=>({}));
-      if (res.ok) { showMsg('topupMsg','success', `Added ${j.added_credits} credits. Total: ${j.credits}`); loadAccount(); }
-      else showMsg('topupMsg','error', j.message || 'Top-up failed');
-    });
-
-    document.getElementById('apiForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      showMsg('apiMsg','', '');
-      let api_inputs = {};
-      try { api_inputs = JSON.parse(document.getElementById('fieldApiInputs').value || '{}'); } catch (err) { showMsg('apiMsg','error','Invalid JSON'); return; }
-      const res = await fetch('/api/account', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ api_inputs }) });
-      const j = await res.json().catch(()=>({}));
-      if (res.ok) showMsg('apiMsg','success','Saved'); else showMsg('apiMsg','error', j.message || 'Failed to save');
-    });
-
-    // logout button
-    document.getElementById('logoutBtn')?.addEventListener('click', async () => {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      window.location.href = '/';
-    });
-
-    // initial load
-    loadAccount();
-  </script>
+  <script src="{{ url_for('static', filename='js/common.js') }}" defer></script>
 </body>
 </html>

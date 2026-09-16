@@ -7,17 +7,23 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 </head>
-<body>
+<body data-page="main">
   <header class="topbar">
     <div class="topbar-left">
       <div class="logo">Gateway</div>
+      <nav class="top-nav-links">
+        <a href="/">Home</a>
+        <a href="/main" class="active">Main App</a>
+        <a href="/main#backtest">Backtest</a>
+        <a href="/">News</a>
+      </nav>
       <div class="symbol-search">
         <input id="symbolSearch" placeholder="Search symbol or ticker (e.g. EURUSD, AAPL)" />
       </div>
     </div>
     <div class="topbar-right">
-      <div class="user-info">Hi, {{ user.name or user.email }}</div>
-      <a href="/dashboard" class="btn-ghost">Account</a>
+      <a href="/dashboard" id="userBadgeName" class="user-info">Hi, {{ user.name or user.email }}</a>
+      <a href="/main" class="btn-ghost">Go to App</a>
       <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
     </div>
   </header>
@@ -93,190 +99,6 @@
     </aside>
   </main>
 
-  <script>
-    // Charting prototype using Lightweight Charts
-    const DEFAULT_SYMBOL = 'EURUSD';
-    let currentSymbol = DEFAULT_SYMBOL;
-    let currentTF = '1h';
-    let candleSeries, miniSeries, chart, miniChart, ws;
-
-    function tfToSeconds(tf) {
-      return tf === '1m' ? 60 : tf === '5m' ? 300 : tf === '15m' ? 900 : tf === '1h' ? 3600 : tf === '4h' ? 14400 : 86400;
-    }
-
-    async function loadHistory(symbol = DEFAULT_SYMBOL, tf = '1h', limit = 500) {
-      const res = await fetch(`/api/market/history?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&limit=${limit}`);
-      if (!res.ok) throw new Error('History fetch failed');
-      const data = await res.json();
-      // Map into Lightweight Charts format (time in seconds is supported)
-      return data.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close }));
-    }
-
-    async function initCharts() {
-      const mainEl = document.getElementById('mainChart');
-      const miniEl = document.getElementById('miniChart');
-      mainEl.innerHTML = '';
-      miniEl.innerHTML = '';
-
-      chart = LightweightCharts.createChart(mainEl, { layout: { backgroundColor: '#071019', textColor: '#d1e2ff' }, rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false } });
-      candleSeries = chart.addCandlestickSeries();
-
-      miniChart = LightweightCharts.createChart(miniEl, { layout: { backgroundColor: '#071019', textColor: '#94a3b8' }, handleScale: false, handleScroll: false, rightPriceScale: { visible: false }, timeScale: { visible: true } });
-      miniSeries = miniChart.addAreaSeries({ topColor: 'rgba(0,230,153,0.2)', bottomColor: 'rgba(0,230,153,0.0)', lineColor: 'rgba(0,230,153,0.8)', lineWidth: 1 });
-
-      // time range sync from mini -> main
-      miniChart.timeScale().subscribeVisibleTimeRangeChange(range => {
-        if (!range) return;
-        chart.timeScale().setVisibleRange(range);
-      });
-
-      // on main visible range change, optionally sync mini selection (skip to keep it simple)
-
-      await refreshChartData();
-      setupWebSocket();
-    }
-
-    function subscribeToCurrentMarket() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      try {
-        ws.send(JSON.stringify({ action: 'unsubscribe', symbol: currentSymbol, tf: currentTF }));
-      } catch (e) {}
-      try {
-        ws.send(JSON.stringify({ action: 'subscribe', symbol: currentSymbol, tf: currentTF }));
-      } catch (e) {}
-    }
-
-    async function refreshChartData() {
-      try {
-        const data = await loadHistory(currentSymbol, currentTF, 800);
-        if (!data || !data.length) return;
-        candleSeries.setData(data);
-        miniSeries.setData(data.map(d => ({ time: d.time, value: d.close })));
-        chart.timeScale().fitContent();
-        miniChart.timeScale().fitContent();
-        document.getElementById('chartTitle').innerText = currentSymbol + ' · ' + currentTF;
-        subscribeToCurrentMarket();
-      } catch (err) {
-        console.warn('Chart data error', err);
-      }
-    }
-
-    function setupTimeframeButtons() {
-      document.querySelectorAll('.tf-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const tf = btn.dataset.tf;
-          if (!tf) return;
-          currentTF = tf;
-          document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          subscribeToCurrentMarket();
-          await refreshChartData();
-        });
-      });
-      document.querySelector('.tf-btn[data-tf="1h"]').classList.add('active');
-    }
-
-    function setupSymbolControls() {
-      const searchInput = document.getElementById('symbolSearch');
-      const applySymbol = (value) => {
-        const symbol = (value || '').trim().toUpperCase();
-        if (!symbol) return;
-        currentSymbol = symbol;
-        refreshChartData();
-      };
-      searchInput.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          applySymbol(searchInput.value);
-        }
-      });
-      document.querySelectorAll('.watchlist li').forEach(li => {
-        li.addEventListener('click', () => applySymbol(li.textContent.trim()));
-      });
-    }
-
-    function setupWebSocket() {
-      try {
-        const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-        ws = new WebSocket(`${scheme}://${location.host}/ws/trading`);
-        ws.onopen = () => {
-          console.debug('WS open');
-          subscribeToCurrentMarket();
-        };
-        ws.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === 'candle_update' || msg.type === 'candle_closed') {
-              if (msg.symbol !== currentSymbol || msg.tf !== currentTF) return;
-              const c = msg.candle;
-              window._lastCandle = c;
-              if (c && candleSeries) {
-                candleSeries.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
-                miniSeries.update({ time: c.time, value: c.close });
-              }
-              return;
-            }
-            const price = Number(msg.price);
-            if (!price || !candleSeries) return;
-            const nowSec = Math.floor(Date.now() / 1000);
-            const step = tfToSeconds(currentTF);
-            const bucket = Math.floor(nowSec / step) * step;
-            const last = window._lastCandle;
-            if (last && last.time === bucket) {
-              last.close = price;
-              last.high = Math.max(last.high, price);
-              last.low = Math.min(last.low, price);
-              candleSeries.update(last);
-              miniSeries.update({ time: last.time, value: last.close });
-            } else {
-              const prevClose = last ? last.close : price;
-              const open = prevClose;
-              const high = Math.max(open, price);
-              const low = Math.min(open, price);
-              const c = { time: bucket, open: open, high: high, low: low, close: price };
-              window._lastCandle = c;
-              candleSeries.update(c);
-              miniSeries.update({ time: c.time, value: c.close });
-            }
-          } catch (err) {
-            console.warn('ws msg parse', err);
-          }
-        };
-        ws.onclose = () => console.debug('WS closed');
-        ws.onerror = (e) => console.warn('WS error', e);
-      } catch (err) {
-        console.warn('WS setup failed', err);
-      }
-    }
-
-    // initialize
-    document.getElementById('logoutBtnTop').addEventListener('click', async () => {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      window.location.href = '/';
-    });
-
-    setupTimeframeButtons();
-    setupSymbolControls();
-    initCharts();
-
-    // Strategy generation and apply handlers
-    document.getElementById('generateStrategyBtn').addEventListener('click', async () => {
-      const prompt = document.getElementById('strategyPrompt').value.trim();
-      if (!prompt) return;
-      document.getElementById('generateStrategyBtn').disabled = true;
-      try {
-        const res = await fetch('/api/generate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ prompt }) });
-        const j = await res.json();
-        document.getElementById('strategyResults').innerText = JSON.stringify(j.metrics || j, null, 2);
-      } catch (e) {
-        document.getElementById('strategyResults').innerText = 'Failed to generate strategy';
-      } finally {
-        document.getElementById('generateStrategyBtn').disabled = false;
-      }
-    });
-
-    document.getElementById('applyToChartBtn').addEventListener('click', () => {
-      alert('Apply to chart: demo placeholder — integrate chart drawing in production');
-    });
-  </script>
+  <script src="{{ url_for('static', filename='js/common.js') }}" defer></script>
 </body>
 </html>

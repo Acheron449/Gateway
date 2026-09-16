@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from flask import Flask
+
+if __package__ in {None, ''}:
+    parent_dir = str(Path(__file__).resolve().parents[1])
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    __package__ = 'Gateway_app'
 
 from .common import init_user_db
 from .routes import register_blueprints
