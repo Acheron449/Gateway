@@ -1,4 +1,4 @@
-# Quant Application Dashboard
+# Gateway - Quant Application Dashboard
 
 This application provides a real-time, multi-faceted dashboard for quantitative market analysis. It integrates REST API data fetching with live WebSocket streams to provide comprehensive market monitoring.
 
