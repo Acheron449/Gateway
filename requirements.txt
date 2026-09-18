@@ -1,12 +1,35 @@
-flask
-bcrypt
-pandas
-pandas-ta
-fastapi
-uvicorn
-loguru
-aiohttp
-requests
-alpaca-trade-api
-alpaca-py
-python-dotenv
+# --- Web Server & API Framework ---
+fastapi==0.110.0      # The core web framework
+uvicorn[standard]     # The high-performance ASGI server to run FastAPI
+python-multipart      # Required for handling form data and file uploads
+pydantic-settings     # Manages your .env variables and API keys securely
+Flask==3.0.3          # Basic web framework for serving static files and simple endpoints
+bcrypt==4.0.1          # For password hashing and security
+flask_session==0.4.0      # For managing user sessions in Flask
+
+# --- Quantitative Math & Indicators ---
+pandas                # The backbone for data manipulation (DataFrames)
+numpy                 # High-performance numerical operations
+pandas-ta             # Professional technical analysis library (RSI, EMA, etc.)
+scipy                 # Used for advanced statistics and signal processing
+scikit-learn          # For pattern recognition and regime detection (K-Means/Linear Regression)
+
+# --- Data Fetching & Networking ---
+httpx                 # Modern, async HTTP client (faster than 'requests' for APIs)
+websockets            # For handling live market data streams
+yfinance              # Easy access to Yahoo Finance historical data
+alpaca-trade-api      # (Optional) If you choose Alpaca for real-time data
+alpaca-py             # Alpaca API client
+fastapi-utils          # Utilities for FastAPI, including rate limiting and caching
+finnhub-python         # For fetching financial data from Finnhub
+
+# --- Natural Language Processing (News/Global Events) ---
+beautifulsoup4        # For scraping news headlines if an API isn't available
+textblob              # Simple sentiment analysis for starters
+vaderSentiment        # Specialized sentiment analysis for social media/finance news
+aiohttp               # Essential for async HTTP requests in the news/sentiment service
+
+# --- Database & Utilities ---
+psycopg2-binary       # Connection driver for PostgreSQL/TimescaleDB
+python-dotenv         # Loads your secrets from the .env file
+loguru                # Advanced logging (vital for tracking calculation errors)

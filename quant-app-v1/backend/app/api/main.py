@@ -20,6 +20,7 @@ from app.api.v1.stocks import router as stocks_router
 from app.api.v1.backtest import router as backtest_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.services.news_provider import fetch_forex_factory_news
+from app.quant.recognition import find_pivots, detect_head_and_shoulders
 
 
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
@@ -135,9 +136,36 @@ async def lifespan(app: FastAPI):
                                         _ws_clients.remove(client)
                     # create new candle
                     new_candle = {'time': bucket, 'open': price, 'high': price, 'low': price, 'close': price}
-                    last_candles[key] = new_candle
-                    # broadcast initial candle update
-                    payload = {'type': 'candle_update', 'symbol': symbol, 'tf': tf_key, 'candle': new_candle}
+                    
+                    # Build history for pattern detection (storing last 50 ticks for context)
+                    if key not in last_candles:
+                        last_candles[key] = []
+                    
+                    # Update history with new candle
+                    last_candles[key].append(new_candle)
+                    if len(last_candles[key]) > 50:
+                        last_candles[key].pop(0)
+                    
+                    # Data needed for pattern recognition
+                    history_df = pd.DataFrame(last_candles[key])
+                    
+                    # Check for patterns
+                    pivots = find_pivots(history_df)
+                    patterns = detect_head_and_shoulders(pivots)
+                    
+                    pattern_detected = len(patterns) > 0
+                    pattern_label = patterns[0].type if pattern_detected else None
+                    
+                    # Broadcast initial candle update
+                    payload = {
+                        'type': 'candle_update', 
+                        'symbol': symbol, 
+                        'tf': tf_key, 
+                        'candle': new_candle,
+                        'rsi': round(rsi_val, 2),
+                        'pattern_detected': pattern_detected,
+                        'pattern_label': pattern_label
+                    }
                     async with _ws_clients_lock:
                         clients = list(_ws_clients)
                     for client in clients:
@@ -151,12 +179,36 @@ async def lifespan(app: FastAPI):
                                     _ws_clients.remove(client)
                 else:
                     # update existing candle
-                    updated = prev
+                    updated = prev.copy()
                     updated['close'] = price
                     updated['high'] = max(updated['high'], price)
                     updated['low'] = min(updated['low'], price)
-                    last_candles[key] = updated
-                    payload = {'type': 'candle_update', 'symbol': symbol, 'tf': tf_key, 'candle': updated}
+                    
+                    # Update the history buffer
+                    last_candles[key][-1] = updated
+                    
+                    # Check for patterns
+                    pattern_detected = False
+                    pattern_label = None
+                    
+                    # Run detection on the updated history
+                    history_df = pd.DataFrame(last_candles[key])
+                    pivots = find_pivots(history_df)
+                    patterns = detect_head_and_shoulders(pivots)
+                    
+                    pattern_detected = len(patterns) > 0
+                    pattern_label = patterns[0].type if pattern_detected else None
+                    
+                    # broadcast updated candle
+                    payload = {
+                        'type': 'candle_update', 
+                        'symbol': symbol, 
+                        'tf': tf_key, 
+                        'candle': updated,
+                        'rsi': round(rsi_val, 2),
+                        'pattern_detected': pattern_detected,
+                        'pattern_label': pattern_label
+                    }
                     async with _ws_clients_lock:
                         clients = list(_ws_clients)
                     for client in clients:
