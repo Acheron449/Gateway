@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { API_BASE } from "../lib/constants";
 import type { HistoryCandle } from "../types/market";
 
-export function useHistory(ticker: string) {
+/**
+ * Fetches historical market data for a given ticker symbol from the REST API.
+ * @param ticker The stock ticker symbol (e.g., "AAPL").
+ * @returns An object containing the fetched data, loading state, and any error encountered.
+ */
   const [data, setData] = useState<HistoryCandle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

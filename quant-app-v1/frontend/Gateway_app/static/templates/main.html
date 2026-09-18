@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Gateway — Main</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body data-page="main">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">Gateway</div>
+      <nav class="top-nav-links">
+        <a href="/">Home</a>
+        <a href="/main" class="active">Main App</a>
+        <a href="/main#backtest">Backtest</a>
+        <a href="/">News</a>
+      </nav>
+      <div class="symbol-search">
+        <input id="symbolSearch" placeholder="Search symbol or ticker (e.g. EURUSD, AAPL)" />
+      </div>
+    </div>
+    <div class="topbar-right">
+      {% if user and (user.email or user.name) %}
+        <a href="/dashboard" id="userBadgeName" class="user-info">Hi, {{ user.name or user.email }}</a>
+        <a href="/main" class="btn-ghost">Go to App</a>
+        <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
+      {% else %}
+        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% endif %}
+    </div>
+  </header>
+
+  <main class="main-app">
+    <aside class="left-panel">
+      <div class="panel-section">
+        <h4>Watchlist</h4>
+        <ul class="watchlist">
+          <li>EURUSD</li>
+          <li>USDJPY</li>
+          <li>GBPUSD</li>
+          <li>AAPL</li>
+          <li>TSLA</li>
+        </ul>
+      </div>
+      <div class="panel-section">
+        <h4>Indicators</h4>
+        <ul>
+          <li>Moving Average</li>
+          <li>RSI</li>
+          <li>Bollinger Bands</li>
+        </ul>
+      </div>
+    </aside>
+
+    <section class="chart-area">
+      <div class="chart-topbar">
+        <div class="chart-title" id="chartTitle">EURUSD · 1H</div>
+        <div class="chart-actions">
+          <div class="timeframes">
+            <button class="btn-ghost tf-btn" data-tf="1m">1m</button>
+            <button class="btn-ghost tf-btn" data-tf="5m">5m</button>
+            <button class="btn-ghost tf-btn" data-tf="15m">15m</button>
+            <button class="btn-ghost tf-btn" data-tf="1h">1h</button>
+            <button class="btn-ghost tf-btn" data-tf="4h">4h</button>
+            <button class="btn-ghost tf-btn" data-tf="1d">1d</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-canvas" id="chartCanvas" style="display:flex;flex-direction:column;">
+        <div id="mainChart" style="flex:1; min-height:320px;"></div>
+        <div id="miniChart" style="height:90px; margin-top:8px;"></div>
+      </div>
+
+      <div class="strategy-creator">
+        <h3>Strategy Creator</h3>
+        <p class="muted">Use natural language to create or tweak a strategy. Press Generate to populate the strategy parameters.</p>
+        <textarea id="strategyPrompt" placeholder="Describe your trading strategy, e.g. 'Buy on 1H bullish engulfing with RSI &lt; 30, TP 1.5x, SL 0.5x'" rows="3"></textarea>
+        <div class="strategy-actions">
+          <button id="generateStrategyBtn" class="btn-primary">Generate Strategy</button>
+          <button id="applyToChartBtn" class="btn-ghost">Apply to Chart</button>
+        </div>
+        <div id="strategyResults" class="strategy-results"></div>
+      </div>
+    </section>
+
+    <aside class="right-panel">
+      <div class="panel-section">
+        <h4>Order Panel</h4>
+        <div class="order-controls">
+          <label>Size <input id="orderSize" value="1000"></label>
+          <label>Type
+            <select id="orderType"><option>Market</option><option>Limit</option></select>
+          </label>
+          <button class="btn-primary">Place Order</button>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h4>Backtester</h4>
+        <button id="openBacktest" class="btn-primary">Run Backtest</button>
+      </div>
+    </aside>
+  </main>
+
+  <script src="{{ url_for('static', filename='js/common.js') }}" defer></script>
+</body>
+</html>

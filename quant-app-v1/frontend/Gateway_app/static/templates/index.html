@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Strategy Generator Shell</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-page="landing">
+
+  <nav class="navbar">
+    <div class="logo">Gateway</div>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/main">Main App</a>
+      <a href="/main#backtest">Backtest</a>
+      <a href="#workflow">How It Works</a>
+      <a href="#pricing">Pricing</a>
+    </div>
+    <div class="nav-actions">
+      {% if user and (user.email or user.name) %}
+        <a href="/dashboard" class="user-badge" id="userBadge">Hi, {{ user.name or user.email }}</a>
+        <span class="credit-badge">{{ user_meta.get('credits', 0) if user_meta else 0 }} credits</span>
+        <button class="btn-ghost" id="logoutBtn">Log Out</button>
+      {% else %}
+        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+      {% endif %}
+    </div>
+  </nav>
+
+  <div id="authOverlay" class="auth-overlay" aria-hidden="true">
+    <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <button class="auth-close" type="button" aria-label="Close authentication window">×</button>
+      <div class="auth-header">
+        <div class="auth-brand">Gateway</div>
+        <h2 id="authTitle">Welcome</h2>
+      </div>
+
+      <div class="auth-tabs" aria-label="Authentication mode">
+        <button type="button" class="auth-tab active" data-mode="login">Log In</button>
+        <button type="button" class="auth-tab" data-mode="signup">Sign Up</button>
+      </div>
+
+      <div id="authFeedback" class="auth-feedback" role="status" aria-live="polite"></div>
+
+      <form id="loginForm" class="auth-form active">
+        <label>
+          <span>Email</span>
+          <input id="loginEmail" type="email" placeholder="you@example.com" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="loginPassword" type="password" placeholder="••••••••" required>
+        </label>
+        <button type="submit" class="btn-primary auth-submit">Log In</button>
+      </form>
+
+      <form id="signupForm" class="auth-form">
+        <label>
+          <span>First Name</span>
+          <input id="signupFirstName" type="text" placeholder="Alex" required>
+        </label>
+        <label>
+          <span>Last Name</span>
+          <input id="signupLastName" type="text" placeholder="Investor">
+        </label>
+        <label>
+          <span>Email</span>
+          <input id="signupEmail" type="email" placeholder="you@example.com" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="signupPassword" type="password" placeholder="Create a secure password" required>
+        </label>
+        <button type="submit" class="btn-primary auth-submit">Create Account</button>
+      </form>
+    </div>
+  </div>
+
+  <header class="hero">
+    <div class="badge">Public Beta • Instant Access</div>
+    <h1>Build & Test AI Execution Plans</h1>
+    <p>Transform raw natural-language ideas into structured output parameters instantly.</p>
+    
+    <div class="hero-input-container">
+      <input type="text" id="promptInput" placeholder="Describe your custom setup or logic here...">
+      <button id="generatePlanBtn" onclick="submitPrompt()" class="btn-primary">Generate Plan</button>
+    </div>
+    <div class="prompt-chips">
+      <button onclick="setPrompt('Build a liquidity sweep reversal setup')">Liquidity Sweep</button>
+      <button onclick="setPrompt('Simple breakout strategy with 1:2 risk ratio')">Breakout 1:2</button>
+    </div>
+
+    <div id="resultsPanel" class="results-panel hidden">
+      <h3>Execution Results</h3>
+      <div class="metrics-grid">
+        <div><span class="label">Win Rate</span><span id="winRate" class="val">--</span></div>
+        <div><span class="label">Max Drawdown</span><span id="drawdown" class="val">--</span></div>
+        <div><span class="label">Executions</span><span id="trades" class="val">--</span></div>
+        <div><span class="label">Profit Factor</span><span id="profitFactor" class="val">--</span></div>
+      </div>
+    </div>
+  </header>
+
+  <section class="news-section">
+    <div class="section-heading">
+      <h2>Forex Factory News</h2>
+      <span class="news-source">Best-effort public feed</span>
+    </div>
+    <div id="newsList" class="news-list"></div>
+  </section>
+
+  <section id="workflow" class="workflow-section">
+    <h2>Prompt to Output in 3 Steps</h2>
+    <div class="steps-grid">
+      <div class="step-card">
+        <span class="step-num">01</span>
+        <h3>Write the Logic</h3>
+        <p>Turn plain English into exact parameters.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">02</span>
+        <h3>Analyze Results</h3>
+        <p>Check key execution metrics and performance.</p>
+      </div>
+      <div class="step-card">
+        <span class="step-num">03</span>
+        <h3>Refine Iterations</h3>
+        <p>Keep history and adjustments together.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing" class="pricing-section">
+    <h2>Transparent Plans</h2>
+    <div class="pricing-grid">
+      {% for tier in tiers %}
+        <div class="price-card {% if tier.featured %}featured{% endif %}">
+          {% if tier.featured %}<div class="popular-badge">Best Value</div>{% endif %}
+          <h3>{{ tier.name }}</h3>
+          <div class="price">{{ tier.price }}<span>/mo</span></div>
+          <p>{{ tier.credits }}</p>
+          <button class="btn-primary">{{ tier.cta }}</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <script src="{{ url_for('static', filename='js/common.js') }}" defer></script>
+</body>
+</html>
