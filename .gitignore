@@ -1,0 +1,4 @@
+# Downloaded ML model artifacts are deployed locally, never committed.
+quant-app-v1/backend/models/
+.github/prompts
+.playwright-mcp

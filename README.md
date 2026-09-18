@@ -21,3 +21,21 @@ This application provides a real-time, multi-faceted dashboard for quantitative 
 - `src/components/features/PatternList.tsx`: Displays detected trading patterns.
 - `src/components/features/NewsTerminal.tsx`: Displays sentiment analysis from the backend.
 
+## Forecasting and portfolio allocation
+
+Gateway now exposes two optional quantitative integrations:
+
+- `POST /forecast/kronos` turns supplied OHLCV chart bars into a probabilistic Kronos forecast. The local base model and tokenizer live in `quant-app-v1/backend/models/kronos/`. Clone [Kronos](https://github.com/shiyu-coder/Kronos), install its requirements, and set `KRONOS_REPO_PATH` to that checkout so Gateway can load its model classes. The endpoint remains unavailable (HTTP 503 with an actionable message) until this is configured; the dashboard itself continues to work.
+- `POST /portfolio/optimize` uses [skfolio](https://github.com/skfolio/skfolio) to produce allocations from aligned price data. It supports `hrp` (default) and `mean_risk` methods. Install the project requirements to enable it.
+
+Example allocation request:
+
+```json
+{
+  "method": "hrp",
+  "prices": {
+    "AAPL": [190.1, 191.4, 190.7],
+    "MSFT": [420.0, 422.3, 421.1]
+  }
+}
+```

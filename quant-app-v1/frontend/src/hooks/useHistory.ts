@@ -8,6 +8,7 @@ import type { HistoryCandle } from "../types/market";
  * @param ticker The stock ticker symbol (e.g., "AAPL").
  * @returns An object containing the fetched data, loading state, and any error encountered.
  */
+export function useHistory(ticker: string) {
   const [data, setData] = useState<HistoryCandle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

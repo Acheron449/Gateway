@@ -1,12 +1,16 @@
 from __future__ import annotations
+
+import asyncio
+import os
 import time
-from dataclasses import dataclasses
-from typing import List, Tuple, Optional
-from asyncio import Queue, Event, PatternDetail
+from dataclasses import dataclass
+from typing import Any, List
+
+import pandas as pd
 
 # --- Data Models ---
 
-@dataclasses.dataclass
+@dataclass
 class TickData:
     """Represents a single market data point."""
     timestamp: float # Unix timestamp or similar high-precision float
@@ -14,12 +18,12 @@ class TickData:
     volume: int
     # Other relevant fields like bid/ask size, etc.
 
-@dataclasses.dataclass
+@dataclass
 class SignalPayload:
     """Data package received from external providers (e.g., News/Technical Analysis)."""
     timestamp: float
     sentiment_score: float
-    pattern_features: List[PatternDetail] # This is the list from impact_model.py
+    pattern_features: List[Any]  # Signals from impact_model.py.
 
 class MarketDataIngestor:
     """
@@ -63,3 +67,33 @@ class MarketDataIngestor:
     def start_live_feeds(self):
         self.is_live = True
         print("Data Ingestion is LIVE.")
+
+
+def _alpaca_credentials() -> tuple[str, str] | None:
+    """Return configured Alpaca credentials without exposing them to callers."""
+    key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    return (key, secret) if key and secret else None
+
+
+def _stock_feed() -> str:
+    return "sip" if os.getenv("ALPACA_STOCK_FEED", "").upper() == "SIP" else "iex"
+
+
+async def fetch_ohlcv(ticker: str, limit: int = 500) -> pd.DataFrame:
+    """Fetch a normalized OHLCV frame for analysis and forecasting routes.
+
+    yfinance is already a Gateway dependency and provides a credentials-free
+    historical fallback; providers that require credentials remain responsible
+    for real-time streaming in ``api.main``.
+    """
+    def _fetch() -> pd.DataFrame:
+        import yfinance as yf
+
+        result = yf.Ticker(ticker.upper()).history(period="2y", interval="1d", auto_adjust=False)
+        if result.empty:
+            raise ValueError(f"No historical OHLCV data found for '{ticker.upper()}'")
+        result = result.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close", "Volume": "Volume"})
+        return result[["Open", "High", "Low", "Close", "Volume"]].tail(max(2, min(limit, 2000))).copy()
+
+    return await asyncio.to_thread(_fetch)

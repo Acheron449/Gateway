@@ -13,6 +13,11 @@ numpy                 # High-performance numerical operations
 pandas-ta             # Professional technical analysis library (RSI, EMA, etc.)
 scipy                 # Used for advanced statistics and signal processing
 scikit-learn          # For pattern recognition and regime detection (K-Means/Linear Regression)
+skfolio               # Portfolio construction and risk-aware allocation (optional API module)
+
+# --- Financial Foundation Forecasting (optional) ---
+# Kronos is installed from its upstream repository; set KRONOS_REPO_PATH to its checkout.
+# Its requirements include torch and Hugging Face model dependencies.
 
 # --- Data Fetching & Networking ---
 httpx                 # Modern, async HTTP client (faster than 'requests' for APIs)

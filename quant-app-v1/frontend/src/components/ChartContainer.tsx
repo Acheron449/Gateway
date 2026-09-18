@@ -7,6 +7,7 @@ import type { PatternSignal } from "../types/market";
 import { MainChart } from "./charts/MainChart";
 import { IndicatorOverlay } from "./charts/IndicatorOverlay";
 import { PatternList } from "./features/PatternList";
+import { KronosForecast } from "./features/KronosForecast";
 
 export interface ChartContainerProps {
   ticker: string;
@@ -61,6 +62,7 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
         </span>
       </div>
       <MainChart ticker={ticker} historyData={data} loading={loading} liveUpdate={liveUpdate} />
+      <KronosForecast bars={data} />
       <PatternList activePatterns={patterns} onZoomToPattern={handleZoomToPattern} />
     </div>
   );
