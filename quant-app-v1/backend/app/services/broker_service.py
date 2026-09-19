@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import os
 import asyncio
 from typing import Literal, Optional
@@ -24,6 +25,13 @@ class OrderStatus(str, Enum):
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+
+
+class OrderValidationError(ValueError):
+    """An order is malformed or attempts an unsupported execution mode."""
+
+
+_PLACEHOLDER_SYMBOLS = {"", "TICK", "SAMPLE_STOCK", "SYMBOL", "PLACEHOLDER", "N/A"}
 
 @dataclass
 class Order:
@@ -159,6 +167,8 @@ class BrokerService:
     Also initializes the local DB for simulated order persistence.
     """
     def __init__(self, api_key: str = '', api_secret: str = '', paper_trading: bool = True, provider_preference: Optional[str] = None, slippage_pct: float | None = None, fee_per_order: float | None = None):
+        if not paper_trading:
+            raise OrderValidationError("Live execution is unavailable. Gateway only supports paper mode.")
         self.api_key = api_key
         self.api_secret = api_secret
         self.paper_trading = paper_trading
@@ -170,6 +180,8 @@ class BrokerService:
         self._alpaca_key = api_key or os.getenv('ALPACA_API_KEY') or os.getenv('ALPACA_KEY')
         self._alpaca_secret = api_secret or os.getenv('ALPACA_SECRET') or os.getenv('ALPACA_API_SECRET')
         self._alpaca_base = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
+        if "paper-api.alpaca.markets" not in self._alpaca_base:
+            raise OrderValidationError("ALPACA_BASE_URL must be Alpaca's paper endpoint during Phase 0")
         self._finnhub_key = os.getenv('FINNHUB_API_KEY')
 
         # Ensure DB tables exist for simulated orders/backtests
@@ -211,9 +223,7 @@ class BrokerService:
 
     async def place_order(self, order: Order) -> Optional[str]:
         """Places an order via the selected provider. Returns a broker order id or None on error."""
-        if order.quantity <= 0:
-            print('BrokerService: Invalid order quantity')
-            return None
+        self._validate_order(order)
 
         try:
             broker_id = await self.provider.place_order(order)
@@ -278,6 +288,18 @@ class BrokerService:
                 except Exception as e2:
                     print(f'BrokerService: Fallback also failed: {e2}')
             return None
+
+    @staticmethod
+    def _validate_order(order: Order) -> None:
+        symbol = order.symbol.strip().upper() if isinstance(order.symbol, str) else ""
+        if symbol in _PLACEHOLDER_SYMBOLS or not symbol.isalnum() or len(symbol) > 12:
+            raise OrderValidationError("A supported, non-placeholder US-equity symbol is required")
+        if not isinstance(order.quantity, (int, float)) or not math.isfinite(order.quantity) or order.quantity <= 0:
+            raise OrderValidationError("Order quantity must be a positive finite number")
+        if not isinstance(order.entry_price, (int, float)) or not math.isfinite(order.entry_price) or order.entry_price <= 0:
+            raise OrderValidationError("Order price must be a positive finite number")
+        if order.side not in {OrderSide.BUY, OrderSide.SELL}:
+            raise OrderValidationError("Order side must be BUY or SELL")
 
     async def get_order_status(self, broker_order_id: str) -> ExecutionReport:
         try:

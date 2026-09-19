@@ -21,8 +21,9 @@ from app.api.v1.backtest import router as backtest_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
-from app.services.news_provider import fetch_forex_factory_news
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
+from app.config import get_settings
+from app.services.provenance import candle_provenance
 
 
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
@@ -312,7 +313,8 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="Quant App API", version="0.1.0", lifespan=lifespan)
+settings = get_settings()
+app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
 app.include_router(stocks_router)
 app.include_router(analysis_router)
@@ -328,13 +330,24 @@ def home() -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "execution_mode": settings.execution_mode,
+        "capabilities": settings.capabilities,
+    }
 
 
 @app.get("/news/forex-factory")
 async def get_forex_factory_news(limit: int = 5) -> list[dict[str, Any]]:
-    """Expose a ForexFactory-based news feed for trading and model research."""
-    return await fetch_forex_factory_news(limit=limit)
+    """Explicitly unavailable until a licensed structured news provider is selected."""
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "News/calendar data is unavailable. Gateway does not expose scraped or fallback "
+            "Forex Factory content as a timely market-data source."
+        ),
+    )
 
 
 TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
@@ -382,7 +395,17 @@ async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dic
     resampled = _resample_candles(chart_data, tf)
     if limit and len(resampled) > 0:
         resampled = resampled[-max(10, min(int(limit), 2000)):]
-    return resampled
+    return [
+        {
+            **candle,
+            **candle_provenance(
+                source="alpaca",
+                data_time=int(candle["time"]),
+                coverage=f"US equities / {tf}",
+            ),
+        }
+        for candle in resampled
+    ]
 
 
 @app.get("/market/{ticker}/history")

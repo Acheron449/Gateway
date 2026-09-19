@@ -2,6 +2,25 @@
 
 This application provides a real-time, multi-faceted dashboard for quantitative market analysis. It integrates REST API data fetching with live WebSocket streams to provide comprehensive market monitoring.
 
+## Phase 0 operating mode
+
+Gateway currently supports **US-equities research and paper trading only**. Live execution is unavailable in every environment; startup rejects `GATEWAY_EXECUTION_MODE=live`. The legacy Forex Factory route is intentionally unavailable until a licensed structured news/calendar source has been selected.
+
+Start the backend from the repository root:
+
+```sh
+pip install -r requirements.txt
+export GATEWAY_ENV=local                 # local | test | paper | production
+export GATEWAY_EXECUTION_MODE=paper      # required in every profile
+export ALPACA_API_KEY=...                # optional; needed for /history
+export ALPACA_SECRET_KEY=...
+PYTHONPATH=quant-app-v1/backend uvicorn app.main:app --reload --port 8000
+```
+
+`GET /health` reports non-secret configured capabilities. Historical candles identify their provider, data timestamp, fetch timestamp, coverage, delay, and entitlement metadata. Without Alpaca credentials, `/history/{ticker}` returns a clear unavailable response instead of substituting data.
+
+Developer tests are declared in `requirements-dev.txt`.
+
 ## Key Features
 - **Live Charting:** Displays candlestick charts with live updates, technical indicators (RSI), and pattern detection overlays.
 - **Data Sources:**

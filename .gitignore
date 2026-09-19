@@ -2,3 +2,15 @@
 quant-app-v1/backend/models/
 .github/prompts
 .playwright-mcp
+ROADMAP_IMPLEMENTATION.prompt.md
+ROADMAP.md
+docs/phase-0-plan.md
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local runtime state
+quant-app-v1/quant_app.db
