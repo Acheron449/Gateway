@@ -19,6 +19,21 @@ PYTHONPATH=quant-app-v1/backend uvicorn app.main:app --reload --port 8000
 
 `GET /health` reports non-secret configured capabilities. Historical candles identify their provider, data timestamp, fetch timestamp, coverage, delay, and entitlement metadata. Without Alpaca credentials, `/history/{ticker}` returns a clear unavailable response instead of substituting data.
 
+### Application boundary
+
+Gateway ships **one owner surface per concern**. The React/Vite frontend and the
+FastAPI backend (`backend/app`) are the product; the legacy Flask `Gateway_app`
+prototype (`frontend/Gateway_app`, a frozen reference) must never couple to the
+product:
+
+- the FastAPI backend never imports Flask/`flask_session`/the legacy package, and
+- the legacy Flask surface never imports the FastAPI backend.
+
+This rule is enforced in CI by an offline static guard (`tests/test_phase0_boundary.py`)
+plus a runtime guard on the two startup runbooks. See
+[`docs/releases/phase-0-boundary.md`](docs/releases/phase-0-boundary.md) for the
+ownership map and developer-migration guidance.
+
 Symbol lookup is backed by a versioned US-equities instrument catalogue (`GET /catalogue` reports the version, `GET /catalogue/search` returns typed records). The catalogue lives in `quant-app-v1/backend/data/instruments/`; it is a small free snapshot and is intentionally not an exhaustive market listing.
 
 Start the frontend and backend from the repository root:
