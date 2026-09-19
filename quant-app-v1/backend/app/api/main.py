@@ -16,10 +16,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from app.api.v1.analysis import router as analysis_router
-from app.api.v1.stocks import router as stocks_router
 from app.api.v1.backtest import router as backtest_router
+from app.api.v1.catalogue import router as catalogue_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.portfolio import router as portfolio_router
+from app.api.v1.stocks import router as stocks_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
@@ -317,6 +318,7 @@ settings = get_settings()
 app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
 app.include_router(stocks_router)
+app.include_router(catalogue_router)
 app.include_router(analysis_router)
 app.include_router(backtest_router)
 app.include_router(forecast_router)

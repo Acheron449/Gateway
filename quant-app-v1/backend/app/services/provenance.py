@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+UTC_ISO = "%Y-%m-%dT%H:%M:%S.%fZ"
+
 
 def candle_provenance(*, source: str, data_time: int, coverage: str, delay_seconds: int | None = None) -> dict[str, Any]:
     fetched_at = datetime.now(timezone.utc)

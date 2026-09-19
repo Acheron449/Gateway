@@ -19,7 +19,31 @@ PYTHONPATH=quant-app-v1/backend uvicorn app.main:app --reload --port 8000
 
 `GET /health` reports non-secret configured capabilities. Historical candles identify their provider, data timestamp, fetch timestamp, coverage, delay, and entitlement metadata. Without Alpaca credentials, `/history/{ticker}` returns a clear unavailable response instead of substituting data.
 
-Developer tests are declared in `requirements-dev.txt`.
+Symbol lookup is backed by a versioned US-equities instrument catalogue (`GET /catalogue` reports the version, `GET /catalogue/search` returns typed records). The catalogue lives in `quant-app-v1/backend/data/instruments/`; it is a small free snapshot and is intentionally not an exhaustive market listing.
+
+Start the frontend and backend from the repository root:
+
+```sh
+# frontend
+cd quant-app-v1/frontend
+npm install
+npm run dev                                  # Vite on http://127.0.0.1:5173
+
+# backend (second terminal)
+cd quant-app-v1/backend
+export GATEWAY_ENV=local                      # local | test | paper | production
+export GATEWAY_EXECUTION_MODE=paper           # required in every profile
+export ALPACA_API_KEY=...                     # optional; needed for /history
+export ALPACA_SECRET_KEY=...
+PYTHONPATH=. uvicorn app.main:app --reload --port 8000
+```
+
+Developer tests are declared in `requirements-dev.txt`:
+
+```sh
+pip install -r requirements-dev.txt
+python -m pytest quant-app-v1/backend/tests/
+```
 
 ## Key Features
 - **Live Charting:** Displays candlestick charts with live updates, technical indicators (RSI), and pattern detection overlays.
