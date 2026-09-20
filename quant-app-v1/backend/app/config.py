@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     execution_mode: str = Field(default="paper", validation_alias=AliasChoices("execution_mode", "GATEWAY_EXECUTION_MODE"))
     market_data_provider: str = Field(default="alpaca", validation_alias=AliasChoices("market_data_provider", "MARKET_DATA_PROVIDER"))
 
+    # Phase 6 — OpenBB Open-Data Integration (AGPLv3 — legal review required before prod)
+    enable_openbb_data: bool = Field(default=False, validation_alias=AliasChoices("ENABLE_OPENBB_DATA", "enable_openbb_data"))
+    enable_openbb_server: bool = Field(default=False, validation_alias=AliasChoices("ENABLE_OPENBB_SERVER", "enable_openbb_server"))
+
     @field_validator("execution_mode")
     @classmethod
     def paper_only(cls, value: str) -> str:
@@ -38,6 +42,8 @@ class Settings(BaseSettings):
             "paper_execution": True,
             "live_execution": False,
             "alpaca_history": self.market_data_provider.lower() == "alpaca",
+            "openbb_data": self.enable_openbb_data,
+            "openbb_server": self.enable_openbb_server,
         }
 
 

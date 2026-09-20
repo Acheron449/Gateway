@@ -16,7 +16,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypedDict
 
+from app.config import get_settings
 from app.models import EconomicEvent, EventImportance, NewsItem, Provenance
+from app.providers.openbb_provider import OpenBBProvider, OpenBBConfig
+from app.providers.openbb_server_provider import OpenBBServerProvider
 
 # ---------------------------------------------------------------------------
 # Typed request / response shapes used across providers and the UI
@@ -352,9 +355,11 @@ def _store_api_key(provider: str, key: str) -> None:
 # instance keyed by the user's selection in the UI.
 # ---------------------------------------------------------------------------
 
-_PROVIDERS: Dict[str, MarketDataProvider] = {
+_PROVIDERS: Dict[str, type] = {
     "Finnhub": FinnhubProvider,
     "TradingView": TradingViewProvider,
+    "OpenBB": OpenBBProvider,
+    "OpenBB-Server": OpenBBServerProvider,
 }
 
 def get_provider(selected: str, api_key: Optional[str] = None) -> Optional[MarketDataProvider]:
@@ -367,6 +372,15 @@ def get_provider(selected: str, api_key: Optional[str] = None) -> Optional[Marke
     if api_key is None:
         api_key = _read_api_key(selected)
     try:
+        settings = get_settings()
+        if selected == "OpenBB":
+            if not settings.enable_openbb_data:
+                return None
+            return provider_class(OpenBBConfig())
+        if selected == "OpenBB-Server":
+            if not settings.enable_openbb_server:
+                return None
+            return provider_class()
         return provider_class(api_key=api_key)
     except Exception:
         return None

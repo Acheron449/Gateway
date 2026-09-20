@@ -9,6 +9,7 @@ import { StrategyStudio } from "./StrategyStudio";
 import { TradeJournal } from "./TradeJournal";
 import { RiskDashboard } from "./RiskDashboard";
 import { DivergenceScorecards } from "./DivergenceScorecards";
+import { ProviderSettings } from "./ProviderSettings";
 
 interface CenterCanvasProps {
   activeView: string;
@@ -126,6 +127,12 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
       return (
         <div className="canvas-view">
           <DivergenceScorecards />
+        </div>
+      );
+    case "settings":
+      return (
+        <div className="canvas-view">
+          <ProviderSettings />
         </div>
       );
     default:

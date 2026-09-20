@@ -28,10 +28,15 @@ from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
 from app.api.v1.live import router as live_router
 from app.api.v1.news import router as news_router
+from app.api.v1.openbb_routes import router as openbb_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.api.v1.risk import router as risk_router
+from app.api.v1.settings import router as settings_router
 from app.api.v1.stocks import router as stocks_router
 from app.api.v1.strategies import router as strategies_router
+from app.api.v1.watchlists import router as watchlists_router
+from app.api.v1.layouts import router as layouts_router
+from app.api.v1.preferences import router as preferences_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
@@ -377,8 +382,13 @@ app.include_router(strategies_router)  # Strategy Studio
 app.include_router(journal_router)  # Trade Journal
 app.include_router(risk_router)  # Risk Dashboard
 app.include_router(divergence_router)  # Divergence Scorecards
+app.include_router(settings_router)  # Settings
+app.include_router(openbb_router)  # OpenBB Data Integration
 
 # Protected routes (authentication required)
+app.include_router(watchlists_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(layouts_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(preferences_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])

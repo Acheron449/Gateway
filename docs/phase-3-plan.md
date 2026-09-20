@@ -5,7 +5,7 @@
 ```markdown
 # Phase 3 — Strategy Studio & Credible Backtesting (14–22 weeks)
 
-> Status: **Not started.** Planning only; prerequisites (Phase 1 shell/workspace + Phase 2 provider layer) not met. See `docs/phase-6-plan.md` for proposed data integration (parallel allowed).
+> Status: **Not started.** Planning only; prerequisites (Phase 2 provider layer + Phase 1 workspace) not met. See `docs/phase-5-prerequisites.md` (priority 3).
 
 ## User outcome
 

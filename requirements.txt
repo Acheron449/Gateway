@@ -29,6 +29,7 @@ alpaca-trade-api      # (Optional) If you choose Alpaca for real-time data
 alpaca-py             # Alpaca API client
 fastapi-utils          # Utilities for FastAPI, including rate limiting and caching
 finnhub-python         # For fetching financial data from Finnhub
+openbb                # OpenBB Platform for open financial data (AGPLv3)
 
 # --- Natural Language Processing (News/Global Events) ---
 beautifulsoup4        # For scraping news headlines if an API isn't available

@@ -153,3 +153,4 @@
 - Plan emitted during plan→build mode transition (user: "do what you need").
 - No edits made to source code; only `docs/phase-6-plan.md` created.
 - User's 8 clarifications resolved by default; if any must change, update this document's "Unresolved → Resolved" section and re-phase.
+Priority link: see docs/phase-5-prerequisites.md (priority 6)

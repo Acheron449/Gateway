@@ -49,13 +49,6 @@ class RuleType(StrEnum):
     EVENT = "event"
 
 
-@dataclass(frozen=True)
-class _Rule:
-    rule_type: RuleType
-    condition: str
-    params: dict[str, Any] = field(default_factory=dict)
-
-
 class EntryRule(BaseModel):
     condition: str = Field(description="Rule expression that must be satisfied to enter")
     params: dict[str, Any] = Field(default_factory=dict, description="Rule parameters")

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal";
+type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal" | "risk" | "divergence" | "settings";
 
 interface LeftSidebarProps {
   activeView: View;
@@ -26,9 +26,10 @@ export function LeftSidebar({
     workspace: true,
     myWork: true,
     watchlists: true,
+    settings: true,
   });
 
-  const toggleSection = (section: "workspace" | "myWork" | "watchlists") => {
+  const toggleSection = (section: "workspace" | "myWork" | "watchlists" | "settings") => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
@@ -140,6 +141,34 @@ export function LeftSidebar({
               ))}
             </div>
           </>
+        )}
+      </div>
+
+      <div className="sidebar-section">
+        <button
+          className="section-header"
+          onClick={() => toggleSection("settings")}
+          aria-expanded={expandedSections.settings}
+        >
+          <span className="section-icon">{expandedSections.settings ? "▼" : "▶"}</span>
+          <span className="section-title">Settings</span>
+        </button>
+        {expandedSections.settings && (
+          <ul className="nav-list" role="listbox" aria-label="Settings">
+            {[
+              { id: "settings", label: "Providers", icon: "🔧" },
+            ].map((item) => (
+              <li key={item.id} role="option" aria-selected={activeView === item.id}>
+                <button
+                  className={`nav-button ${activeView === item.id ? "active" : ""}`}
+                  onClick={() => setActiveView(item.id as View)}
+                >
+                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+                  <span className="nav-label">{item.label}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 

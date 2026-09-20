@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../../context/AuthContext";
 
-type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal";
+type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal" | "risk" | "divergence" | "settings";
 
 interface TopBarProps {
   activeView: View;
@@ -23,6 +23,9 @@ const NAV_ITEMS = [
   { id: "backtests", label: "Backtests", icon: "📊" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝" },
   { id: "journal", label: "Journal", icon: "📓" },
+  { id: "risk", label: "Risk", icon: "⚠️" },
+  { id: "divergence", label: "Divergence", icon: "📉" },
+  { id: "settings", label: "Settings", icon: "🔧" },
 ] as const;
 
 export function TopBar({

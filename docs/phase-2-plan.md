@@ -1,6 +1,6 @@
 # Phase 2 — Data, News & Macro Intelligence (8–14 weeks)
 
-> Status: **Not started.** Only planning/proposed. Completed upstream: Phase 0 (safety, catalogue, increment4, boundary) and Phase 1 slices 1.1–1.3 (Shell, Scanner, Workspace). Source: `docs/releases/` + codebase-memory (gen 2026-09-20, 1665 nodes).
+> Status: **Not started.** Only planning/proposed. Completed upstream: Phase 0 (safety, catalogue, increment4, boundary) and Phase 1 slices 1.1–1.3 (Shell, Scanner, Workspace). Dependencies: Phase 0 domain models partial (`models/` only strategy/user); `base.py` missing. See `docs/phase-5-prerequisites.md` (priority 2).
 
 ## User outcome
 
