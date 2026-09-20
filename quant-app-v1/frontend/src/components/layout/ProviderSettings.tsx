@@ -200,7 +200,6 @@ export function ProviderSettings() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; configured: boolean; news_count?: number; calendar_count?: number } | null>(null);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [newFernetKey, setNewFernetKey] = useState<string | null>(null);
-  const [showKey, setShowKey] = useState(false);
 
   const fetchProviders = useCallback(async () => {
     try {

@@ -30,6 +30,9 @@ alpaca-py             # Alpaca API client
 fastapi-utils          # Utilities for FastAPI, including rate limiting and caching
 finnhub-python         # For fetching financial data from Finnhub
 openbb                # OpenBB Platform for open financial data (AGPLv3)
+# openbb-api (phase 6 / port 6900 server) — install when Phase 6 design confirmed; AGPLv3 review required before prod
+openbb             # FastAPI server for openbb data (optional; confirm AGPLv3 before prod)
+# pytest / pytest-asyncio — Phase 0 PR 4 test/CI foundation (uncompleted); add to dev/test environment
 
 # --- Natural Language Processing (News/Global Events) ---
 beautifulsoup4        # For scraping news headlines if an API isn't available
@@ -46,6 +49,10 @@ loguru                # Advanced logging (vital for tracking calculation errors)
 cryptography          # Explicit for python-jose JWT and encryption hardening
 redis                 # Session/cache backend for flask_session / paper-trading state
 orjson                # Fast JSON for high-frequency backtest/paper feed serialization
+
+# --- Testing & Quality (Phase 0 PR 4 — still required) ---
+pytest>=7.0             # Unit / integration test framework (missing for PR 4)
+pytest-asyncio>=0.21    # Async test support for FastAPI provider layer
 
 # Note: Frontend build deps (React / Vite / TypeScript) live in
 # quant-app-v1/frontend/package.json and do not belong in this file.

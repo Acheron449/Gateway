@@ -873,4 +873,154 @@ def get_news_item(news_id: str) -> dict | None:
     return data
 
 
+# --- Phase 1.4 User & Preference helpers ---
+
+def create_user(user_id: str, email: str, hashed_password: str, name: str | None = None) -> None:
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, email, name, hashed_password, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, email, name, hashed_password, now),
+        )
+        conn.commit()
+
+
+def get_user_by_email(email: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_watchlist(wl_id: str, user_id: str, name: str, symbols: list[str]) -> None:
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO watchlists (id, user_id, name, symbols, created_at) VALUES (?, ?, ?, ?, ?)",
+            (wl_id, user_id, name, json.dumps(symbols), now),
+        )
+        conn.commit()
+
+
+def list_watchlists(user_id: str) -> list[dict]:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM watchlists WHERE user_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item['symbols'] = json.loads(item['symbols']) if item.get('symbols') else []
+        out.append(item)
+    return out
+
+
+def update_watchlist(wl_id: str, *, name: str | None = None, symbols: list[str] | None = None) -> None:
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        if name is not None:
+            cur.execute("UPDATE watchlists SET name = ?, created_at = ? WHERE id = ?", (name, now, wl_id))
+        if symbols is not None:
+            cur.execute("UPDATE watchlists SET symbols = ?, created_at = ? WHERE id = ?", (json.dumps(symbols), now, wl_id))
+        conn.commit()
+
+
+def delete_watchlist(wl_id: str) -> None:
+    init_db()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM watchlists WHERE id = ?", (wl_id,))
+        conn.commit()
+
+
+def upsert_layout(user_id: str, symbol: str, tab: str, timeframe: str, indicators: list[str], inspector_width: int) -> None:
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO layouts (id, user_id, symbol, tab, timeframe, indicators, inspector_width, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, symbol) DO UPDATE SET tab = ?, timeframe = ?, indicators = ?, inspector_width = ?, updated_at = ?""",
+            (f"{user_id}_{symbol}", user_id, symbol, tab, timeframe, json.dumps(indicators), inspector_width, now, now, tab, timeframe, json.dumps(indicators), inspector_width, now),
+        )
+        conn.commit()
+
+
+def get_layout(user_id: str, symbol: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM layouts WHERE user_id = ? AND symbol = ?", (user_id, symbol)).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item['indicators'] = json.loads(item['indicators']) if item.get('indicators') else []
+    return item
+
+
+def list_layouts(user_id: str) -> list[dict]:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM layouts WHERE user_id = ?", (user_id,)).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item['indicators'] = json.loads(item['indicators']) if item.get('indicators') else []
+        out.append(item)
+    return out
+
+
+def delete_layout(user_id: str, symbol: str) -> None:
+    init_db()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM layouts WHERE user_id = ? AND symbol = ?", (user_id, symbol))
+        conn.commit()
+
+
+def get_preferences(user_id: str) -> dict:
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM preferences WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        return {"theme": "dark", "default_timezone": "UTC", "watchlists": [], "saved_layouts": {}}
+    item = dict(row)
+    item['watchlists'] = json.loads(item['watchlists']) if item.get('watchlists') else []
+    item['saved_layouts'] = json.loads(item['saved_layouts']) if item.get('saved_layouts') else {}
+    return item
+
+
+def upsert_preferences(user_id: str, *, theme: str | None = None, default_timezone: str | None = None, watchlists: list | None = None, saved_layouts: dict | None = None) -> None:
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO preferences (user_id, theme, default_timezone, watchlists, saved_layouts)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET theme = ?, default_timezone = ?, watchlists = ?, saved_layouts = ?""",
+            (user_id, theme or "dark", default_timezone or "UTC", json.dumps(watchlists or []), json.dumps(saved_layouts or {}),
+             theme or "dark", default_timezone or "UTC", json.dumps(watchlists or []), json.dumps(saved_layouts or {})),
+        )
+        conn.commit()
+
+
 # --- Event Snapshots for Backtest Reproducibility (Phase 2) ---
