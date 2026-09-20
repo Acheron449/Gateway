@@ -1,5 +1,5 @@
 import { useState } from "react";
-
+import Shell from "./components/layout/Shell";
 import { ChartContainer } from "./components/ChartContainer";
 import { Scanner } from "./components/Scanner";
 import { AssetSelector } from "./components/features/AssetSelector";
@@ -8,35 +8,58 @@ import { PaperTrading } from "./components/features/PaperTrading";
 
 export default function App() {
   const [ticker, setTicker] = useState("AAPL");
+  const [activeKey, setActiveKey] = useState("overview");
   const [activeTab, setActiveTab] = useState<"charts" | "paper">("charts");
 
-  return (
-    <div style={{ padding: "1rem", maxWidth: "1400px", margin: "0 auto", display: "grid", gap: "1rem" }}>
-      <header style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "flex-end" }}>
-        <AssetSelector value={ticker} onChange={setTicker} />
-        <Scanner onPickSymbol={setTicker} />
-        <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto" }}>
-          <button
-            onClick={() => setActiveTab("charts")}
-            className={`px-4 py-2 rounded-t-lg ${activeTab === "charts" ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
-          >
-            Charts
-          </button>
-          <button
-            onClick={() => setActiveTab("paper")}
-            className={`px-4 py-2 rounded-t-lg ${activeTab === "paper" ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
-          >
-            Paper Trading
-          </button>
-        </div>
-      </header>
-      {activeTab === "charts" && (
+  const renderContent = () => {
+    if (activeKey === "overview") {
+      return (
         <>
-          <ChartContainer ticker={ticker} />
-          <NewsTerminal ticker={ticker} />
+          <header style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "flex-end", marginBottom: 12 }}>
+            <AssetSelector value={ticker} onChange={setTicker} />
+            <Scanner onPickSymbol={setTicker} />
+            <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto" }}>
+              <button
+                onClick={() => setActiveTab("charts")}
+                className={`px-4 py-2 rounded-t-lg ${activeTab === "charts" ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
+              >
+                Charts
+              </button>
+              <button
+                onClick={() => setActiveTab("paper")}
+                className={`px-4 py-2 rounded-t-lg ${activeTab === "paper" ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
+              >
+                Paper Trading
+              </button>
+            </div>
+          </header>
+          {activeTab === "charts" && (
+            <>
+              <ChartContainer ticker={ticker} />
+              <NewsTerminal ticker={ticker} />
+            </>
+          )}
+          {activeTab === "paper" && <PaperTrading />}
         </>
-      )}
-      {activeTab === "paper" && <PaperTrading />}
-    </div>
+      );
+    }
+    if (activeKey === "scanner") {
+      return <Scanner onPickSymbol={setTicker} />;
+    }
+    if (activeKey === "paper") {
+      return <PaperTrading />;
+    }
+    return (
+      <div style={{ color: "#8b949e" }}>
+        <h2 style={{ fontSize: 18, marginBottom: 8 }}>{activeKey}</h2>
+        <p>Placeholder for {activeKey} — Slice 1.{activeKey === "markets" ? 2 : 3} delivers full workspace.</p>
+      </div>
+    );
+  };
+
+  return (
+    <Shell activeKey={activeKey} onNavigate={setActiveKey}>
+      {renderContent()}
+    </Shell>
   );
 }
