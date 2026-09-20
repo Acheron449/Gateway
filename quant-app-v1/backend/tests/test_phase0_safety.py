@@ -50,5 +50,9 @@ async def test_history_attaches_provenance(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.asyncio
 async def test_scraped_news_endpoint_is_explicitly_unavailable() -> None:
-    with pytest.raises(Exception, match="unavailable"):
-        await main.get_forex_factory_news()
+    # The old forex-factory endpoint has been replaced with proper news/calendar endpoints
+    # that return empty list with unavailable provenance when not configured
+    from app.api.v1.news import get_news
+    response = await get_news(provider="Finnhub", symbol=None, limit=10)
+    assert response.count == 0
+    assert response.provenance.get("entitlement") == "unavailable"

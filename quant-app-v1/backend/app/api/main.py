@@ -23,9 +23,15 @@ from app.api.v1.analysis import router as analysis_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.backtest import router as backtest_router
 from app.api.v1.catalogue import router as catalogue_router
+from app.api.v1.divergence import router as divergence_router
 from app.api.v1.forecast import router as forecast_router
+from app.api.v1.journal import router as journal_router
+from app.api.v1.live import router as live_router
+from app.api.v1.news import router as news_router
 from app.api.v1.portfolio import router as portfolio_router
+from app.api.v1.risk import router as risk_router
 from app.api.v1.stocks import router as stocks_router
+from app.api.v1.strategies import router as strategies_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
@@ -366,6 +372,11 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Public routes (no authentication required)
 app.include_router(auth_router)
 app.include_router(catalogue_router)  # Public catalogue access
+app.include_router(news_router)  # Public news/calendar access
+app.include_router(strategies_router)  # Strategy Studio
+app.include_router(journal_router)  # Trade Journal
+app.include_router(risk_router)  # Risk Dashboard
+app.include_router(divergence_router)  # Divergence Scorecards
 
 # Protected routes (authentication required)
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
@@ -373,6 +384,7 @@ app.include_router(analysis_router, dependencies=[Depends(get_current_user_optio
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
 
 
 @app.get("/")
@@ -389,18 +401,6 @@ async def health(request: Request) -> dict:
         "execution_mode": settings.execution_mode,
         "capabilities": settings.capabilities,
     }
-
-
-@app.get("/news/forex-factory")
-async def get_forex_factory_news(limit: int = 5) -> list[dict[str, Any]]:
-    """Explicitly unavailable until a licensed structured news provider is selected."""
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "News/calendar data is unavailable. Gateway does not expose scraped or fallback "
-            "Forex Factory content as a timely market-data source."
-        ),
-    )
 
 
 TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}

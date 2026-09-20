@@ -1,0 +1,28 @@
+# Gateway — LLM Discovery Index
+
+## Overview
+Open-data platform integration (OpenBB, AGPLv3) + controlled live execution (Alpaca, Phase 5) gateway. Phases 0–7 document architecture, prerequisites, and rollout.
+
+## Sections (all at /docs/)
+- Phase 0 Plan
+- Phase 1 Plan
+- Phase 2 Plan
+- Phase 3 Plan
+- Phase 4 Plan
+- Phase 5 Plan (live broker — prerequisites not met; alpaca_live.py draft)
+- Phase 6 Plan (OpenBB open-data integration — build transition; both package + server)
+- Phase 7 Plan (SEO / sitemap / robots / llms.txt / backlinks / Core Web Vitals / HTTPS)
+
+## Key References
+- https://github.com/OpenBB-finance/OpenBB (AGPLv3, open data platform; pip install openbb; openbb-api port 6900)
+- https://github.com/alpaca-trade-api (broker adapter reference — Phase 5)
+
+## Endpoints / Artifacts
+- /llms.txt (this file)
+- /sitemap.xml (crawl map)
+- /robots.txt (crawlers allowed /docs/)
+- /docs/phase-7-plan.md (current phase)
+- /docs/phase-6-plan.md (OpenBB integration plan)
+
+## Backlink / Citation Strategy
+- OpenBB repo cited; Alpaca docs cited; FINRA/SEC references for Phase 5; partner/data-source citations per Slice 7.7.

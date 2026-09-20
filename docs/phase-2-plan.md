@@ -1,5 +1,7 @@
 # Phase 2 — Data, News & Macro Intelligence (8–14 weeks)
 
+> Status: **Not started.** Only planning/proposed. Completed upstream: Phase 0 (safety, catalogue, increment4, boundary) and Phase 1 slices 1.1–1.3 (Shell, Scanner, Workspace). Source: `docs/releases/` + codebase-memory (gen 2026-09-20, 1665 nodes).
+
 ## User outcome
 
 Gateway has dependable context for US equities without HTML scraping. Provider adapters return normalized records with full provenance (source, fetched_at, data_time, coverage, delay, entitlement). Licensed calendar/news provider integrated. Historical event snapshots enable reproducible backtests. Chart shows event markers with detail inspector.

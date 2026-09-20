@@ -5,6 +5,8 @@
 ```markdown
 # Phase 3 — Strategy Studio & Credible Backtesting (14–22 weeks)
 
+> Status: **Not started.** Planning only; prerequisites (Phase 1 shell/workspace + Phase 2 provider layer) not met. See `docs/phase-6-plan.md` for proposed data integration (parallel allowed).
+
 ## User outcome
 
 Natural-language assistance produces a typed, reviewable strategy specification — not an opaque execution plan. User inspects and approves explicit rules before any run. Backtests use realistic costs (commission, spread, slippage, latency, FX, corporate actions), deterministic replay, and produce immutable receipts with OOS validation. Strategy Vault tracks versions with promotion statuses.

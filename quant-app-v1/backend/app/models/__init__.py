@@ -176,6 +176,133 @@ class Strategy(BaseModel):
     versions: list[StrategyVersion] = Field(default_factory=list)
 
 
+class Timeframe(StrEnum):
+    M1 = "1m"
+    M5 = "5m"
+    M15 = "15m"
+    H1 = "1h"
+    H4 = "4h"
+    D1 = "1d"
+
+
+class RuleType(StrEnum):
+    ENTRY = "entry"
+    EXIT = "exit"
+    SIZING = "sizing"
+    INVALIDATION = "invalidation"
+    SESSION = "session"
+    EVENT = "event"
+
+
+class BaseRule(BaseModel):
+    """Base class for all rule types with common fields."""
+    id: str
+    type: RuleType
+    description: str = ""
+    enabled: bool = True
+    priority: int = 0  # Higher priority rules evaluated first
+
+
+class EntryRule(BaseRule):
+    """A typed entry condition rule."""
+    type: RuleType = RuleType.ENTRY
+    # Condition expressed as a structured expression (e.g., for a rule engine)
+    condition: dict = Field(default_factory=dict, description="Structured condition: {'indicator': 'RSI', 'operator': '<', 'value': 30}")
+    # Legacy human-readable text (kept for backwards compatibility)
+    text: str = ""
+
+
+class ExitRule(BaseRule):
+    """A typed exit condition rule."""
+    type: RuleType = RuleType.EXIT
+    condition: dict = Field(default_factory=dict)
+    text: str = ""
+    # Exit can be take-profit, stop-loss, or signal-based
+    exit_type: str = "signal"  # "signal" | "take_profit" | "stop_loss" | "time"
+
+
+class SizingRule(BaseRule):
+    """A typed position sizing rule."""
+    type: RuleType = RuleType.SIZING
+    method: str = "fixed_fractional"  # "fixed_fractional" | "kelly" | "volatility_target" | "fixed_size"
+    parameters: dict = Field(default_factory=dict, description="Method-specific params, e.g., {'risk_per_trade': 0.02}")
+    text: str = ""
+
+
+class InvalidationRule(BaseRule):
+    """A typed invalidation/stop rule."""
+    type: RuleType = RuleType.INVALIDATION
+    condition: dict = Field(default_factory=dict)
+    text: str = ""
+
+
+class SessionRule(BaseRule):
+    """A typed session/time window rule."""
+    type: RuleType = RuleType.SESSION
+    timezone: str = "UTC"
+    allowed_sessions: list[str] = Field(default_factory=list, description="e.g., ['RTH', 'PRE', 'POST']")
+    blocked_windows: list[dict] = Field(default_factory=list, description="e.g., [{'start': '14:30', 'end': '15:00'}]")
+    text: str = ""
+
+
+class EventRule(BaseRule):
+    """A typed economic event rule."""
+    type: RuleType = RuleType.EVENT
+    event_importance: list[str] = Field(default_factory=list, description="e.g., ['high', 'medium']")
+    blackout_minutes_before: int = 15
+    blackout_minutes_after: int = 15
+    allowed_currencies: list[str] = Field(default_factory=list)
+    blocked_currencies: list[str] = Field(default_factory=list)
+    text: str = ""
+
+
+class Assumptions(BaseModel):
+    """Cost and execution assumptions for a backtest."""
+    commission_per_share: float = 0.005
+    commission_min: float = 1.0
+    spread_bps: float = 1.0  # bid-ask spread in basis points
+    slippage_bps: float = 2.0  # expected slippage in basis points
+    latency_ms: int = 50  # simulated order latency
+    borrow_cost_annual_bps: float = 0.0  # for short positions
+    funding_rate_bps: float = 0.0  # for leveraged positions
+
+
+class StrategySpec(BaseModel):
+    """A complete, versioned, typed strategy specification for the Strategy Studio."""
+    strategy_id: str
+    version: int = Field(ge=1)
+    name: str
+    description: str = ""
+    universe: list[str] = Field(default_factory=list, description="Catalogue symbols")
+    timeframe: Timeframe = Timeframe.H1
+    entry_rules: list[EntryRule] = Field(default_factory=list)
+    exit_rules: list[ExitRule] = Field(default_factory=list)
+    sizing_rules: list[SizingRule] = Field(default_factory=list)
+    invalidation_rules: list[InvalidationRule] = Field(default_factory=list)
+    session_rules: list[SessionRule] = Field(default_factory=list)
+    event_rules: list[EventRule] = Field(default_factory=list)
+    assumptions: Assumptions = Field(default_factory=Assumptions)
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: str | None = None
+
+    def to_legacy_version(self, strategy_id: str) -> "StrategyVersion":
+        """Convert to legacy StrategyVersion for backwards compatibility."""
+        return StrategyVersion(
+            strategy_id=strategy_id,
+            version=self.version,
+            universe=self.universe,
+            timeframe=self.timeframe.value,
+            entry_rules=[r.text or str(r.condition) for r in self.entry_rules if r.enabled],
+            exit_rules=[r.text or str(r.condition) for r in self.exit_rules if r.enabled],
+            sizing_rules=[r.text or f"{r.method}:{r.parameters}" for r in self.sizing_rules if r.enabled],
+            invalidation_rules=[r.text or str(r.condition) for r in self.invalidation_rules if r.enabled],
+            session_rules=[r.text or f"{r.allowed_sessions}" for r in self.session_rules if r.enabled],
+            event_rules=[r.text or f"{r.event_importance}" for r in self.event_rules if r.enabled],
+            assumptions=self.assumptions.model_dump(),
+        )
+
+
 class StrategyVersion(BaseModel):
     """An immutable strategy specification snapshot that a backtest binds to."""
 

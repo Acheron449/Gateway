@@ -30,12 +30,12 @@ class ProviderMeta(TypedDict):
     rate_limit_per_min: Optional[int]
 
 
-class ProviderConfig(TypedDict):
+class ProviderConfig(TypedDict, total=False):
     api_key: str  # encrypted at rest
     # provider‑specific flags
     paper_trading: bool
     # any extra keys the concrete provider may need
-    [str]: Any
+    extra: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------

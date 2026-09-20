@@ -1,130 +1,59 @@
-"""Authentication API routes."""
+import os
+from fastapi import APIRouter, HTTPException
+from jose import jwt, JWTError
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+from app.models.user import User, UserPreferences
 
-from __future__ import annotations
+router = APIRouter()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-from datetime import timedelta
-from typing import Annotated
+SECRET = os.getenv("JWT_SECRET_KEY")
+if not SECRET:
+    raise RuntimeError("JWT_SECRET_KEY must be set — failure-closed")
+ALGORITHM = "HS256"
+ACCESS_EXPIRE = timedelta(minutes=30)
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+_users_db = {}
 
-from app.auth import (
-    create_access_token,
-    get_current_user,
-    CurrentUser,
-)
+def _token(data: dict, expires: timedelta = ACCESS_EXPIRE):
+    to_encode = data.copy()
+    to_encode["exp"] = datetime.utcnow() + expires
+    return jwt.encode(to_encode, SECRET, algorithm=ALGORITHM)
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+@router.post("/register")
+def register(email: str, password: str):
+    if email in _users_db:
+        raise HTTPException(status_code=400, detail="User exists")
+    u = User(id=str(len(_users_db)+1), email=email, hashed_password=pwd_context.hash(password))
+    _users_db[email] = u
+    return {"id": u.id, "email": u.email}
 
-# Stricter rate limiter for auth endpoints
-auth_limiter = Limiter(key_func=get_remote_address, default_limits=["5/minute", "20/hour"])
+@router.post("/login")
+def login(email: str, password: str):
+    u = _users_db.get(email)
+    if not u or not pwd_context.verify(password, u.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {"access_token": _token({"sub": u.email}), "token_type": "bearer"}
 
-
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str
-    name: str | None = None
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: dict
-
-
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    name: str | None = None
-
-
-# In-memory user store (replace with database in production)
-# In production, use proper user database with hashed passwords
-_users_db: dict[str, dict] = {}
-
-
-def hash_password(password: str) -> str:
-    """Hash password using bcrypt."""
-    import bcrypt
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
-
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash."""
-    import bcrypt
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-@auth_limiter.limit("5/minute")
-async def register(request: Request, register_request: RegisterRequest) -> TokenResponse:
-    """Register a new user."""
-    if register_request.email in _users_db:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered"
-        )
-    
-    user_id = register_request.email  # Use email as user_id for simplicity
-    hashed_password = hash_password(register_request.password)
-    
-    _users_db[register_request.email] = {
-        "id": user_id,
-        "email": register_request.email,
-        "name": register_request.name,
-        "password_hash": hashed_password,
-    }
-    
-    access_token = create_access_token(
-        data={"sub": user_id, "email": register_request.email},
-        expires_delta=timedelta(minutes=60 * 24)
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        user={"id": user_id, "email": register_request.email, "name": register_request.name}
-    )
-
-
-@router.post("/login", response_model=TokenResponse)
-@auth_limiter.limit("5/minute")
-async def login(request: Request, login_request: LoginRequest) -> TokenResponse:
-    """Login and get access token."""
-    user = _users_db.get(login_request.email)
-    if not user or not verify_password(login_request.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
-        )
-    
-    access_token = create_access_token(
-        data={"sub": user["id"], "email": user["email"]},
-        expires_delta=timedelta(minutes=60 * 24)
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        user={"id": user["id"], "email": user["email"], "name": user.get("name")}
-    )
-
-
-@router.get("/me", response_model=UserResponse)
-async def get_me(current_user: CurrentUser) -> UserResponse:
-    """Get current user info."""
-    user = _users_db.get(current_user.email)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return UserResponse(id=user["id"], email=user["email"], name=user.get("name"))
-
+@router.get("/me")
+def me(token: str):
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        return _users_db.get(email, None)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 @router.post("/logout")
-async def logout() -> dict:
-    """Logout (client-side token removal)."""
-    return {"message": "Logged out successfully"}
+def logout():
+    return {"message": "Logged out; client should discard token"}
+
+@router.post("/refresh")
+def refresh(token: str):
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[ALGORITHM], options={"verify_exp": False})
+        email = payload.get("sub")
+        return {"access_token": _token({"sub": email})}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")

@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { useAuth } from "../../context/AuthContext";
+
 type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal";
 
 interface TopBarProps {
@@ -8,6 +10,8 @@ interface TopBarProps {
   setActiveView: (view: View) => void;
   selectedSymbol: string;
   setSelectedSymbol: (symbol: string) => void;
+  user: { id: string; email: string; name?: string } | null;
+  isAuthenticated: boolean;
 }
 
 const NAV_ITEMS = [
@@ -26,10 +30,14 @@ export function TopBar({
   setActiveView,
   selectedSymbol,
   setSelectedSymbol,
+  user,
+  isAuthenticated,
 }: TopBarProps) {
+  const { logout } = useAuth();
   const navigate = useNavigate();
   const [symbolInput, setSymbolInput] = useState(selectedSymbol);
   const symbolInputRef = useRef<HTMLInputElement>(null);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   useEffect(() => {
     setSymbolInput(selectedSymbol);
@@ -48,6 +56,12 @@ export function TopBar({
     setActiveView(viewId);
     navigate(`/${viewId}?symbol=${selectedSymbol}`);
   }, [navigate, selectedSymbol, setActiveView]);
+
+  const handleLogout = useCallback(() => {
+    logout();
+    setShowUserMenu(false);
+    navigate("/overview");
+  }, [logout, navigate]);
 
   return (
     <header className="top-bar" role="banner">
@@ -98,9 +112,32 @@ export function TopBar({
           <span className="mode-badge paper">Paper</span>
         </div>
         <div className="user-menu">
-          <button className="user-avatar" aria-label="User menu">
-            <span className="avatar-initial">U</span>
-          </button>
+          {isAuthenticated && user ? (
+            <>
+              <button
+                className="user-avatar"
+                aria-label="User menu"
+                onClick={() => setShowUserMenu(!showUserMenu)}
+              >
+                <span className="avatar-initial">{user.name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || "U"}</span>
+              </button>
+              {showUserMenu && (
+                <div className="user-dropdown">
+                  <div className="user-dropdown-header">
+                    <span className="user-dropdown-name">{user.name || user.email}</span>
+                    <span className="user-dropdown-email">{user.email}</span>
+                  </div>
+                  <button className="user-dropdown-item" onClick={handleLogout}>
+                    <span>🚪</span> Logout
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <button className="user-avatar" aria-label="Login" onClick={() => navigate("/login")}>
+              <span className="avatar-initial">👤</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

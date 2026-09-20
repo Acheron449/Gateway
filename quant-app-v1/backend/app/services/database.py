@@ -205,6 +205,30 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_id ON cash_ledger(portfolio_id)
             """
         )
+        # Event/News snapshots for backtest reproducibility (Phase 2)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_snapshots (
+                id TEXT PRIMARY KEY,
+                snapshot_type TEXT NOT NULL,  -- 'economic_event' | 'news'
+                event_id TEXT NOT NULL,
+                snapshot_data TEXT NOT NULL,  -- JSON serialized event/news
+                provider_version TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                UNIQUE(event_id, provider_version)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_snapshots_type ON event_snapshots(snapshot_type)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_snapshots_captured ON event_snapshots(captured_at)
+            """
+        )
         conn.commit()
 
 
@@ -532,3 +556,57 @@ def get_portfolio_events(portfolio_id: str, after_sequence: int = 0) -> list[dic
         ).fetchall()
     import json
     return [dict(r) | {'event_data': json.loads(r['event_data'])} for r in rows]
+
+
+# --- Event/News Snapshots for Backtest Reproducibility (Phase 2) ---
+
+def store_event_snapshot(
+    event_id: str,
+    snapshot_type: str,  # 'economic_event' | 'news'
+    event_data: dict,
+    provider_version: str,
+) -> str:
+    """Store an immutable snapshot of an event or news item for backtest reproducibility."""
+    init_db()
+    snapshot_id = str(uuid4())
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    import json
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT OR REPLACE INTO event_snapshots (id, snapshot_type, event_id, snapshot_data, provider_version, captured_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (snapshot_id, snapshot_type, event_id, json.dumps(event_data), provider_version, now),
+        )
+        conn.commit()
+    return snapshot_id
+
+
+def get_event_snapshot(event_id: str, provider_version: str) -> dict | None:
+    """Retrieve an event/news snapshot by event_id and provider_version."""
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT * FROM event_snapshots WHERE event_id = ? AND provider_version = ?""",
+            (event_id, provider_version)
+        ).fetchone()
+    if not row:
+        return None
+    import json
+    data = dict(row)
+    data['snapshot_data'] = json.loads(data['snapshot_data'])
+    return data
+
+
+def get_event_snapshots_by_type(snapshot_type: str, limit: int = 100) -> list[dict]:
+    """Get recent event snapshots of a specific type."""
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT * FROM event_snapshots WHERE snapshot_type = ? ORDER BY captured_at DESC LIMIT ?""",
+            (snapshot_type, limit)
+        ).fetchall()
+    import json
+    return [dict(r) | {'snapshot_data': json.loads(r['snapshot_data'])} for r in rows]

@@ -6,7 +6,7 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 
 ## Slices (in dependency order)
 
-### Slice 1.1: Application Shell & Navigation (Week 1–2)
+### Slice 1.1: Application Shell & Navigation (Week 1–2) — [x] done (`docs/releases/phase-1-slice-1.1.md`)
 **Depends on:** Phase 0 complete (React/Vite app running, catalogue endpoints working)
 
 **Deliverables**
@@ -22,7 +22,7 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 - Panels collapse cleanly at tablet/mobile widths
 - No raw JSON or prototype controls visible
 
-### Slice 1.2: Scanner as First-Class Product (Week 2–3)
+### Slice 1.2: Scanner as First-Class Product (Week 2–3) — [x] done (`docs/releases/phase-1-slice-1.2.md`)
 **Depends on:** Slice 1.1 (Shell provides route mount point), Phase 0 `/catalogue/search` endpoint
 
 **Deliverables**
@@ -37,7 +37,7 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 - Selecting a result opens instrument workspace with chart + metadata loaded
 - Filter presets documented and toggleable
 
-### Slice 1.3: Instrument Workspace & Right Inspector (Week 3–4)
+### Slice 1.3: Instrument Workspace & Right Inspector (Week 3–4) — [x] done (`docs/releases/phase-1-slice-1.3.md`)
 **Depends on:** Slice 1.1 (Canvas/Inspector zones), Phase 0 chart/indicator/pattern components
 
 **Deliverables**

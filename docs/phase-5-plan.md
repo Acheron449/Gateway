@@ -5,6 +5,8 @@
 ```markdown
 # Phase 5 — Controlled Live Execution (30+ weeks)
 
+> Status: **Blocked / not started.** All prerequisites (Phase 4 paper reconciliation ≥1000 trades <0.1%, security review, legal/compliance, written user authorization) unverified. `GATEWAY_EXECUTION_MODE=paper` remains default; `alpaca_live.py` is 3-line draft only.
+
 ## Prerequisites (ALL must be complete before starting)
 
 - [ ] Phase 4 paper reconciliation proven over ≥1000 paper trades with <0.1% discrepancy
