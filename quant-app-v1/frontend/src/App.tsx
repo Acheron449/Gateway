@@ -2,6 +2,7 @@ import { useState } from "react";
 import Shell from "./components/layout/Shell";
 import { ChartContainer } from "./components/ChartContainer";
 import { Scanner } from "./components/Scanner";
+import ScannerV2 from "./components/features/ScannerV2";
 import { AssetSelector } from "./components/features/AssetSelector";
 import { NewsTerminal } from "./components/features/NewsTerminal";
 import { PaperTrading } from "./components/features/PaperTrading";
@@ -44,7 +45,7 @@ export default function App() {
       );
     }
     if (activeKey === "scanner") {
-      return <Scanner onPickSymbol={setTicker} />;
+      return <ScannerV2 />;
     }
     if (activeKey === "paper") {
       return <PaperTrading />;
