@@ -264,7 +264,8 @@ class PaperPortfolioService:
             account_id=self.portfolio_id,
         )
 
-        self._emit(EventType.FILL, {
+        # Emit event and immediately apply it for real-time updates
+        fill_event_data = {
             "order_id": order_id,
             "instrument_id": instrument_id,
             "side": side.value,
@@ -273,26 +274,9 @@ class PaperPortfolioService:
             "commission": commission,
             "timestamp": timestamp,
             "liquidity": liquidity,
-        })
-
-        self._emit(EventType.POSITION_UPDATE, {
-            "instrument_id": instrument_id,
-            "quantity": 0,
-            "avg_cost": 0,
-            "market_value": 0,
-            "unrealized_pnl": 0,
-            "realized_pnl": 0,
-        })
-
-        self._emit(EventType.CASH_UPDATE, {
-            "cash": 0,
-            "equity": 0,
-            "buying_power": 0,
-            "amount": -(price * qty + commission) if side == OrderSide.BUY else (price * qty - commission),
-            "type": "fill",
-            "ref_id": fill.id,
-            "ref_type": "fill",
-        })
+        }
+        self._emit(EventType.FILL, fill_event_data)
+        self.apply_event(PortfolioEvent(EventType.FILL, fill_event_data, _now_utc()))
 
         return fill
 

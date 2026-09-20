@@ -6,6 +6,7 @@ pydantic-settings     # Manages your .env variables and API keys securely
 Flask==3.0.3          # Basic web framework for serving static files and simple endpoints
 bcrypt==4.0.1          # For password hashing and security
 flask_session==0.4.0      # For managing user sessions in Flask
+python-jose[cryptography]  # JWT token handling
 
 # --- Quantitative Math & Indicators ---
 pandas                # The backbone for data manipulation (DataFrames)

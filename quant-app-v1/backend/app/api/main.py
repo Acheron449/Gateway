@@ -12,10 +12,11 @@ import pandas as pd
 import pandas_ta as ta
 import time
 import json
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from loguru import logger
 
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.auth import router as auth_router
 from app.api.v1.backtest import router as backtest_router
 from app.api.v1.catalogue import router as catalogue_router
 from app.api.v1.forecast import router as forecast_router
@@ -25,6 +26,7 @@ from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
 from app.services.provenance import candle_provenance
+from app.auth import get_current_user_optional, OptionalUser
 
 
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
@@ -317,12 +319,16 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
-app.include_router(stocks_router)
-app.include_router(catalogue_router)
-app.include_router(analysis_router)
-app.include_router(backtest_router)
-app.include_router(forecast_router)
-app.include_router(portfolio_router)
+# Public routes (no authentication required)
+app.include_router(auth_router)
+app.include_router(catalogue_router)  # Public catalogue access
+
+# Protected routes (authentication required)
+app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(portfolio_router, dependencies=[Depends(get_current_user_optional)])
 
 
 @app.get("/")

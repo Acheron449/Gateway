@@ -106,7 +106,8 @@ def init_db():
                 market_value REAL NOT NULL DEFAULT 0,
                 unrealized_pnl REAL NOT NULL DEFAULT 0,
                 realized_pnl REAL NOT NULL DEFAULT 0,
-                FOREIGN KEY(portfolio_id) REFERENCES portfolios(id)
+                FOREIGN KEY(portfolio_id) REFERENCES portfolios(id),
+                UNIQUE(portfolio_id, instrument_id)
             )
             """
         )
@@ -264,11 +265,15 @@ def update_backtest_job(job_id: str, *, status: str | None = None, started_at: s
         'result': json.dumps(result) if result is not None and not isinstance(result, str) else result,
         'error': error,
     }
+    # Whitelist of allowed column names to prevent SQL injection
+    ALLOWED_COLUMNS = {'status', 'updated_at', 'started_at', 'finished_at', 'backtest_id', 'result', 'error', 'payload'}
     assignments = []
     values = []
     for key, value in payload.items():
         if value is None:
             continue
+        if key not in ALLOWED_COLUMNS:
+            continue  # Skip unknown columns
         assignments.append(f"{key} = ?")
         values.append(value)
     if not assignments:
@@ -420,10 +425,20 @@ def update_paper_order(order_id: str, **updates) -> None:
     init_db()
     now = __import__('datetime').datetime.utcnow().isoformat()
     updates['updated_at'] = now
+    # Whitelist of allowed column names to prevent SQL injection
+    ALLOWED_COLUMNS = {'status', 'filled_qty', 'avg_fill_price', 'updated_at', 'strategy_version_id', 'limit_price', 'stop_price'}
     with get_connection() as conn:
         cur = conn.cursor()
-        assignments = [f"{k} = ?" for k in updates.keys()]
-        values = list(updates.values()) + [order_id]
+        assignments = []
+        values = []
+        for k, v in updates.items():
+            if k not in ALLOWED_COLUMNS:
+                continue
+            assignments.append(f"{k} = ?")
+            values.append(v)
+        if not assignments:
+            return
+        values.append(order_id)
         cur.execute(f"UPDATE paper_orders SET {', '.join(assignments)} WHERE id = ?", values)
         conn.commit()
 

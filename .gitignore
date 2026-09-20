@@ -27,3 +27,12 @@ quant-app-v1/frontend/dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.crt

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -16,11 +17,71 @@ from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt
+from cryptography.fernet import Fernet
 from flask import request
 
 BASE_DIR = Path(__file__).resolve().parent
 USERS_DB = BASE_DIR / "users.db"
 _RATE_LIMITS: dict[str, list[float]] = {}
+
+# Encryption for API keys at rest
+_FERNET_KEY_ENV = "QUANT_API_ENCRYPTION_KEY"
+
+
+def _get_fernet() -> Fernet | None:
+    """Get Fernet instance from environment key."""
+    key_b64 = os.getenv(_FERNET_KEY_ENV)
+    if not key_b64:
+        return None
+    try:
+        key = base64.urlsafe_b64decode(key_b64)
+        return Fernet(key)
+    except Exception:
+        return None
+
+
+def encrypt_api_key(plain: str) -> str | None:
+    """Encrypt an API key for storage. Returns None if encryption not configured."""
+    f = _get_fernet()
+    if not f:
+        return None
+    return f.encrypt(plain.encode()).decode()
+
+
+def decrypt_api_key(cipher: str) -> str | None:
+    """Decrypt an API key from storage. Returns None if decryption fails."""
+    f = _get_fernet()
+    if not f:
+        return None
+    try:
+        return f.decrypt(cipher.encode()).decode()
+    except Exception:
+        return None
+
+
+def encrypt_dict_values(data: dict, keys_to_encrypt: set[str]) -> dict:
+    """Encrypt specified keys in a dictionary."""
+    result = data.copy()
+    for key in keys_to_encrypt:
+        if key in result and result[key]:
+            encrypted = encrypt_api_key(result[key])
+            if encrypted:
+                result[key] = encrypted
+    return result
+
+
+def decrypt_dict_values(data: dict, keys_to_decrypt: set[str]) -> dict:
+    """Decrypt specified keys in a dictionary."""
+    result = data.copy()
+    for key in keys_to_decrypt:
+        if key in result and result[key]:
+            decrypted = decrypt_api_key(result[key])
+            if decrypted:
+                result[key] = decrypted
+    return result
+
+
+API_KEY_FIELDS = {"alpaca_key", "alpaca_secret", "finnhub_key", "openai_key"}
 
 
 def get_db_conn():
@@ -184,6 +245,10 @@ def get_user_meta(user_id: int) -> dict:
         payload.setdefault('usage_remaining', 1000)
         payload.setdefault('payment', {})
         payload.setdefault('api_inputs', {})
+        # Decrypt API keys for use
+        api_inputs = payload.get('api_inputs', {})
+        if api_inputs:
+            payload['api_inputs'] = decrypt_dict_values(api_inputs, API_KEY_FIELDS)
         return payload
     except Exception:
         return {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
@@ -198,6 +263,10 @@ def set_user_meta(user_id: int, meta: dict) -> None:
     normalized.setdefault('usage_remaining', 1000)
     normalized.setdefault('payment', {})
     normalized.setdefault('api_inputs', {})
+    # Encrypt API keys before storage
+    api_inputs = normalized.get('api_inputs', {})
+    if api_inputs:
+        normalized['api_inputs'] = encrypt_dict_values(api_inputs, API_KEY_FIELDS)
     cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, json.dumps(normalized)))
     conn.commit()
     conn.close()

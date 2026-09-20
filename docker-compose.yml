@@ -9,10 +9,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://quantuser:[REDACTED]@postgres:5432/quantdb
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PYTHONUNBUFFERED: "1"
+      GATEWAY_PROVIDER_KEY_FILE: /run/secrets/gateway_provider_key
     env_file:
       - .env.docker
+    secrets:
+      - gateway_provider_key
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,20 +54,34 @@ services:
     image: postgres:16-alpine
     container_name: quant-app-postgres
     environment:
-      POSTGRES_USER: quantuser
-      POSTGRES_PASSWORD: quantpass
-      POSTGRES_DB: quantdb
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB_FILE: /run/secrets/postgres_db
+    secrets:
+      - postgres_user
+      - postgres_password
+      - postgres_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - quant-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U quantuser -d quantdb"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+
+secrets:
+  postgres_user:
+    file: ./secrets/postgres_user.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  postgres_db:
+    file: ./secrets/postgres_db.txt
+  gateway_provider_key:
+    file: ./secrets/gateway_provider_key.txt
 
 networks:
   quant-network:

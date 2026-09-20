@@ -16,6 +16,20 @@ def mock_price_data():
     }
     return pd.DataFrame(data)
 
+
+@pytest.fixture
+def mock_hs_price_data():
+    """Returns a synthetic DataFrame with enough bars for pivot detection and a clear Head and Shoulders pattern."""
+    # Need at least 11 bars for window=5 pivot detection (window*2+1)
+    # Pattern: left shoulder ~110, head ~120, right shoulder ~110
+    data = {
+        "High": [100, 102, 104, 106, 108, 110, 108, 115, 110, 110, 105, 100, 98],
+        "Low": [90, 92, 94, 96, 98, 100, 98, 105, 100, 100, 95, 90, 88],
+        "Open": [95, 97, 99, 101, 103, 105, 103, 110, 105, 105, 100, 95, 93],
+        "Close": [98, 100, 102, 104, 106, 108, 106, 112, 107, 107, 102, 97, 95],
+    }
+    return pd.DataFrame(data)
+
 @pytest.mark.asyncio
 async def test_impact_model_logic():
     """Verify impact_model correctly aggregates patterns and sentiment."""
@@ -36,18 +50,11 @@ async def test_impact_model_logic():
     assert res2["confidence"] > 0.7
 
 @pytest.mark.asyncio
-async def test_recognition_engine_patterns():
+async def test_recognition_engine_patterns(mock_hs_price_data):
     """Verify recognition engine detects expected patterns in mock data."""
     from app.quant.recognition import find_pivots, detect_head_and_shoulders
     
-    df = pd.DataFrame({
-        "High": [100, 110, 105, 115, 110, 120, 115],
-        "Low": [90, 100, 95, 105, 100, 110, 105],
-        "Open": [95, 105, 100, 110, 105, 115, 110],
-        "Close": [105, 110, 105, 115, 110, 120, 115],
-    })
-    
-    pivots = find_pivots(df)
+    pivots = find_pivots(mock_hs_price_data)
     patterns = detect_head_and_shoulders(pivots)
     
     assert len(patterns) > 0

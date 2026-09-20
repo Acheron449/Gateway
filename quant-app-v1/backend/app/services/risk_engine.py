@@ -96,6 +96,10 @@ class RiskEngine:
         violations.extend(self._check_instrument_restrictions(order))
         violations.extend(self._check_event_blackout())
 
+        # If kill switch was activated during checks (e.g., daily loss limit), return KILL_SWITCH
+        if self._kill_switch_activated:
+            return RiskCheckResult.KILL_SWITCH, violations
+
         if violations:
             return RiskCheckResult.REJECTED, violations
 
