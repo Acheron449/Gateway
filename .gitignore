@@ -17,3 +17,13 @@ quant-app-v1/quant_app.db
 
 # Frontend build output
 quant-app-v1/frontend/dist/
+
+# IDE and editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

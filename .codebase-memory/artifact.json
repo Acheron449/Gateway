@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "31747b582cd46a8f5a83554776cad4bf78fa432b",
-    "indexed_at": "2026-09-20T00:21:24Z",
+    "commit": "26a1c981a64df9245472d642fb874c00168d903b",
+    "indexed_at": "2026-09-20T01:40:27Z",
     "project": "Users-ChristineC-Documents-GitHub-Gateway",
     "nodes": 963,
     "edges": 3330,
     "original_size": 6946816,
-    "compressed_size": 1166138,
+    "compressed_size": 1166793,
     "compression_level": 3
 }
