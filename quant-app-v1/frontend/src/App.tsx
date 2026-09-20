@@ -6,11 +6,14 @@ import ScannerV2 from "./components/features/ScannerV2";
 import { AssetSelector } from "./components/features/AssetSelector";
 import { NewsTerminal } from "./components/features/NewsTerminal";
 import { PaperTrading } from "./components/features/PaperTrading";
+import useWorkspace from "./hooks/useWorkspace";
 
 export default function App() {
   const [ticker, setTicker] = useState("AAPL");
   const [activeKey, setActiveKey] = useState("overview");
   const [activeTab, setActiveTab] = useState<"charts" | "paper">("charts");
+
+  const ws = useWorkspace(ticker);
 
   const renderContent = () => {
     if (activeKey === "overview") {
@@ -36,6 +39,11 @@ export default function App() {
           </header>
           {activeTab === "charts" && (
             <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                {["research", "strategy", "backtest"].map((t) => (
+                  <button key={t} onClick={() => ws.setTab(t)} style={{ padding: "0.35rem 0.7rem", borderRadius: 6, border: "1px solid rgba(255,255,255,0.12)", background: ws.tab === t ? "#633cff" : "#0d1117", color: "#e6edf3", fontSize: 12, cursor: "pointer", textTransform: "capitalize" }}>{t}</button>
+                ))}
+              </div>
               <ChartContainer ticker={ticker} />
               <NewsTerminal ticker={ticker} />
             </>

@@ -40,7 +40,6 @@ export default function Shell({
           borderLeft: "1px solid rgba(255,255,255,0.08)",
           background: "#161b22",
           padding: "1rem",
-          display: "none",
         }}
       >
         <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.8, color: "#8b949e", marginBottom: 8 }}>
