@@ -138,7 +138,7 @@ class TestPaperPortfolioEventSourcing:
         # Create a fresh portfolio for reconstruction test
         from app.services.database import append_portfolio_event
         from datetime import datetime, timezone
-
+        
         # Clear any existing events for this portfolio
         import sqlite3
         from pathlib import Path
@@ -153,11 +153,11 @@ class TestPaperPortfolioEventSourcing:
             # Reset portfolio to initial state
             cur.execute("UPDATE portfolios SET cash=100000.0, equity=100000.0, buying_power=100000.0 WHERE id=?", (test_portfolio,))
             conn.commit()
-
+        
         # Insert events manually to simulate a history
-        order_id = "test_order_123"
+        order_id = f"test_order_{uuid4().hex[:8]}"
         now = datetime.now(timezone.utc).isoformat()
-
+        
         # ORDER_SUBMITTED event
         append_portfolio_event(test_portfolio, "OrderSubmitted", {
             "order_id": order_id,
@@ -169,12 +169,12 @@ class TestPaperPortfolioEventSourcing:
             "stop_price": None,
             "strategy_version_id": None,
         }, 1)
-
+        
         # ORDER_ACKNOWLEDGED event
         append_portfolio_event(test_portfolio, "OrderAcknowledged", {
             "order_id": order_id,
         }, 2)
-
+        
         # FILL event
         append_portfolio_event(test_portfolio, "Fill", {
             "order_id": order_id,
@@ -186,11 +186,11 @@ class TestPaperPortfolioEventSourcing:
             "timestamp": now,
             "liquidity": None,
         }, 3)
-
+        
         # Now reconstruct from events
         service = PaperPortfolioService(test_portfolio)
         reconstructed = service.reconstruct_portfolio()
-
+        
         assert reconstructed is not None
         # After buying 10 shares at $150 with $0.50 commission: cash = 100000 - 1500.5 = 98499.5
         assert reconstructed["cash"] == 98499.5

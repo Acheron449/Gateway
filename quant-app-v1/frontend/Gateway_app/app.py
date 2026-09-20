@@ -24,16 +24,41 @@ app = Flask(
 
 from flask import session
 
-app.secret_key = os.getenv('QUANT_FRONTEND_SECRET') or os.urandom(24).hex()
+# Security configuration
+_env = os.getenv('GATEWAY_ENV', 'local').lower()
+_is_production = _env in ('production', 'prod')
+
+# Require secret key in production
+secret_key = os.getenv('QUANT_FRONTEND_SECRET')
+if _is_production and not secret_key:
+    raise RuntimeError("QUANT_FRONTEND_SECRET must be set in production")
+app.secret_key = secret_key or os.urandom(24).hex()
+
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False
+app.config['SESSION_COOKIE_SAMESITE'] = 'Strict' if _is_production else 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = _is_production  # Only transmit cookies over HTTPS in production
 app.config['SESSION_PERMANENT'] = True
 app.config.setdefault('SESSION_COOKIE_NAME', 'gateway_session')
+
+# Additional security headers
+app.config['SESSION_COOKIE_DOMAIN'] = None  # Set to your domain in production
 
 # Register blueprints and initialize the user DB
 register_blueprints(app)
 init_user_db()
+
+
+# Security headers middleware
+@app.after_request
+def add_security_headers(response):
+    """Add security headers to all responses."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    if _is_production:
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
 
 
 # Provide a consistent user context to all templates so Jinja won't complain

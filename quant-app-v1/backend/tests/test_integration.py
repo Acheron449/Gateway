@@ -20,15 +20,42 @@ def mock_price_data():
 @pytest.fixture
 def mock_hs_price_data():
     """Returns a synthetic DataFrame with enough bars for pivot detection and a clear Head and Shoulders pattern."""
-    # Need at least 11 bars for window=5 pivot detection (window*2+1)
-    # Pattern: left shoulder ~110, head ~120, right shoulder ~110
-    data = {
-        "High": [100, 102, 104, 106, 108, 110, 108, 115, 110, 110, 105, 100, 98],
-        "Low": [90, 92, 94, 96, 98, 100, 98, 105, 100, 100, 95, 90, 88],
-        "Open": [95, 97, 99, 101, 103, 105, 103, 110, 105, 105, 100, 95, 93],
-        "Close": [98, 100, 102, 104, 106, 108, 106, 112, 107, 107, 102, 97, 95],
-    }
-    return pd.DataFrame(data)
+    # Need enough bars for pivot detection (window=3 needs 7 bars minimum)
+    # Pattern: left shoulder ~110, head ~115, right shoulder ~110
+    # Data ends at right shoulder to avoid extra pivots
+    import numpy as np
+    np.random.seed(42)
+    n = 45
+    highs = np.ones(n) * 100
+    lows = np.ones(n) * 98
+
+    # Left shoulder
+    highs[8:12] = [108, 109, 110, 109]
+    lows[8:12] = [106, 107, 108, 107]
+
+    # Valley between left shoulder and head
+    highs[12:20] = [105, 103, 102, 101, 102, 103, 104, 105]
+    lows[12:20] = [103, 101, 100, 99, 100, 101, 102, 103]
+
+    # Head
+    highs[20:28] = [108, 110, 112, 114, 115, 114, 112, 110]
+    lows[20:28] = [106, 108, 110, 112, 113, 112, 110, 108]
+
+    # Valley between head and right shoulder
+    highs[28:36] = [108, 106, 104, 102, 101, 102, 103, 104]
+    lows[28:36] = [106, 104, 102, 100, 99, 100, 101, 102]
+
+    # Right shoulder - END DATA HERE
+    highs[36:44] = [106, 108, 110, 111, 110, 109, 108, 107]
+    lows[36:44] = [104, 106, 108, 109, 108, 107, 106, 105]
+
+    # Add small noise
+    highs += np.random.normal(0, 0.1, n)
+    lows += np.random.normal(0, 0.1, n)
+    opens = (highs + lows) / 2 + np.random.normal(0, 0.1, n)
+    closes = (highs + lows) / 2 + np.random.normal(0, 0.1, n)
+
+    return pd.DataFrame({'High': highs, 'Low': lows, 'Open': opens, 'Close': closes})
 
 @pytest.mark.asyncio
 async def test_impact_model_logic():
@@ -63,6 +90,8 @@ async def test_recognition_engine_patterns(mock_hs_price_data):
 @pytest.mark.asyncio
 async def test_analysis_api_integration():
     """End-to-end test of the analysis API endpoint."""
+    from app.services.market_data import OhlcvResult
+    
     ticker = "AAPL"
     
     # Mocking market_data.fetch_ohlcv, technicals.calculate_all_indicators, 
@@ -79,7 +108,10 @@ async def test_analysis_api_integration():
             "Close": [105, 110, 105, 115, 110],
             "RSI": [50, 55, 52, 60, 58]
         })
-        mock_fetch.return_value = mock_df
+        mock_fetch.return_value = OhlcvResult(
+            dataframe=mock_df,
+            provenance={"source": "yfinance", "provider_version": "test", "coverage": "US equities / daily"}
+        )
         mock_tech.return_value = mock_df
         
         response = await get_analysis(ticker)
@@ -89,3 +121,4 @@ async def test_analysis_api_integration():
         assert "rsi" in response
         assert "direction" in response
         assert "overall_confidence" in response
+        assert "provenance" in response

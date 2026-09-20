@@ -133,14 +133,13 @@ class FinnhubProvider(MarketDataProvider):
         if not self.is_configured:
             return []
 
-        # Build the Finnhub request
+        # Build the Finnhub request - pass API key in header, not URL
         symbol_param = symbol or ""
         url = f"{FINNHUB_BASE}{FINNHUB_NEWS_ENDPOINT}?symbol={symbol_param}&limit={limit}"
-        if self._api_key:
-            url += f"&token={self._api_key}"
+        headers = {"X-Finnhub-Token": self._api_key} if self._api_key else {}
 
         try:
-            resp = await self._http.get(url)
+            resp = await self._http.get(url, headers=headers)
             if resp.status_code != 200:
                 return []
             data = resp.json()
@@ -174,11 +173,10 @@ class FinnhubProvider(MarketDataProvider):
             return []
 
         url = f"{FINNHUB_BASE}{FINNHUB_CALENDAR_ENDPOINT}?limit={limit}"
-        if self._api_key:
-            url += f"&token={self._api_key}"
+        headers = {"X-Finnhub-Token": self._api_key} if self._api_key else {}
 
         try:
-            resp = await self._http.get(url)
+            resp = await self._http.get(url, headers=headers)
             if resp.status_code != 200:
                 return []
             data = resp.json()

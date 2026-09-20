@@ -74,7 +74,17 @@ class PaperPortfolioService:
         """Pure function: apply a single event to rebuild portfolio state."""
         data = event.event_data
         if event.event_type == EventType.ORDER_SUBMITTED:
-            pass
+            insert_paper_order(
+                data["order_id"],
+                self.portfolio_id,
+                data.get("strategy_version_id"),
+                data["instrument_id"],
+                data["side"],
+                data["type"],
+                data["qty"],
+                data.get("limit_price"),
+                data.get("stop_price"),
+            )
         elif event.event_type == EventType.ORDER_ACKNOWLEDGED:
             update_paper_order(data["order_id"], status=OrderStatus.ACCEPTED.value)
         elif event.event_type == EventType.FILL:

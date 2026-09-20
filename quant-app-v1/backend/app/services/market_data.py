@@ -8,6 +8,9 @@ from typing import Any, List
 
 import pandas as pd
 
+from app.services.provenance import candle_provenance
+
+
 # --- Data Models ---
 
 @dataclass
@@ -55,7 +58,7 @@ class MarketDataIngestor:
             new_tick = TickData(timestamp=time.time(), price=150.0 + (time.time()%1), volume=100)
             # Pass the cleaned tick to the handler
             await tick_handler(new_tick)
-        
+         
     def fetch_historical_data(self, start_time: float, end_time: float) -> List[TickData]:
         """
         Retrieves a batch of clean, time-series data for backtesting.
@@ -80,7 +83,14 @@ def _stock_feed() -> str:
     return "sip" if os.getenv("ALPACA_STOCK_FEED", "").upper() == "SIP" else "iex"
 
 
-async def fetch_ohlcv(ticker: str, limit: int = 500) -> pd.DataFrame:
+@dataclass
+class OhlcvResult:
+    """OHLCV data with provenance metadata."""
+    dataframe: pd.DataFrame
+    provenance: dict[str, Any]
+
+
+async def fetch_ohlcv(ticker: str, limit: int = 500) -> OhlcvResult:
     """Fetch a normalized OHLCV frame for analysis and forecasting routes.
 
     yfinance is already a Gateway dependency and provides a credentials-free
@@ -96,4 +106,11 @@ async def fetch_ohlcv(ticker: str, limit: int = 500) -> pd.DataFrame:
         result = result.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close", "Volume": "Volume"})
         return result[["Open", "High", "Low", "Close", "Volume"]].tail(max(2, min(limit, 2000))).copy()
 
-    return await asyncio.to_thread(_fetch)
+    df = await asyncio.to_thread(_fetch)
+    provenance = candle_provenance(
+        source="yfinance",
+        data_time=int(df.index[-1].timestamp()) if len(df) > 0 else int(time.time()),
+        coverage=f"US equities / daily",
+        delay_seconds=86400,  # daily data has ~1 day delay
+    )
+    return OhlcvResult(dataframe=df, provenance=provenance)

@@ -12,8 +12,12 @@ import pandas as pd
 import pandas_ta as ta
 import time
 import json
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request
+from fastapi.responses import JSONResponse
 from loguru import logger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.auth import router as auth_router
@@ -27,6 +31,39 @@ from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
 from app.services.provenance import candle_provenance
 from app.auth import get_current_user_optional, OptionalUser
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute", "1000/hour"])
+
+# Security headers middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+    
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # HSTS for production (only if using HTTPS)
+        env = os.getenv("GATEWAY_ENV", "local").lower()
+        if env in ("production", "prod"):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Content Security Policy
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss:;"
+        )
+        return response
 
 
 # Bridge between Alpaca (or synth feed) and WebSocket broadcast.
@@ -319,6 +356,13 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
+# Add security headers middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Add rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Public routes (no authentication required)
 app.include_router(auth_router)
 app.include_router(catalogue_router)  # Public catalogue access
@@ -337,7 +381,8 @@ def home() -> dict:
 
 
 @app.get("/health")
-async def health() -> dict:
+@limiter.limit("30/minute")
+async def health(request: Request) -> dict:
     return {
         "status": "ok",
         "environment": settings.environment,
@@ -481,9 +526,29 @@ async def websocket_trading(websocket: WebSocket) -> None:
     or to unsubscribe:
       {"action":"unsubscribe", "symbol":"EURUSD", "tf":"1m"}
     Use "*" for wildcard symbol or tf.
+    
+    Authentication: Pass token as query parameter ?token=JWT_TOKEN
+    or as Authorization header.
     """
+    # Authenticate via query parameter or header
+    token = websocket.query_params.get("token")
+    if not token:
+        auth_header = websocket.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    
+    if not token:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    
+    from app.auth import decode_token
+    token_data = decode_token(token)
+    if not token_data or token_data.exp < datetime.now(timezone.utc):
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+    
     await websocket.accept()
-    client = { 'ws': websocket, 'subs': set() }
+    client = { 'ws': websocket, 'subs': set(), 'user_id': token_data.user_id }
     async with _ws_clients_lock:
         _ws_clients.append(client)
     try:
