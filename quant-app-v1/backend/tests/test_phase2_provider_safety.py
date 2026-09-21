@@ -1,6 +1,9 @@
 """Phase 2 provider safety regression tests."""
 from __future__ import annotations
 
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import asyncio
 import json
 import os

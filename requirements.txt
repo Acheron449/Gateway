@@ -30,8 +30,8 @@ alpaca-py             # Alpaca API client
 fastapi-utils          # Utilities for FastAPI, including rate limiting and caching
 finnhub-python         # For fetching financial data from Finnhub
 openbb                # OpenBB Platform for open financial data (AGPLv3)
-# openbb-api (phase 6 / port 6900 server) — install when Phase 6 design confirmed; AGPLv3 review required before prod
-openbb             # FastAPI server for openbb data (optional; confirm AGPLv3 before prod)
+# openbb-api (phase 6 / port 6900 server) — OPTIONAL; install ONLY after AGPLv3 review + Phase 6 design finalized
+# openbb-api             # FastAPI server for openbb data (do NOT enable until AGPLv3 + design cleared)
 # pytest / pytest-asyncio — Phase 0 PR 4 test/CI foundation (uncompleted); add to dev/test environment
 
 # --- Natural Language Processing (News/Global Events) ---

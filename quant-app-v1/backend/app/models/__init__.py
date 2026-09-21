@@ -389,6 +389,7 @@ class Order(BaseModel):
     account_id: str | None = None
     execution_mode: str = "paper"
     status: OrderStatus = OrderStatus.PENDING_NEW
+    filled_qty: float = Field(default=0, ge=0, description="Quantity already filled")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("instrument")
