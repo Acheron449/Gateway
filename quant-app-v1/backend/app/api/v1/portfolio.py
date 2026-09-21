@@ -116,15 +116,9 @@ def _get_default_portfolio() -> str:
     return DEFAULT_PORTFOLIO_ID
 
 
-def _get_current_price(instrument: str) -> float:
-    try:
-        from app.services.market_data import get_quote
-        quote = get_quote(instrument)
-        if quote and quote.last_price:
-            return quote.last_price
-    except Exception:
-        pass
-    return 100.0
+def _get_current_price(instrument: str) -> float | None:
+    del instrument
+    return None
 
 
 @router.get("", response_model=PortfolioResponse)
@@ -158,6 +152,14 @@ async def submit_order(request: OrderRequest) -> OrderResponse:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     current_price = _get_current_price(request.instrument)
+    risk_price = request.limit_price if request.limit_price is not None else current_price
+    if request.order_type in (OrderType.MARKET, OrderType.STOP) and risk_price is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Market data is unavailable; use a limit order or configure a quote provider",
+        )
+    if risk_price is None:
+        raise HTTPException(status_code=503, detail="Market data is unavailable")
 
     from app.models import Order
     order = Order(

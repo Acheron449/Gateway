@@ -8,10 +8,6 @@ import { RightInspector } from "./components/layout/RightInspector";
 import { TopBar } from "./components/layout/TopBar";
 import { CommandPalette } from "./components/layout/CommandPalette";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import LoginForm from "./components/auth/LoginForm";
-import SignupForm from "./components/auth/SignupForm";
-import WatchlistManager from "./components/features/WatchlistManager";
-
 import "./styles/app.css";
 
 const queryClient = new QueryClient({

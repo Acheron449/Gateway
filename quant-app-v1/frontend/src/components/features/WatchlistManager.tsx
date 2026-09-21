@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { API_BASE } from "@/lib/constants";
-import { useAuth } from "@/context/AuthContext";
+import { API_BASE } from "../../lib/constants";
+import { useAuth } from "../../context/AuthContext";
 
 interface Watchlist { id: string; name: string; symbols: string[]; }
 

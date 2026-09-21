@@ -126,11 +126,14 @@ class NewsItem(BaseModel):
     related_symbols: list[str] = Field(default_factory=list, description="Instruments referenced by the story")
     sentiment_score: float | None = Field(default=None, ge=-1.0, le=1.0)
     provider_version: str = ""
+    data_time: datetime | None = None
+    coverage: str = ""
+    delay_seconds: int | None = None
+    entitlement: str = "configured-provider"
+    tags: list[dict] = Field(default_factory=list, description="Derived event/entity tags")
 
     @property
     def age_seconds(self) -> float | None:
-        if not self.provider_version:
-            return None
         return (datetime.now(timezone.utc) - self.fetched_at).total_seconds()
 
 
@@ -155,6 +158,13 @@ class EconomicEvent(BaseModel):
     revisions: list[dict] = Field(default_factory=list, description="Chronological event revisions, oldest first")
     related_symbols: list[str] = Field(default_factory=list)
     provider_version: str = ""
+    source: str = ""
+    fetched_at: datetime | None = None
+    data_time: datetime | None = None
+    coverage: str = ""
+    delay_seconds: int | None = None
+    entitlement: str = "configured-provider"
+    tags: list[dict] = Field(default_factory=list, description="Derived event/entity tags")
 
 
 class StrategyStatus(StrEnum):

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useState, type FormEvent } from "react";
+import { useAuth } from "../../context/AuthContext";
 
 export default function LoginForm() {
   const { login } = useAuth();
@@ -8,8 +8,8 @@ export default function LoginForm() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     setError("");
     setSubmitting(true);
     try { await login(email, password); }

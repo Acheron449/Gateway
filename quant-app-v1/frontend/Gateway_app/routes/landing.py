@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
-
 from flask import Blueprint, jsonify, render_template, request, session
 
 from ..common import (
     _rate_limit_exceeded,
     authenticate_user,
     create_user,
-    fetch_forex_factory_news,
     get_user_by_email,
     get_user_meta,
     hash_password,
@@ -102,8 +99,19 @@ def api_me():
 
 @landing_bp.route('/api/news/forex-factory')
 def api_news_forex_factory():
-    items = fetch_forex_factory_news(limit=5)
-    return jsonify({'items': items})
+    return jsonify(
+        {
+            "items": [],
+            "status": "unavailable",
+            "message": "This legacy news source is unavailable; use the provenance-backed news endpoint",
+            "provenance": {
+                "source": "forex-factory",
+                "provider_version": "legacy-disabled",
+                "coverage": "unavailable",
+                "entitlement": "unavailable",
+            },
+        }
+    ), 503
 
 
 @landing_bp.route('/api/generate', methods=['POST'])

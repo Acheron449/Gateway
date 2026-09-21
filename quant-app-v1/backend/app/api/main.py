@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
-import random
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -27,8 +27,8 @@ from app.api.v1.divergence import router as divergence_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
 from app.api.v1.live import router as live_router
-from app.api.v1.news import router as news_router
-from app.api.v1.openbb_routes import router as openbb_router
+from app.api.v1.news import quote_router, router as news_router
+from app.api.openbb_routes import router as openbb_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.api.v1.risk import router as risk_router
 from app.api.v1.settings import router as settings_router
@@ -77,7 +77,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# Bridge between Alpaca (or synth feed) and WebSocket broadcast.
+# Bridge between Alpaca (or a configured Finnhub quote feed) and WebSocket broadcast.
 data_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 _ws_clients_lock = asyncio.Lock()
 # each client entry is { 'ws': WebSocket, 'subs': set((symbol, tf_key), ...) }
@@ -126,29 +126,6 @@ async def lifespan(app: FastAPI):
             "SIP" if os.getenv("ALPACA_STOCK_FEED", "").upper() == "SIP" else "IEX",
         )
         await stream._run_forever()
-
-    async def synthetic_feeder():
-        """Dev fallback when Alpaca credentials are unset."""
-        buff: deque[dict[str, Any]] = deque(maxlen=30)
-        base = 100.0
-        while True:
-            await asyncio.sleep(1.0)
-            base += random.uniform(-0.15, 0.15)
-            buff.append({"close": base})
-            rsi_val = 0.0
-            if len(buff) >= RSI_PERIOD:
-                rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
-                last = rsi_series.iloc[-1]
-                if pd.notna(last):
-                    rsi_val = float(last)
-
-            await data_queue.put(
-                {
-                    "symbol": ws_symbol,
-                    "price": round(base, 4),
-                    "rsi": round(rsi_val, 2),
-                }
-            )
 
     TF_KEYS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
 
@@ -283,69 +260,56 @@ async def lifespan(app: FastAPI):
     if creds:
         tasks.append(asyncio.create_task(alpaca_streamer(), name="alpaca-queue-feed"))
     elif finnhub_key:
-        logger.info("Alpaca creds not set — using Finnhub quote feed for /ws/trading.")
+        logger.info("Alpaca creds not set — using configured Finnhub quote feed for /ws/trading.")
 
         async def finnhub_feeder(api_key: str):
-            """Use Finnhub REST /quote endpoint as a fallback data source."""
+            """Stream configured Finnhub quotes without exposing the API key."""
+            import httpx
+
             buff: deque[dict[str, Any]] = deque(maxlen=30)
-            base = 100.0
-            # Try to use aiohttp when available for non-blocking requests
-            try:
-                import aiohttp
-                _USE_AIOHTTP = True
-            except Exception:
-                _USE_AIOHTTP = False
-                import requests
+            headers = {"X-Finnhub-Token": api_key}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                while True:
+                    try:
+                        await asyncio.sleep(1.0)
+                        response = await client.get(
+                            "https://finnhub.io/api/v1/quote",
+                            params={"symbol": ws_symbol},
+                            headers=headers,
+                        )
+                        if response.status_code != 200:
+                            raise RuntimeError(f"Finnhub quote error: {response.status_code}")
+                        data = response.json()
+                        price_value = data.get("c")
+                        if price_value is None:
+                            raise RuntimeError("Finnhub quote response did not include a current price")
+                        price = float(price_value)
+                        if not math.isfinite(price) or price <= 0:
+                            raise RuntimeError("Finnhub quote response did not include a valid current price")
+                        buff.append({"close": price})
+                        rsi_val = 0.0
+                        if len(buff) >= RSI_PERIOD:
+                            rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
+                            last = rsi_series.iloc[-1]
+                            if pd.notna(last):
+                                rsi_val = float(last)
 
-            while True:
-                try:
-                    await asyncio.sleep(1.0)
-                    if _USE_AIOHTTP:
-                        async with aiohttp.ClientSession() as session:
-                            url = f"https://finnhub.io/api/v1/quote?symbol={ws_symbol}&token={api_key}"
-                            async with session.get(url, timeout=10) as resp:
-                                if resp.status != 200:
-                                    raise RuntimeError(f"Finnhub quote error: {resp.status}")
-                                data = await resp.json()
-                                price = float(data.get('c') or data.get('pc') or base)
-                    else:
-                        # synchronous fallback using requests in thread
-                        def _sync_fetch():
-                            url = f"https://finnhub.io/api/v1/quote?symbol={ws_symbol}&token={api_key}"
-                            r = requests.get(url, timeout=10)
-                            r.raise_for_status()
-                            return r.json()
-
-                        data = await asyncio.to_thread(_sync_fetch)
-                        price = float(data.get('c') or data.get('pc') or base)
-
-                    base = price
-                    buff.append({"close": base})
-                    rsi_val = 0.0
-                    if len(buff) >= RSI_PERIOD:
-                        rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
-                        last = rsi_series.iloc[-1]
-                        if pd.notna(last):
-                            rsi_val = float(last)
-
-                    await data_queue.put(
-                        {
-                            "symbol": ws_symbol,
-                            "price": round(base, 4),
-                            "rsi": round(rsi_val, 2),
-                        }
-                    )
-                except Exception as exc:
-                    logger.debug("Finnhub feeder error: {}", exc)
-                    await asyncio.sleep(2.0)
+                        await data_queue.put(
+                            {
+                                "symbol": ws_symbol,
+                                "price": round(price, 4),
+                                "rsi": round(rsi_val, 2),
+                            }
+                        )
+                    except Exception:
+                        logger.debug("Finnhub feeder rejected an invalid quote response")
+                        await asyncio.sleep(2.0)
 
         tasks.append(asyncio.create_task(finnhub_feeder(finnhub_key), name="finnhub-queue-feed"))
     else:
         logger.warning(
-            "Alpaca credentials not set and FINNHUB_API_KEY not set — using synthetic RSI feed for /ws/trading. "
-            "Set ALPACA_API_KEY and ALPACA_SECRET_KEY, or FINNHUB_API_KEY."
+            "Alpaca credentials and FINNHUB_API_KEY are not set; /ws/trading has no market-data feed."
         )
-        tasks.append(asyncio.create_task(synthetic_feeder(), name="synthetic-queue-feed"))
 
     yield
 
@@ -378,6 +342,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(auth_router)
 app.include_router(catalogue_router)  # Public catalogue access
 app.include_router(news_router)  # Public news/calendar access
+app.include_router(quote_router)  # Public normalized quote access
 app.include_router(strategies_router)  # Strategy Studio
 app.include_router(journal_router)  # Trade Journal
 app.include_router(risk_router)  # Risk Dashboard

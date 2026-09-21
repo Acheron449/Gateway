@@ -189,22 +189,10 @@ class FillSimulator:
     def __init__(self, config: FillSimConfig = FillSimConfig()):
         self.config = config
 
-    def get_quote_for_fill(self, instrument: str) -> tuple[float, float, float]:
-        """Get bid, ask, last for fill simulation. Falls back to synthetic if no live data."""
-        try:
-            from app.services.market_data import get_quote
-            quote = get_quote(instrument)
-            if quote:
-                bid = quote.bid or quote.last_price * 0.999
-                ask = quote.ask or quote.last_price * 1.001
-                last = quote.last_price or ((bid + ask) / 2)
-                return bid, ask, last
-        except Exception:
-            pass
-
-        base = 100.0 + hash(instrument) % 500
-        spread = base * 0.001
-        return base - spread, base + spread, base
+    def get_quote_for_fill(self, instrument: str) -> tuple[float, float, float] | None:
+        """Return live bid, ask, and last prices without substituting synthetic values."""
+        del instrument
+        return None
 
     def try_fill_order(self, portfolio_id: str, order_id: str) -> Optional[dict]:
         """Attempt to fill an order. Returns fill info if filled, None otherwise."""
@@ -228,7 +216,10 @@ class FillSimulator:
             filled_qty=order_data.get("filled_qty", 0),
         )
 
-        bid, ask, last = self.get_quote_for_fill(order.instrument)
+        quote = self.get_quote_for_fill(order.instrument)
+        if quote is None:
+            return None
+        bid, ask, last = quote
         volatility = 0.02
 
         fill_result = simulate_fill(order, bid, ask, last, volatility, self.config)

@@ -5,21 +5,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.provider_registry import (
-    _PROVIDERS,
-    _load_settings,
-    _save_settings,
-    _read_api_key,
+from app.auth import CurrentUser
+from app.providers.registry import (
+    _delete_api_key,
     _store_api_key,
-    _make_fernet_key,
-    _encrypt_key,
-    _decrypt_key,
+    get_provider,
+    has_stored_key,
+    list_providers as registry_list_providers,
 )
+
 
 router = APIRouter(prefix="/settings/providers", tags=["settings"])
 
-
-# --- Models ---
 
 class ProviderMetaResponse(BaseModel):
     name: str
@@ -52,146 +49,123 @@ class ProviderKeyDeleteResponse(BaseModel):
     message: str
 
 
-class GenerateKeyResponse(BaseModel):
-    fernet_key: str
-    message: str
-
-
-# --- Routes ---
-
 @router.get("", response_model=List[ProviderStatusResponse])
 async def list_providers() -> List[ProviderStatusResponse]:
-    """List all available providers with their configuration status."""
+    """List providers without exposing credentials."""
     results = []
-    for name, provider_class in _PROVIDERS.items():
-        # Create a temporary instance to get meta
-        temp_provider = provider_class(api_key="")
-        meta = temp_provider.meta
-        has_stored_key = bool(_read_api_key(name))
-        results.append(ProviderStatusResponse(
-            name=name,
-            meta=ProviderMetaResponse(**meta),
-            configured=temp_provider.is_configured,
-            has_stored_key=has_stored_key,
-        ))
+    for name, meta in registry_list_providers().items():
+        provider_instance = get_provider(name)
+        results.append(
+            ProviderStatusResponse(
+                name=name,
+                meta=ProviderMetaResponse(**meta),
+                configured=bool(provider_instance and provider_instance.is_configured),
+                has_stored_key=has_stored_key(name),
+            )
+        )
     return results
 
 
 @router.get("/{provider_name}", response_model=ProviderStatusResponse)
 async def get_provider_status(provider_name: str) -> ProviderStatusResponse:
     """Get detailed status for a specific provider."""
-    provider_class = _PROVIDERS.get(provider_name)
-    if not provider_class:
+    meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
+    if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    
-    temp_provider = provider_class(api_key="")
-    meta = temp_provider.meta
-    has_stored_key = bool(_read_api_key(provider_name))
-    
+
+    provider_instance = get_provider(provider_name)
     return ProviderStatusResponse(
-        name=provider_name,
+        name=meta["name"],
         meta=ProviderMetaResponse(**meta),
-        configured=temp_provider.is_configured,
-        has_stored_key=has_stored_key,
+        configured=bool(provider_instance and provider_instance.is_configured),
+        has_stored_key=has_stored_key(provider_name),
     )
 
 
 @router.post("/{provider_name}/key", response_model=ProviderKeyResponse)
-async def store_provider_key(provider_name: str, request: ProviderKeyRequest) -> ProviderKeyResponse:
-    """Store an API key for a provider (BYOK)."""
-    provider_class = _PROVIDERS.get(provider_name)
-    if not provider_class:
+async def store_provider_key(
+    provider_name: str,
+    request: ProviderKeyRequest,
+    user: CurrentUser,
+) -> ProviderKeyResponse:
+    """Store an encrypted API key for a supported BYOK provider."""
+    meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
+    if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    
-    # Validate key by attempting to create provider instance
+    if meta["name"] != "Finnhub":
+        raise HTTPException(status_code=400, detail="This provider does not support browser-managed API keys")
+
     try:
-        provider_class(api_key=request.api_key)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid API key: {e}")
-    
-    # Store encrypted key
-    _store_api_key(provider_name, request.api_key)
-    
+        _store_api_key(meta["name"], request.api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     return ProviderKeyResponse(
-        provider=provider_name,
+        provider=meta["name"],
         stored=True,
         message="API key stored successfully",
     )
 
 
 @router.delete("/{provider_name}/key", response_model=ProviderKeyDeleteResponse)
-async def delete_provider_key(provider_name: str) -> ProviderKeyDeleteResponse:
-    """Delete stored API key for a provider."""
-    provider_class = _PROVIDERS.get(provider_name)
-    if not provider_class:
+async def delete_provider_key(
+    provider_name: str,
+    user: CurrentUser,
+) -> ProviderKeyDeleteResponse:
+    """Delete a stored API key."""
+    meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
+    if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    
-    settings = _load_settings()
-    if provider_name not in settings:
+    if not has_stored_key(meta["name"]):
         raise HTTPException(status_code=404, detail="No stored key found for this provider")
-    
-    del settings[provider_name]
-    _save_settings(settings)
-    
+
+    _delete_api_key(meta["name"])
     return ProviderKeyDeleteResponse(
-        provider=provider_name,
+        provider=meta["name"],
         deleted=True,
         message="API key deleted successfully",
     )
 
 
-@router.post("/generate-fernet-key", response_model=GenerateKeyResponse)
-async def generate_fernet_key() -> GenerateKeyResponse:
-    """Generate a new Fernet key for encrypting API keys at rest.
-    
-    This key should be stored in the GATEWAY_PROVIDER_KEY environment variable.
-    Rotate rarely - changing it will make all stored keys undecryptable.
-    """
-    key = _make_fernet_key()
-    return GenerateKeyResponse(
-        fernet_key=key.decode(),
-        message="Generated new Fernet key. Store it in GATEWAY_PROVIDER_KEY env var. Rotate rarely.",
-    )
-
-
 @router.get("/{provider_name}/test", response_model=Dict[str, Any])
-async def test_provider_key(provider_name: str) -> Dict[str, Any]:
-    """Test if a stored provider key works by making a test request."""
-    provider_class = _PROVIDERS.get(provider_name)
-    if not provider_class:
+async def test_provider_key(
+    provider_name: str,
+    user: CurrentUser,
+) -> Dict[str, Any]:
+    """Test a stored provider key without returning raw provider errors."""
+    meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
+    if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    
-    api_key = _read_api_key(provider_name)
-    if not api_key:
+
+    provider_instance = get_provider(meta["name"])
+    if provider_instance is None or not provider_instance.is_configured:
         return {
             "success": False,
-            "message": "No stored API key found",
+            "message": "No usable provider key is configured",
             "configured": False,
         }
-    
+
     try:
-        provider = provider_class(api_key=api_key)
-        if not provider.is_configured:
-            return {
-                "success": False,
-                "message": "Provider not properly configured",
-                "configured": False,
-            }
-        
-        # Test with a simple news call
-        news = await provider.news(limit=1)
-        calendar = await provider.calendar(limit=1)
-        
+        news = await provider_instance.news(symbol="AAPL", limit=1)
+        calendar = await provider_instance.calendar(limit=1)
         return {
             "success": True,
-            "message": "API key works",
+            "message": "Provider test completed",
             "configured": True,
+            "status": "healthy",
             "news_count": len(news),
             "calendar_count": len(calendar),
         }
-    except Exception as e:
+    except Exception:
         return {
             "success": False,
-            "message": f"Test failed: {str(e)}",
-            "configured": False,
+            "message": "Provider test failed",
+            "configured": provider_instance.is_configured,
+            "status": "unavailable",
+            "news_count": 0,
+            "calendar_count": 0,
         }
+    finally:
+        await provider_instance.close()

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from app.models import Candle, Provenance
-from app.services.provider_registry import MarketDataProvider, ProviderMeta
+from app.providers.base import MarketDataProvider, ProviderMeta
 
 logger = logging.getLogger(__name__)
 

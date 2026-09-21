@@ -7,13 +7,15 @@ Feature-gated via ENABLE_OPENBB_SERVER (default: false).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
+import pandas as pd
 
 from app.config import get_settings
 from app.models import Candle, NewsItem, EconomicEvent, EventImportance, Provenance
-from app.services.provider_registry import MarketDataProvider, ProviderMeta
+from app.providers.base import MarketDataProvider, ProviderMeta
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +196,3 @@ class OpenBBServerProvider(MarketDataProvider):
         if self._client:
             await self._client.aclose()
             self._client = None
-
-
-# Add missing imports at the top
-from datetime import datetime, timezone
-import pandas as pd

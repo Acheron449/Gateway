@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useState, type FormEvent } from "react";
+import { useAuth } from "../../context/AuthContext";
 
 export default function SignupForm() {
   const { register } = useAuth();
@@ -9,8 +9,8 @@ export default function SignupForm() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     setError("");
     if (password !== confirm) { setError("Passwords do not match"); return; }
     setSubmitting(true);

@@ -54,6 +54,14 @@ interface CandleData {
   volume?: number;
 }
 
+interface CalendarEvent {
+  id: string;
+  title: string;
+  scheduled_at: string;
+  importance: string;
+  currency: string;
+}
+
 const EMPTY_STATE_MESSAGES: Record<string, string> = {
   overview: "Select a view to see contextual information",
   scanner: "Select a symbol from the scanner to inspect",
@@ -94,6 +102,7 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [instrument, setInstrument] = useState<InstrumentData | null>(null);
   const [candles, setCandles] = useState<CandleData[]>([]);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -104,11 +113,12 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
 
     try {
       // Fetch quote, analysis, instrument, and history in parallel
-      const [quoteRes, analysisRes, instrumentRes, historyRes] = await Promise.allSettled([
+      const [quoteRes, analysisRes, instrumentRes, historyRes, calendarRes] = await Promise.allSettled([
         fetch(`${API_BASE}/quote/${encodeURIComponent(sym)}`),
         fetch(`${API_BASE}/analysis/${encodeURIComponent(sym)}`),
         fetch(`${API_BASE}/stocks/${encodeURIComponent(sym)}/metadata`),
         fetch(`${API_BASE}/history/${encodeURIComponent(sym)}?tf=1h&limit=50`),
+        fetch(`${API_BASE}/news/calendar?limit=50`),
       ]);
 
       if (quoteRes.status === "fulfilled" && quoteRes.value.ok) {
@@ -123,6 +133,10 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
       if (historyRes.status === "fulfilled" && historyRes.value.ok) {
         const candles = await historyRes.value.json();
         setCandles(candles);
+      }
+      if (calendarRes.status === "fulfilled" && calendarRes.value.ok) {
+        const payload = await calendarRes.value.json();
+        setEvents(Array.isArray(payload.events) ? payload.events : []);
       }
     } catch (err) {
       console.error("Failed to load inspector data:", err);
@@ -194,11 +208,23 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
         <section className="inspector-section">
           <h3 className="section-label">Next Events</h3>
           <div className="events-list">
-            <div className="event-item">
-              <span className="event-time">Phase 2</span>
-              <span className="event-title">Economic calendar coming soon</span>
-              <span className="event-importance low">Licensed provider needed</span>
-            </div>
+            {events.length > 0 ? (
+              events.slice(0, 5).map((event) => (
+                <div className="event-item" key={event.id}>
+                  <span className="event-time">{new Date(event.scheduled_at).toLocaleString()}</span>
+                  <span className="event-title">{event.title}</span>
+                  <span className={`event-importance ${event.importance || "medium"}`}>
+                    {event.currency} · {event.importance || "medium"}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="event-item">
+                <span className="event-time">Unavailable</span>
+                <span className="event-title">No calendar events returned</span>
+                <span className="event-importance low">Provider may be unconfigured</span>
+              </div>
+            )}
           </div>
         </section>
 

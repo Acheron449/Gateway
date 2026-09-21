@@ -1,6 +1,7 @@
 from __future__ import annotations
-
+import hashlib
 import json
+
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,6 +9,38 @@ from uuid import uuid4
 
 
 DB_PATH = Path(__file__).resolve().parents[3] / "quant_app.db"
+
+
+def _migrate_event_snapshots(cur):
+    row = cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'event_snapshots'"
+    ).fetchone()
+    current_sql = row[0] if row else ""
+    if "UNIQUE(event_id, snapshot_type, provider_version)" in current_sql:
+        return
+    rows = cur.execute(
+        "SELECT id, snapshot_type, event_id, snapshot_data, provider_version, captured_at FROM event_snapshots"
+    ).fetchall()
+    cur.execute("DROP TABLE event_snapshots")
+    cur.execute(
+        """
+        CREATE TABLE event_snapshots (
+            id TEXT PRIMARY KEY,
+            snapshot_type TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            snapshot_data TEXT NOT NULL,
+            provider_version TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            UNIQUE(event_id, snapshot_type, provider_version)
+        )
+        """
+    )
+    cur.executemany(
+        """INSERT OR IGNORE INTO event_snapshots
+           (id, snapshot_type, event_id, snapshot_data, provider_version, captured_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
 
 
 @contextmanager
@@ -260,12 +293,16 @@ def init_db():
                 related_symbols TEXT,  -- JSON array
                 sentiment_score REAL,
                 provider_version TEXT NOT NULL,
+                data_time TEXT,
                 coverage TEXT,
                 delay_seconds INTEGER,
                 entitlement TEXT
             )
             """
         )
+        news_columns = {row[1] for row in cur.execute("PRAGMA table_info(news_items)")}
+        if "data_time" not in news_columns:
+            cur.execute("ALTER TABLE news_items ADD COLUMN data_time TEXT")
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_news_items_published ON news_items(published_at)
@@ -287,8 +324,34 @@ def init_db():
                 snapshot_data TEXT NOT NULL,  -- JSON serialized event/news
                 provider_version TEXT NOT NULL,
                 captured_at TEXT NOT NULL,
-                UNIQUE(event_id, provider_version)
+                UNIQUE(event_id, snapshot_type, provider_version)
             )
+            """
+        )
+        _migrate_event_snapshots(cur)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_tags (
+                id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL,
+                snapshot_type TEXT NOT NULL,
+                tag_type TEXT NOT NULL,
+                tag_value TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                model_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(event_id, snapshot_type, tag_type, tag_value)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_tags_event ON event_tags(event_id, snapshot_type)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_tags_value ON event_tags(tag_type, tag_value)
             """
         )
         cur.execute(
@@ -640,35 +703,91 @@ def store_event_snapshot(
 ) -> str:
     """Store an immutable snapshot of an event or news item for backtest reproducibility."""
     init_db()
-    snapshot_id = str(uuid4())
+    snapshot_id = f"{snapshot_type}:{event_id}:{provider_version}"
     now = __import__('datetime').datetime.utcnow().isoformat()
     import json
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            """INSERT OR REPLACE INTO event_snapshots (id, snapshot_type, event_id, snapshot_data, provider_version, captured_at)
+            """INSERT OR IGNORE INTO event_snapshots (id, snapshot_type, event_id, snapshot_data, provider_version, captured_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (snapshot_id, snapshot_type, event_id, json.dumps(event_data), provider_version, now),
         )
+        existing = cur.execute(
+            "SELECT id FROM event_snapshots WHERE event_id = ? AND snapshot_type = ? AND provider_version = ?",
+            (event_id, snapshot_type, provider_version),
+        ).fetchone()
         conn.commit()
-    return snapshot_id
+    return existing[0] if existing else snapshot_id
 
 
-def get_event_snapshot(event_id: str, provider_version: str) -> dict | None:
+def get_event_snapshot(
+    event_id: str,
+    provider_version: str,
+    snapshot_type: str | None = None,
+) -> dict | None:
     """Retrieve an event/news snapshot by event_id and provider_version."""
     init_db()
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            """SELECT * FROM event_snapshots WHERE event_id = ? AND provider_version = ?""",
-            (event_id, provider_version)
-        ).fetchone()
+        if snapshot_type:
+            row = conn.execute(
+                """SELECT * FROM event_snapshots WHERE event_id = ? AND snapshot_type = ? AND provider_version = ?""",
+                (event_id, snapshot_type, provider_version),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT * FROM event_snapshots WHERE event_id = ? AND provider_version = ?""",
+                (event_id, provider_version),
+            ).fetchone()
     if not row:
         return None
     import json
     data = dict(row)
     data['snapshot_data'] = json.loads(data['snapshot_data'])
     return data
+
+
+def insert_event_tags(
+    event_id: str,
+    snapshot_type: str,
+    tags: list[dict],
+) -> None:
+    """Persist derived tags for an event or news snapshot."""
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for tag in tags:
+            tag_type = str(tag.get("tag_type", "")).strip()
+            tag_value = str(tag.get("tag_value", "")).strip()
+            if not tag_type or not tag_value:
+                continue
+            confidence = float(tag.get("confidence", 1.0))
+            model_version = str(tag.get("model_version", "gateway-mapping-v1"))
+            tag_id = f"{snapshot_type}:{event_id}:{tag_type}:{tag_value}"
+            cur.execute(
+                """INSERT OR IGNORE INTO event_tags
+                   (id, event_id, snapshot_type, tag_type, tag_value, confidence, model_version, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (tag_id, event_id, snapshot_type, tag_type, tag_value, confidence, model_version, now),
+            )
+        conn.commit()
+
+
+def get_event_tags(event_id: str, snapshot_type: str) -> list[dict]:
+    """Get derived tags for an event or news snapshot."""
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT tag_type, tag_value, confidence, model_version
+               FROM event_tags WHERE event_id = ? AND snapshot_type = ?
+               ORDER BY tag_type, tag_value""",
+            (event_id, snapshot_type),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
 
 
 def get_event_snapshots_by_type(snapshot_type: str, limit: int = 100) -> list[dict]:
@@ -715,6 +834,7 @@ def insert_economic_event(event: dict) -> None:
                 event.get('fetched_at'),
                 event.get('data_time'),
                 event.get('coverage'),
+
                 event.get('delay_seconds'),
                 event.get('entitlement'),
             ),
@@ -796,8 +916,8 @@ def insert_news_item(item: dict) -> None:
         cur.execute(
             """INSERT OR REPLACE INTO news_items
                (id, headline, url, source, published_at, fetched_at, categories,
-                related_symbols, sentiment_score, provider_version, coverage, delay_seconds, entitlement)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                related_symbols, sentiment_score, provider_version, data_time, coverage, delay_seconds, entitlement)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 item.get('id'),
                 item.get('headline'),
@@ -809,6 +929,7 @@ def insert_news_item(item: dict) -> None:
                 json.dumps(item.get('related_symbols', [])),
                 item.get('sentiment_score'),
                 item.get('provider_version'),
+                item.get('data_time'),
                 item.get('coverage'),
                 item.get('delay_seconds'),
                 item.get('entitlement'),
@@ -851,7 +972,8 @@ def get_news_items(
         
         # Filter by symbols if provided
         if symbols:
-            if not any(s in data.get('related_symbols', []) for s in symbols):
+            requested_symbols = {symbol.upper() for symbol in symbols}
+            if not any(symbol.upper() in requested_symbols for symbol in data.get('related_symbols', [])):
                 continue
         
         result.append(data)

@@ -20,6 +20,10 @@ class ProviderConfig(TypedDict, total=False):
     extra: dict[str, Any]
 
 
+class ProviderUnavailableError(RuntimeError):
+    pass
+
+
 class MarketDataProvider(ABC):
     """Base interface for read-only market-data providers."""
 
@@ -80,4 +84,5 @@ __all__ = [
     "Provider",
     "ProviderMeta",
     "ProviderConfig",
+    "ProviderUnavailableError",
 ]

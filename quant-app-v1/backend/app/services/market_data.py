@@ -41,37 +41,23 @@ class MarketDataIngestor:
         print("MarketDataIngestor initialized. Ready to connect to Time-Series DB.")
 
     async def connect_to_db(self):
-        """Establishes connection to the Time-Series Database."""
-        print("Connecting to TimescaleDB instance...")
-        # Add connection pooling/pooling logic here
-        await asyncio.sleep(1) # Simulate connection delay
-        print("Database connection established.")
-        
+        """Fail closed instead of pretending a time-series database is connected."""
+        raise RuntimeError("Historical market data is unavailable; configure a provider")
+
     async def stream_live_market_data(self, tick_handler) -> None:
-        """
-        Simulates listening to live market data feeds.
-        tick_handler is a callback function to pass new data to the Orchestrator.
-        """
-        print("Listening for live market ticks...")
-        # In a real system, this runs forever/until cancelled
-        while self.is_live:
-            # Simulating receiving a new tick every second
-            await asyncio.sleep(1) 
-            new_tick = TickData(timestamp=time.time(), price=150.0 + (time.time()%1), volume=100)
-            # Pass the cleaned tick to the handler
-            await tick_handler(new_tick)
-         
+        """Fail closed instead of emitting synthetic ticks."""
+        del tick_handler
+        raise RuntimeError("Live market data is unavailable; configure a provider")
+
     def fetch_historical_data(self, start_time: float, end_time: float) -> List[TickData]:
         """
         Retrieves a batch of clean, time-series data for backtesting.
         """
-        print(f"Fetching data from DB for [{start_time} to {end_time})...")
-        # This is where the connection to TimescaleDB occurs to retrieve batch data
-        return [] # Placeholder for fetched data
+        del start_time, end_time
+        raise RuntimeError("Historical market data is unavailable; configure a provider")
 
     def start_live_feeds(self):
-        self.is_live = True
-        print("Data Ingestion is LIVE.")
+        raise RuntimeError("Live market data is unavailable; configure a provider")
 
 
 def _alpaca_credentials() -> tuple[str, str] | None:

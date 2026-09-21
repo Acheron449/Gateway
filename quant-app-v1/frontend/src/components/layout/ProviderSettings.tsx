@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_BASE } from "../../lib/constants";
+import { useAuth } from "../../context/AuthContext";
 
 interface ProviderMeta {
   name: string;
@@ -25,18 +26,7 @@ interface TestResult {
 }
 
 interface ProviderCardProps {
-  provider: {
-    name: string;
-    meta: {
-      name: string;
-      version: string;
-      endpoint: string;
-      requires_api_key: boolean;
-      rate_limit_per_min: number | null;
-    };
-    configured: boolean;
-    has_stored_key: boolean;
-  };
+  provider: ProviderStatus;
   selectedProvider: string | null;
   onSelect: (name: string) => void;
   inputApiKey: string;
@@ -44,19 +34,85 @@ interface ProviderCardProps {
   setInputApiKey: (value: string) => void;
   setShowKey: (value: boolean) => void;
   loading: boolean;
-  testResult: { success: boolean; message: string; configured: boolean; news_count?: number; calendar_count?: number } | null;
+  canManage: boolean;
+  testResult: TestResult | null;
   onSaveKey: () => Promise<void>;
   onTestKey: () => Promise<void>;
   onDeleteKey: () => Promise<void>;
-  providers: Array<{ name: string; has_stored_key: boolean }>;
-  selectedProvider: string | null;
-  inputApiKey: string;
-  showKey: boolean;
-  setInputApiKey: (value: string) => void;
-  setShowKey: (value: boolean) => void;
-  onSaveKey: () => Promise<void>;
-  onTestKey: () => Promise<void>;
-  onDeleteKey: () => Promise<void>;
+}
+
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("gateway_auth_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isProviderStatus(value: unknown): value is ProviderStatus {
+  if (!isRecord(value) || !isRecord(value.meta)) return false;
+
+  return (
+    typeof value.name === "string" &&
+    typeof value.meta.name === "string" &&
+    typeof value.meta.version === "string" &&
+    typeof value.meta.endpoint === "string" &&
+    typeof value.meta.requires_api_key === "boolean" &&
+    (typeof value.meta.rate_limit_per_min === "number" || value.meta.rate_limit_per_min === null) &&
+    typeof value.configured === "boolean" &&
+    typeof value.has_stored_key === "boolean"
+  );
+}
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+async function readResponseError(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) return `${response.status} ${response.statusText}`.trim();
+
+  try {
+    const payload: unknown = JSON.parse(text);
+    if (isRecord(payload) && typeof payload.detail === "string" && payload.detail) {
+      return payload.detail;
+    }
+    if (typeof payload === "string" && payload) {
+      return payload;
+    }
+  } catch {
+    return text;
+  }
+
+  return text;
+}
+
+function normalizeTestResult(value: unknown): TestResult {
+  if (!isRecord(value)) {
+    throw new Error("Invalid provider test response");
+  }
+
+  const success = value.success === true;
+  const result: TestResult = {
+    success,
+    message:
+      typeof value.message === "string" && value.message
+        ? value.message
+        : success
+          ? "Provider test completed"
+          : "Provider test failed",
+    configured: value.configured === true,
+  };
+
+  if (typeof value.news_count === "number" && Number.isFinite(value.news_count)) {
+    result.news_count = value.news_count;
+  }
+  if (typeof value.calendar_count === "number" && Number.isFinite(value.calendar_count)) {
+    result.calendar_count = value.calendar_count;
+  }
+
+  return result;
 }
 
 function ProviderCard({
@@ -68,13 +124,13 @@ function ProviderCard({
   setInputApiKey,
   setShowKey,
   loading,
+  canManage,
   testResult,
   onSaveKey,
   onTestKey,
   onDeleteKey,
 }: ProviderCardProps) {
   const selected = selectedProvider === provider.name;
-  const hasStoredKey = provider.has_stored_key;
 
   const renderDetails = () => (
     <div className="provider-details">
@@ -102,7 +158,8 @@ function ProviderCard({
                 <input
                   type={showKey ? "text" : "password"}
                   value={inputApiKey}
-                  onChange={e => setInputApiKey(e.target.value)}
+                  onChange={(event) => setInputApiKey(event.target.value)}
+                  disabled={!canManage}
                   placeholder="Enter API key"
                   className="api-key-input"
                 />
@@ -111,7 +168,8 @@ function ProviderCard({
                 <input
                   type="checkbox"
                   checked={showKey}
-                  onChange={e => setShowKey(e.target.checked)}
+                  onChange={(event) => setShowKey(event.target.checked)}
+                  disabled={!canManage}
                 />
                 Show Key
               </label>
@@ -120,21 +178,22 @@ function ProviderCard({
               <button
                 className="btn-primary"
                 onClick={onSaveKey}
-                disabled={loading || !inputApiKey.trim()}
+                disabled={loading || !canManage || !inputApiKey.trim()}
               >
                 {loading ? "Saving..." : "Save Key"}
               </button>
               <button
                 className="btn-secondary"
                 onClick={onTestKey}
-                disabled={loading}
+                disabled={loading || !canManage || !provider.has_stored_key}
+                title={provider.has_stored_key ? "Test the stored API key" : "Save an API key before testing"}
               >
-                Test Key
+                Test Stored Key
               </button>
               <button
                 className="btn-danger"
                 onClick={onDeleteKey}
-                disabled={loading}
+                disabled={loading || !canManage || !provider.has_stored_key}
               >
                 Delete Key
               </button>
@@ -142,9 +201,9 @@ function ProviderCard({
             {testResult && (
               <div className={`test-result ${testResult.success ? "success" : "error"}`}>
                 <span>{testResult.message}</span>
-                {testResult.news_count !== undefined && (
+                {(testResult.news_count !== undefined || testResult.calendar_count !== undefined) && (
                   <span className="test-details">
-                    News: {testResult.news_count}, Calendar: {testResult.calendar_count}
+                    News: {testResult.news_count ?? "N/A"}, Calendar: {testResult.calendar_count ?? "N/A"}
                   </span>
                 )}
               </div>
@@ -152,19 +211,16 @@ function ProviderCard({
           </div>
         ) : (
           <div className="no-key-info">
-            <p>This provider does not require an API key or is not yet implemented.</p>
+            <p>This provider does not support browser-managed API keys.</p>
             <p className="hint">TradingView requires a paid subscription. No BYOK available.</p>
           </div>
         )}
       </div>
-    );
-  };
-
-  const selected = selectedProvider === provider.name;
-  const hasStoredKey = provider.has_stored_key;
+    </div>
+  );
 
   return (
-    <div key={provider.name} className={`provider-card ${selected ? "selected" : ""}`}>
+    <div className={`provider-card ${selected ? "selected" : ""}`}>
       <div className="provider-header" onClick={() => onSelect(provider.name)}>
         <div className="provider-info">
           <h3>{provider.name}</h3>
@@ -174,139 +230,188 @@ function ProviderCard({
           <span className={`status-badge ${provider.configured ? "configured" : "not-configured"}`}>
             {provider.configured ? "Configured" : "Not Configured"}
           </span>
-          {provider.has_stored_key && (
-            <span className="stored-badge">Key Stored</span>
-          )}
+          {provider.has_stored_key && <span className="stored-badge">Key Stored</span>}
         </div>
       </div>
 
-      {selectedProvider === provider.name && renderDetails()}
+      {selected && renderDetails()}
     </div>
   );
 }
 
 export function ProviderSettings() {
-  const [providers, setProviders] = useState<Array<{
-    name: string;
-    meta: ProviderMeta;
-    configured: boolean;
-    has_stored_key: boolean;
-  }>>([]);
+  const { isAuthenticated } = useAuth();
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [inputApiKey, setInputApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
+  const [loadingProviders, setLoadingProviders] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string; configured: boolean; news_count?: number; calendar_count?: number } | null>(null);
-  const [generatingKey, setGeneratingKey] = useState(false);
-  const [newFernetKey, setNewFernetKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const fetchProviders = useCallback(async () => {
+    setLoadingProviders(true);
+    setLoadError(null);
+
     try {
-      const res = await fetch(`${API_BASE}/settings/providers`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setProviders(data);
-    } catch (err) {
-      console.error("Failed to load providers:", err);
+      const response = await fetch(`${API_BASE}/settings/providers`);
+      if (!response.ok) {
+        throw new Error(await readResponseError(response));
+      }
+
+      const data: unknown = await response.json();
+      if (!Array.isArray(data)) {
+        throw new Error("Invalid provider settings response");
+      }
+
+      const statuses = data.filter(isProviderStatus);
+      setProviders(statuses);
+      setSelectedProvider((current) =>
+        current && statuses.some((provider) => provider.name === current) ? current : null,
+      );
+    } catch (error) {
+      const message = toErrorMessage(error, "Failed to load provider settings");
+      setLoadError(message);
+      setProviders([]);
+    } finally {
+      setLoadingProviders(false);
+    }
+  }, []);
+
+  const refreshProviderStatus = useCallback(async (name: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}`);
+      if (!response.ok) {
+        throw new Error(await readResponseError(response));
+      }
+
+      const data: unknown = await response.json();
+      if (!isProviderStatus(data)) {
+        throw new Error("Invalid provider status response");
+      }
+
+      setProviders((current) => {
+        if (current.some((provider) => provider.name === data.name)) {
+          return current.map((provider) => (provider.name === data.name ? data : provider));
+        }
+        return [data, ...current];
+      });
+    } catch (error) {
+      setActionError(toErrorMessage(error, "Failed to refresh provider status"));
     }
   }, []);
 
   useEffect(() => {
-    fetchProviders();
+    void fetchProviders();
   }, [fetchProviders]);
 
-  const handleSelectProvider = (name: string) => {
-    setSelectedProvider(name);
-    setInputApiKey("");
-    setTestResult(null);
-  };
-
-  const handleSaveKey = async () => {
-    if (!selectedProvider || !inputApiKey.trim()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/settings/providers/${selectedProvider}/key`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: inputApiKey.trim() }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      fetchProviders();
+  const handleSelectProvider = useCallback(
+    (name: string) => {
+      setSelectedProvider(name);
       setInputApiKey("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save key");
-    } finally {
-      setLoading(false);
-    }
-  };
+      setShowKey(false);
+      setTestResult(null);
+      setActionError(null);
+      void refreshProviderStatus(name);
+    },
+    [refreshProviderStatus],
+  );
 
-  const handleDeleteKey = async () => {
-    if (!selectedProvider) return;
-    if (!confirm(`Delete stored API key for ${selectedProvider}?`)) return;
+  const handleSaveKey = useCallback(async () => {
+    const name = selectedProvider;
+    const apiKey = inputApiKey.trim();
+    if (!name || !apiKey || loading) return;
+
     setLoading(true);
+    setActionError(null);
     try {
-      const res = await fetch(`${API_BASE}/settings/providers/${selectedProvider}/key`, {
-        method: "DELETE",
+      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}/key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ api_key: apiKey }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      fetchProviders();
-      setSelectedProvider(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete key");
+      if (!response.ok) {
+        throw new Error(await readResponseError(response));
+      }
+
+      const data: unknown = await response.json();
+      if (!isRecord(data) || data.stored !== true) {
+        throw new Error("Provider key was not stored");
+      }
+
+      setInputApiKey("");
+      setShowKey(false);
+      setTestResult(null);
+      await fetchProviders();
+    } catch (error) {
+      setActionError(toErrorMessage(error, "Failed to save API key"));
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedProvider, inputApiKey, loading, fetchProviders]);
 
-  const handleTestKey = async () => {
-    if (!selectedProvider) return;
+  const handleTestKey = useCallback(async () => {
+    const name = selectedProvider;
+    if (!name || loading) return;
+
     setLoading(true);
+    setActionError(null);
     setTestResult(null);
+
     try {
-      const res = await fetch(`${API_BASE}/settings/providers/${selectedProvider}/test`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setTestResult(data);
-    } catch (err) {
+      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}/test`, {
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response));
+      }
+
+      const data: unknown = await response.json();
+      setTestResult(normalizeTestResult(data));
+      await refreshProviderStatus(name);
+    } catch (error) {
       setTestResult({
         success: false,
-        message: err instanceof Error ? err.message : "Test failed",
+        message: toErrorMessage(error, "Provider test failed"),
         configured: false,
       });
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedProvider, loading, refreshProviderStatus]);
 
-  const handleGenerateFernetKey = async () => {
-    setGeneratingKey(true);
+  const handleDeleteKey = useCallback(async () => {
+    const name = selectedProvider;
+    if (!name || loading) return;
+    if (!window.confirm(`Delete stored API key for ${name}?`)) return;
+
+    setLoading(true);
+    setActionError(null);
     try {
-      const res = await fetch(`${API_BASE}/settings/providers/generate-fernet-key`, {
-        method: "POST",
+      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}/key`, {
+        method: "DELETE",
+        headers: authHeaders(),
       });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setNewFernetKey(data.fernet_key);
-    } catch (err) {
-      console.error("Failed to generate key:", err);
+      if (!response.ok) {
+        throw new Error(await readResponseError(response));
+      }
+
+      setSelectedProvider(null);
+      setInputApiKey("");
+      setShowKey(false);
+      setTestResult(null);
+      await fetchProviders();
+    } catch (error) {
+      setActionError(toErrorMessage(error, "Failed to delete API key"));
     } finally {
-      setGeneratingKey(false);
+      setLoading(false);
     }
-  };
+  }, [selectedProvider, loading, fetchProviders]);
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    alert("Copied to clipboard!");
-  };
-
-  if (loading && providers.length === 0) {
+  if (loadingProviders && providers.length === 0) {
     return <div className="settings-loading">Loading provider settings...</div>;
-  }
-
-  if (error) {
-    return <div className="settings-error">Error: {error} <button onClick={fetchProviders}>Retry</button></div>;
   }
 
   return (
@@ -319,25 +424,26 @@ export function ProviderSettings() {
         </p>
       </div>
 
-      {newFernetKey && (
-        <div className="fernet-key-banner">
-          <h3>New Fernet Key Generated</h3>
-          <p className="fernet-key">
-            <code>{newFernetKey}</code>
-            <button onClick={() => copyToClipboard(newFernetKey!)} className="btn-secondary btn-sm">
-              Copy
-            </button>
-          </p>
-          <p className="warning">
-            <strong>Important:</strong> Store this key in the <code>GATEWAY_PROVIDER_KEY</code> environment variable.
-            Rotate rarely - changing it will make all stored API keys undecryptable.
-          </p>
-          <button className="btn-secondary" onClick={() => setNewFernetKey(null)}>Dismiss</button>
+      {!isAuthenticated && (
+        <div className="settings-error" role="alert">
+          <span>Sign in to save, test, or delete provider API keys.</span>
+        </div>
+      )}
+      {loadError && (
+        <div className="settings-error" role="alert">
+          <span>Failed to load providers: {loadError}</span>
+          <button className="btn-secondary" onClick={() => void fetchProviders()}>Retry</button>
+        </div>
+      )}
+      {actionError && (
+        <div className="settings-error" role="alert">
+          <span>{actionError}</span>
+          <button className="btn-secondary" onClick={() => setActionError(null)}>Dismiss</button>
         </div>
       )}
 
       <div className="providers-list">
-        {providers.map(provider => (
+        {providers.map((provider) => (
           <ProviderCard
             key={provider.name}
             provider={provider}
@@ -348,16 +454,8 @@ export function ProviderSettings() {
             setInputApiKey={setInputApiKey}
             setShowKey={setShowKey}
             loading={loading}
+            canManage={isAuthenticated}
             testResult={testResult}
-            onSaveKey={handleSaveKey}
-            onTestKey={handleTestKey}
-            onDeleteKey={handleDeleteKey}
-            providers={providers}
-            selectedProvider={selectedProvider}
-            inputApiKey={inputApiKey}
-            showKey={showKey}
-            setInputApiKey={setInputApiKey}
-            setShowKey={setShowKey}
             onSaveKey={handleSaveKey}
             onTestKey={handleTestKey}
             onDeleteKey={handleDeleteKey}
@@ -369,17 +467,10 @@ export function ProviderSettings() {
         <h2>Encryption Key Management</h2>
         <p className="settings-description">
           API keys are encrypted at rest using Fernet symmetric encryption.
-          The encryption key is stored in the <code>GATEWAY_PROVIDER_KEY</code> environment variable.
+          The encryption key is managed by the Gateway server in the{" "}
+          <code>GATEWAY_PROVIDER_KEY</code> environment variable or its configured key file.
+          Generated encryption keys are never sent to the browser.
         </p>
-        <button className="btn-secondary" onClick={handleGenerateFernetKey} disabled={generatingKey}>
-          {generatingKey ? "Generating..." : "Generate New Fernet Key"}
-        </button>
-        {newFernetKey && (
-          <div className="fernet-key-display">
-            <code>{newFernetKey}</code>
-            <button className="btn-secondary btn-sm" onClick={() => copyToClipboard(newFernetKey!)}>Copy</button>
-          </div>
-        )}
       </div>
     </div>
   );

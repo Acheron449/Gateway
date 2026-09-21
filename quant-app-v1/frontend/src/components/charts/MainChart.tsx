@@ -17,13 +17,40 @@ export interface MainChartProps {
   historyData: HistoryCandle[];
   loading: boolean;
   liveUpdate?: LiveTradingUpdate | null;
+  eventMarkers?: SeriesMarker<Time>[];
 }
 
-export function MainChart({ ticker, historyData, loading, liveUpdate }: MainChartProps) {
+function markerTime(marker: SeriesMarker<Time>): number {
+  return typeof marker.time === "number" ? marker.time : 0;
+}
+
+function mergeMarkers(
+  eventMarkers: SeriesMarker<Time>[],
+  patternMarkers: SeriesMarker<Time>[],
+): SeriesMarker<Time>[] {
+  return [...eventMarkers, ...patternMarkers].sort((a, b) => markerTime(a) - markerTime(b));
+}
+
+export function MainChart({
+  ticker,
+  historyData,
+  loading,
+  liveUpdate,
+  eventMarkers = [],
+}: MainChartProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const markersRef = useRef<Array<SeriesMarker<Time>>>([]);
+  const patternMarkersRef = useRef<SeriesMarker<Time>[]>([]);
+  const eventMarkersRef = useRef<SeriesMarker<Time>[]>([]);
+
+  useEffect(() => {
+    eventMarkersRef.current = eventMarkers;
+    const series = seriesRef.current;
+    if (series) {
+      series.setMarkers(mergeMarkers(eventMarkers, patternMarkersRef.current));
+    }
+  }, [eventMarkers]);
 
   useEffect(() => {
     const container = rootRef.current;
@@ -54,7 +81,8 @@ export function MainChart({ ticker, historyData, loading, liveUpdate }: MainChar
 
     chartRef.current = chart;
     seriesRef.current = series;
-    markersRef.current = [];
+    patternMarkersRef.current = [];
+    eventMarkersRef.current = eventMarkers;
 
     const mapped: CandlestickData[] = historyData.map((b) => ({
       time: b.time as UTCTimestamp,
@@ -64,6 +92,7 @@ export function MainChart({ ticker, historyData, loading, liveUpdate }: MainChar
       close: b.close,
     }));
     series.setData(mapped);
+    series.setMarkers(eventMarkers);
 
     const ro =
       typeof ResizeObserver !== "undefined"
@@ -86,8 +115,6 @@ export function MainChart({ ticker, historyData, loading, liveUpdate }: MainChar
       chartRef.current = null;
       seriesRef.current = null;
     };
-    // rebuild chart whenever ticker switches or anchored history refreshes fully
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reset chart on ticker/dataset pairing
   }, [ticker, loading, historyData]);
 
   useEffect(() => {
@@ -99,19 +126,22 @@ export function MainChart({ ticker, historyData, loading, liveUpdate }: MainChar
       time: liveUpdate.priceData.time as UTCTimestamp,
     });
 
-    if (liveUpdate.pattern_detected) {
-      markersRef.current = [
-        ...markersRef.current,
-        {
-          time: liveUpdate.time as UTCTimestamp,
-          position: "aboveBar",
-          shape: "arrowDown",
-          color: "#f0883e",
-          text: liveUpdate.pattern_label ?? "Pattern",
-        },
-      ];
-      series.setMarkers(markersRef.current);
-    }
+    if (!liveUpdate.pattern_detected) return;
+
+    const marker: SeriesMarker<Time> = {
+      time: liveUpdate.time as UTCTimestamp,
+      position: "aboveBar",
+      shape: "arrowDown",
+      color: "#f0883e",
+      text: liveUpdate.pattern_label ?? "Pattern",
+    };
+    const exists = patternMarkersRef.current.some(
+      (current) => markerTime(current) === markerTime(marker) && current.text === marker.text,
+    );
+    if (exists) return;
+
+    patternMarkersRef.current = [...patternMarkersRef.current, marker];
+    series.setMarkers(mergeMarkers(eventMarkersRef.current, patternMarkersRef.current));
   }, [liveUpdate]);
 
   return (
