@@ -40,7 +40,10 @@ async def run_backtest(payload: dict[str, Any]) -> dict:
     Backtest execution is intentionally unavailable until the legacy payload is
     replaced by an approved typed StrategySpec and the current BacktestConfig API.
     """
-    _validate_backtest_payload(payload)
+    try:
+        _validate_backtest_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.get("async_run") or payload.get("background"):
         job_id = database.create_backtest_job(payload=payload)
         asyncio.create_task(_backtest_worker(job_id, payload), name=f"backtest-job-{job_id}")
