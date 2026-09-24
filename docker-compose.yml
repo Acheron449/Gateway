@@ -3,8 +3,8 @@ version: '3.9'
 services:
   backend:
     build:
-      context: ./quant-app-v1/backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./quant-app-v1/backend/Dockerfile
     container_name: quant-app-backend
     ports:
       - "8000:8000"

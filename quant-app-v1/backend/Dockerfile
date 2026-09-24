@@ -7,10 +7,11 @@ WORKDIR /tmp
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --upgrade pip setuptools wheel
 
 # Copy requirements and create wheels
-COPY app/requirements.txt .
+COPY requirements.txt .
 RUN pip install --user --no-cache-dir --upgrade pip && \
     pip install --user --no-cache-dir -r requirements.txt
 
@@ -31,7 +32,7 @@ RUN useradd -m -u 1000 appuser
 COPY --from=builder /root/.local /home/appuser/.local
 
 # Copy application code
-COPY app/ ./app
+COPY quant-app-v1/backend/app ./app
 
 # Set environment
 ENV PATH=/home/appuser/.local/bin:$PATH \
