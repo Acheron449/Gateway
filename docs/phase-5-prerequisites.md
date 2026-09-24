@@ -14,6 +14,9 @@
 - [x] Phase 7 starter artifacts: `public/sitemap.xml`, `public/robots.txt`, `llms.txt`; `docs/phase-7-plan.md` (215 lines) — prerequisites (Phase 6 finalized, HTTPS/slugs/backlinks, meta injection) still open.
 
 ## Partial / draft only (do not treat as complete)
+- [x] Phase 6 — OpenBB data integration (provider `openbb_provider.py`, routes `openbb_routes.py`, CLI `openbb_cli.py`, server provider `openbb_server_provider.py`, ingestor `OpenBBIngestor` in `market_data.py`, provider registry updated, `requirements.txt` entry, config flags `enable_openbb_data / enable_openbb_server`; all feature‑gated behind `ENABLE_OPENBB_DATA=false`). Compared to codebase‑memory (gen 2026‑09‑20) OpenBB is now indexed; source files verified.
+- [x] Phase 6 — code now present; design resolved; AGPLv3 review still pending for production.
+- [x] Phase 5 – live‑broker adapter (still blocked; `alpaca_live.py` 3‑line draft; prerequisites unverified; see Phase 5 plan).
 - [~] `quant-app-v1/backend/app/providers/alpaca_live.py` (3 lines, line 3: "Status: Draft — prerequisites not met").
 - [~] `docs/phase-4-plan.md` — 3 lines only; reconciliation ≥1000 trades / <0.1% discrepancy unverified.
 - [~] `docs/phase-5-prerequisites.md` — was 1-line stub; now this file.

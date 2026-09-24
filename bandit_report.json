@@ -5,18 +5,18 @@
       "reason": "syntax error while parsing AST from file"
     }
   ],
-  "generated_at": "2026-09-21T12:56:15Z",
+  "generated_at": "2026-09-22T01:01:24Z",
   "metrics": {
     "_totals": {
-      "CONFIDENCE.HIGH": 127,
+      "CONFIDENCE.HIGH": 128,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 6,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 129,
+      "SEVERITY.LOW": 130,
       "SEVERITY.MEDIUM": 4,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 13592,
+      "loc": 14318,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -55,7 +55,7 @@
       "SEVERITY.LOW": 1,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 453,
+      "loc": 455,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -108,6 +108,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 206,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "quant-app-v1/backend/app/api/openstock_routes.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 76,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -315,7 +328,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 1,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 319,
+      "loc": 475,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -449,8 +462,34 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "quant-app-v1/backend/app/providers/adanos_provider.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 91,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "quant-app-v1/backend/app/providers/alpaca_live.py": {
       "loc": 1,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "quant-app-v1/backend/app/providers/alpaca_provider.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 244,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -506,6 +545,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "quant-app-v1/backend/app/providers/openstock_provider.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 120,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "quant-app-v1/backend/app/providers/registry.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -515,7 +567,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 196,
+      "loc": 216,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -684,7 +736,7 @@
       "SEVERITY.LOW": 4,
       "SEVERITY.MEDIUM": 2,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 1012,
+      "loc": 1016,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -905,7 +957,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 4,
+      "loc": 6,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -971,6 +1023,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 30,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "quant-app-v1/backend/test_alpaca.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 11,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1068,7 +1133,7 @@
   },
   "results": [
     {
-      "code": "142                 price = float(msg.get('price'))\n143             except Exception:\n144                 continue\n145             ts = int(time.time())\n",
+      "code": "143                 price = float(msg.get('price'))\n144             except Exception:\n145                 continue\n146             ts = int(time.time())\n",
       "col_offset": 12,
       "end_col_offset": 24,
       "filename": "quant-app-v1/backend/app/api/main.py",
@@ -1079,10 +1144,10 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Continue detected.",
-      "line_number": 143,
+      "line_number": 144,
       "line_range": [
-        143,
-        144
+        144,
+        145
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html",
       "test_id": "B112",
@@ -1129,7 +1194,7 @@
       "test_name": "hardcoded_sql_expressions"
     },
     {
-      "code": "359             cur = conn.cursor()\n360             cur.execute(f\"UPDATE strategies SET {', '.join(updates)} WHERE id = ?\", params)\n361             conn.commit()\n",
+      "code": "377             cur = conn.cursor()\n378             cur.execute(f\"UPDATE strategies SET {', '.join(updates)} WHERE id = ?\", params)\n379             conn.commit()\n",
       "col_offset": 26,
       "end_col_offset": 48,
       "filename": "quant-app-v1/backend/app/api/v1/strategies.py",
@@ -1140,13 +1205,34 @@
       },
       "issue_severity": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
-      "line_number": 360,
+      "line_number": 378,
       "line_range": [
-        360
+        378
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
       "test_id": "B608",
       "test_name": "hardcoded_sql_expressions"
+    },
+    {
+      "code": "108                 )\n109             except Exception:\n110                 continue\n111         return instruments\n",
+      "col_offset": 12,
+      "end_col_offset": 24,
+      "filename": "quant-app-v1/backend/app/providers/openstock_provider.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Continue detected.",
+      "line_number": 109,
+      "line_range": [
+        109,
+        110
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b112_try_except_continue.html",
+      "test_id": "B112",
+      "test_name": "try_except_continue"
     },
     {
       "code": "113 \n114     def __init__(\n115         self,\n116         api_key: str = \"\",\n117         api_secret: str = \"\",\n118         paper_trading: bool = True,\n119         provider_preference: Optional[str] = None,\n120         slippage_pct: float | None = None,\n121         fee_per_order: float | None = None,\n122     ) -> None:\n123         if not paper_trading:\n124             raise OrderValidationError(\"Live execution is unavailable. Gateway only supports paper mode.\")\n125         self.api_key = api_key\n126         self.api_secret = api_secret\n127         self.paper_trading = paper_trading\n128         self.provider_preference = provider_preference\n129         self.slippage_pct = slippage_pct if slippage_pct is not None else float(os.getenv(\"BROKER_SLIPPAGE_PCT\", 0.001))\n130         self.fee_per_order = fee_per_order if fee_per_order is not None else float(os.getenv(\"BROKER_FEE\", 0.0))\n131 \n132         self._alpaca_key = api_key or os.getenv(\"ALPACA_API_KEY\") or os.getenv(\"ALPACA_KEY\")\n133         self._alpaca_secret = api_secret or os.getenv(\"ALPACA_SECRET\") or os.getenv(\"ALPACA_API_SECRET\")\n134         self._alpaca_base = os.getenv(\"ALPACA_BASE_URL\", \"https://paper-api.alpaca.markets\")\n135         if \"paper-api.alpaca.markets\" not in self._alpaca_base:\n136             raise OrderValidationError(\"ALPACA_BASE_URL must be Alpaca's paper endpoint during Phase 0\")\n137 \n138         try:\n139             from app.services import database\n140 \n141             database.init_db()\n142         except Exception as exc:\n143             print(f\"BrokerService: Failed to initialize DB: {exc}\")\n144 \n145         self.provider: _BaseProvider | None = None\n146         self.provider_error = \"No supported paper broker configured\"\n147         self._init_provider()\n148 \n",
@@ -1202,7 +1288,7 @@
       "test_name": "hardcoded_password_default"
     },
     {
-      "code": "442         cur = conn.cursor()\n443         cur.execute(f\"UPDATE backtest_jobs SET {', '.join(assignments)} WHERE id = ?\", tuple(values))\n444         conn.commit()\n",
+      "code": "447         cur = conn.cursor()\n448         cur.execute(f\"UPDATE backtest_jobs SET {', '.join(assignments)} WHERE id = ?\", tuple(values))\n449         conn.commit()\n",
       "col_offset": 22,
       "end_col_offset": 47,
       "filename": "quant-app-v1/backend/app/services/database.py",
@@ -1213,37 +1299,16 @@
       },
       "issue_severity": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
-      "line_number": 443,
+      "line_number": 448,
       "line_range": [
-        443
+        448
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
       "test_id": "B608",
       "test_name": "hardcoded_sql_expressions"
     },
     {
-      "code": "457                 payload['payload'] = json.loads(payload['payload'])\n458             except Exception:\n459                 pass\n460         if payload.get('result'):\n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "quant-app-v1/backend/app/services/database.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 458,
-      "line_range": [
-        458,
-        459
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "462                 payload['result'] = json.loads(payload['result'])\n463             except Exception:\n464                 pass\n465         return payload\n",
+      "code": "462                 payload['payload'] = json.loads(payload['payload'])\n463             except Exception:\n464                 pass\n465         if payload.get('result'):\n",
       "col_offset": 12,
       "end_col_offset": 20,
       "filename": "quant-app-v1/backend/app/services/database.py",
@@ -1264,7 +1329,7 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "478                 item['payload'] = json.loads(item['payload'])\n479             except Exception:\n480                 pass\n481         if item.get('result'):\n",
+      "code": "467                 payload['result'] = json.loads(payload['result'])\n468             except Exception:\n469                 pass\n470         return payload\n",
       "col_offset": 12,
       "end_col_offset": 20,
       "filename": "quant-app-v1/backend/app/services/database.py",
@@ -1275,17 +1340,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 479,
+      "line_number": 468,
       "line_range": [
-        479,
-        480
+        468,
+        469
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "483                 item['result'] = json.loads(item['result'])\n484             except Exception:\n485                 pass\n486         out.append(item)\n",
+      "code": "483                 item['payload'] = json.loads(item['payload'])\n484             except Exception:\n485                 pass\n486         if item.get('result'):\n",
       "col_offset": 12,
       "end_col_offset": 20,
       "filename": "quant-app-v1/backend/app/services/database.py",
@@ -1306,7 +1371,28 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "600         values.append(order_id)\n601         cur.execute(f\"UPDATE paper_orders SET {', '.join(assignments)} WHERE id = ?\", values)\n602         conn.commit()\n",
+      "code": "488                 item['result'] = json.loads(item['result'])\n489             except Exception:\n490                 pass\n491         out.append(item)\n",
+      "col_offset": 12,
+      "end_col_offset": 20,
+      "filename": "quant-app-v1/backend/app/services/database.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 489,
+      "line_range": [
+        489,
+        490
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "605         values.append(order_id)\n606         cur.execute(f\"UPDATE paper_orders SET {', '.join(assignments)} WHERE id = ?\", values)\n607         conn.commit()\n",
       "col_offset": 22,
       "end_col_offset": 46,
       "filename": "quant-app-v1/backend/app/services/database.py",
@@ -1317,9 +1403,9 @@
       },
       "issue_severity": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
-      "line_number": 601,
+      "line_number": 606,
       "line_range": [
-        601
+        606
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
       "test_id": "B608",

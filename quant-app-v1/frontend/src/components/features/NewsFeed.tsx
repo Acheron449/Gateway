@@ -22,8 +22,11 @@ interface NewsResponse {
     provider_version: string;
     coverage: string;
     entitlement: string;
+    message?: string;
   };
   count: number;
+  status?: string;
+  message?: string;
 }
 
 export function NewsFeed({ ticker }: { ticker?: string }) {

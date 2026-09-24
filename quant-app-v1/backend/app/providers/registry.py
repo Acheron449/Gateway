@@ -10,10 +10,13 @@ from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import get_settings
+from app.providers.adanos_provider import AdanosSentimentProvider
+from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, ProviderMeta
 from app.providers.finnhub_provider import FinnhubProvider
 from app.providers.openbb_provider import OpenBBConfig, OpenBBProvider
 from app.providers.openbb_server_provider import OpenBBServerProvider
+from app.providers.openstock_provider import OpenStockSymbolProvider
 
 
 class TradingViewProvider(MarketDataProvider):
@@ -47,6 +50,9 @@ _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
     "TradingView": TradingViewProvider,
     "OpenBB": OpenBBProvider,
     "OpenBB-Server": OpenBBServerProvider,
+    "Alpaca": AlpacaProvider,
+    "OpenStock": OpenStockSymbolProvider,
+    "Adanos": AdanosSentimentProvider,
 }
 
 _SETTINGS_DIR = Path(__file__).resolve().parent.parent / "settings"
@@ -185,6 +191,7 @@ def _delete_api_key(provider: str) -> bool:
 def get_provider(
     selected: str,
     api_key: Optional[str] = None,
+    api_secret: Optional[str] = None,
 ) -> Optional[MarketDataProvider]:
     name = _canonical_name(selected)
     if name is None:
@@ -204,6 +211,19 @@ def get_provider(
             return None
         return OpenBBServerProvider()
 
+    if name == "Alpaca":
+        key = api_key if api_key is not None else _read_api_key(name)
+        secret = api_secret or os.getenv("ALPACA_SECRET_KEY") or os.getenv("ALPACA_API_SECRET")
+        return AlpacaProvider(api_key=key, api_secret=secret)
+
+    if name == "OpenStock":
+        key = api_key if api_key is not None else _read_api_key(name)
+        return OpenStockSymbolProvider(api_key=key or "")
+
+    if name == "Adanos":
+        key = api_key if api_key is not None else _read_api_key(name)
+        return AdanosSentimentProvider(api_key=key or "")
+
     provider_class = _PROVIDER_CLASSES[name]
     return provider_class(api_key=api_key or "")
 
@@ -214,6 +234,9 @@ def list_providers() -> dict[str, ProviderMeta]:
         "TradingView": TradingViewProvider("").meta,
         "OpenBB": OpenBBProvider().meta,
         "OpenBB-Server": OpenBBServerProvider().meta,
+        "Alpaca": AlpacaProvider().meta,
+        "OpenStock": OpenStockSymbolProvider("").meta,
+        "Adanos": AdanosSentimentProvider("").meta,
     }
 
 

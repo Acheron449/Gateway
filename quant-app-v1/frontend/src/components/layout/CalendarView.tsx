@@ -23,8 +23,11 @@ interface CalendarResponse {
     provider_version: string;
     coverage: string;
     entitlement: string;
+    message?: string;
   };
   count: number;
+  status?: string;
+  message?: string;
 }
 
 function formatDateTime(isoString: string): { date: string; time: string } {

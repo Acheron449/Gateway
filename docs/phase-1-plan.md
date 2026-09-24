@@ -62,6 +62,7 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 
 **Decisions needed from user:**
 - **Auth model:** JWT + SQLite (local) → PostgreSQL (prod) — *recommended start*; or managed (Clerk / Supabase / Firebase)
+- **Auth0 (OIDC):** managed, can be used as primary or secondary auth; integrates with Supabase (8.1) and Auth0 SSO (8.5) — *optional*
 - **Storage:** SQLite for local dev; PostgreSQL for production
 
 **Deliverables**
@@ -83,8 +84,8 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 - No secrets exposed to browser
 
 ### Slice 1.5: News/Calendar Cards (Week 5–6)
-**Depends on:** Phase 2 Slice 2.2 (calendar/news endpoints) — **TBD: will integrate when Phase 2 delivers**; for now, use Phase 0 `/api/news/forex-factory` with clear "scraped/unreliable" badges
+**Depends on:** Phase 2 Slice 2.2 (calendar/news endpoints) — will integrate OpenBB economic calendar when Phase 2 delivers; for now, use OpenBB `obb.economy.calendar` with freshness indicators (delay, coverage, entitlement)
 
 **Deliverables**
 - `quant-app-v1/frontend/src/components/features/NewsFeed.tsx` — replaces `NewsTerminal.tsx`; cards with: headline, source, published_at, freshness indicator, impact badge, related instruments (chips), source link
-- `quant-app-v1/frontend/src/components/features/EconomicCalendar.tsx` — monthly/weekly/day views; event cards with: title, UTC time → local display, importance
+- `quant-app-v1/frontend/src/components/features/EconomicCalendar.tsx` — monthly/weekly/day views; event cards with: title, UTC time → local display, importance, OpenBB provenance badge

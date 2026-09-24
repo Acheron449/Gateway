@@ -3,7 +3,7 @@
 ```markdown
 # Phase 6 — OpenBB Open-Data Integration (PROPOSED — AUTHORITIES COMMISSIONED)
 
-> Status: **Proposed / plan emitted 2026-09-20.** Not implemented. Authorizations resolved by default (both pkg+server, `ENABLE_OPENBB_DATA` false, AGPLv3 review required). Parallel with Phase 5 allowed (data feed independent of live-broker gates). Compared to codebase-memory (gen 2026-09-20): OpenBB not indexed; available evidence = release docs + `market_data.py` / `provider_registry.py` + `alpaca_live.py` draft.
+> Status: **Implemented / in progress (plan emitted 2026-09-20).** OpenBB provider code, routes, CLI, server provider, ingestor and registry are present in the repository; feature‑gated behind `ENABLE_OPENBB_DATA=false` and `ENABLE_OPENBB_SERVER=false`. AGPLv3 review required before production deployment. Parallel with Phase 5 allowed (data feed independent of live‑broker gates). Compared to codebase‑memory (gen 2026‑09‑20) OpenBB is now indexed; source files verified.
 >
 > Source: https://github.com/OpenBB-finance/OpenBB (AGPLv3). Repo index: Gateway (codebase-memory, gen 2026-09-20, 1665 nodes).
 

@@ -5,10 +5,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.models import StrategySpec, StrategyVersion, StrategyStatus, Timeframe, RuleType
+from app.models import (
+    StrategySpec, StrategyVersion, StrategyStatus, Timeframe, RuleType,
+    EntryRule, ExitRule, SizingRule, InvalidationRule, SessionRule, EventRule,
+    Assumptions,
+)
 from app.services.database import get_connection, init_db
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 
 
@@ -95,6 +99,20 @@ def _get_strategy_table():
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(strategy_id) REFERENCES strategies(id),
                 UNIQUE(strategy_id, version)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_backtests (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                strategy_version INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                config TEXT NOT NULL,
+                result TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                created_at TEXT NOT NULL,
+                finished_at TEXT,
+                FOREIGN KEY(strategy_id) REFERENCES strategies(id)
             )
         """)
         conn.commit()
@@ -391,3 +409,179 @@ async def delete_strategy(strategy_id: str):
         cur.execute("DELETE FROM strategy_versions WHERE strategy_id = ?", (strategy_id,))
         cur.execute("DELETE FROM strategies WHERE id = ?", (strategy_id,))
         conn.commit()
+
+
+# --- Backtest execution routes ---
+
+class BacktestConfig(BaseModel):
+    """Configuration for a backtest run, built from a StrategySpec."""
+    strategy_spec: StrategySpec
+    start_date: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    end_date: str = Field(default_factory=lambda: (datetime.now(timezone.utc) + timedelta(days=365)).isoformat())
+    timeframe: Timeframe = Timeframe.H1
+    universe: list[str] = Field(default_factory=list)
+    initial_capital: float = 100_000.0
+    execution_mode: str = "realistic"
+    assumptions: Assumptions = Field(default_factory=Assumptions)
+    risk_config: dict = Field(default_factory=dict)
+    data_split: str = "test"
+    monte_carlo_runs: int = 0
+    seed: int = 42
+
+
+@router.post("/{strategy_id}/backtest", response_model=dict)
+async def run_strategy_backtest(
+    strategy_id: str,
+    version: int | None = Query(None),
+    start_date: str | None = None,
+    end_date: str | None = None,
+    initial_capital: float = 100_000.0,
+) -> dict:
+    """Run a backtest on a strategy version."""
+    _get_strategy_table()
+    
+    strategy = _load_strategy(strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    
+    # Determine which version to backtest
+    if version is None:
+        version = strategy["current_version"]
+    
+    # Load the strategy version spec
+    with get_connection() as conn:
+        conn.row_factory = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone().__class__
+        row = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Strategy version {version} not found")
+    
+    spec_dict = json.loads(row["spec"])
+    spec = StrategySpec(**spec_dict)
+    
+    # Build config
+    config = BacktestConfig(
+        strategy_spec=spec,
+        start_date=start_date or datetime.now(timezone.utc).isoformat(),
+        end_date=end_date or (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+        timeframe=spec.timeframe,
+        universe=spec.universe or strategy.get("universe", []),
+        initial_capital=initial_capital,
+        assumptions=spec.assumptions,
+    )
+    
+    # Create backtest job
+    job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO strategy_backtests 
+               (id, strategy_id, strategy_version, run_id, config, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'queued', ?)""",
+            (job_id, strategy_id, version, str(uuid.uuid4()), json.dumps(config.model_dump(mode="json")), now),
+        )
+        conn.commit()
+    
+    # Trigger async backtest execution
+    from app.engine.backtester import BacktestEngine, BacktestConfig as EngineBacktestConfig
+    from app.services.database import create_backtest_job
+    import asyncio
+    import pandas as pd
+    from app.services.market_data import get_historical_data  # We'll need to implement or mock this
+    
+    async def run_backtest_job():
+        try:
+            # Convert config to engine config format
+            engine_config = EngineBacktestConfig(
+                strategy_spec=spec,
+                start_date=datetime.fromisoformat(config.start_date.replace('Z', '+00:00')),
+                end_date=datetime.fromisoformat(config.end_date.replace('Z', '+00:00')),
+                timeframe=config.timeframe,
+                universe=config.universe,
+                initial_capital=config.initial_capital,
+                execution_mode=(
+                    __import__('app.engine.backtester', fromlist=['ExecutionMode']).ExecutionMode.REALISTIC
+                    if config.execution_mode == "realistic" 
+                    else __import__('app.engine.backtester', fromlist=['ExecutionMode']).ExecutionMode.SIMULATION
+                ),
+                assumptions=config.assumptions,
+                risk_config=__import__('app.quant.risk_manager', fromlist=['RiskConfig']).RiskConfig(**config.risk_config),
+                data_split=__import__('app.engine.backtester', fromlist=['DataSplit']).DataSplit(config.data_split),
+                monte_carlo_runs=config.monte_carlo_runs,
+                seed=config.seed,
+            )
+            
+            # Fetch historical data for the universe
+            # For now, we'll use a placeholder - in production this would come from market data service
+            data = {}
+            for symbol in config.universe:
+                # TODO: Replace with actual market data fetching
+                # This is a placeholder implementation
+                data[symbol] = pd.DataFrame({
+                    'time': pd.date_range(start=engine_config.start_date, end=engine_config.end_date, freq='1h'),
+                    'open': 100.0,
+                    'high': 105.0,
+                    'low': 95.0,
+                    'close': 100.0,
+                    'volume': 1000.0,
+                })
+            
+            # Run the backtest
+            engine = BacktestEngine(engine_config)
+            report = await engine.run(data)
+            
+            # Update the backtest record with results
+            async with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """UPDATE strategy_backtests 
+                       SET status = 'completed', result = ?, finished_at = ?
+                       WHERE id = ?""",
+                    (json.dumps(report.model_dump(mode="json")), datetime.now(timezone.utc).isoformat(), job_id),
+                )
+                conn.commit()
+        except Exception as exc:
+            # Update status to failed on error
+            async with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """UPDATE strategy_backtests 
+                       SET status = 'failed', result = ?, finished_at = ?
+                       WHERE id = ?""",
+                    (json.dumps({"error": str(exc)}), datetime.now(timezone.utc).isoformat(), job_id),
+                )
+                conn.commit()
+    
+    asyncio.create_task(run_backtest_job(), name=f"backtest-{job_id}")
+    
+    return {
+        "job_id": job_id,
+        "strategy_id": strategy_id,
+        "strategy_version": version,
+        "status": "queued",
+        "message": "Backtest queued and running in the background.",
+    }
+
+
+@router.get("/{strategy_id}/backtest/{run_id}", response_model=dict)
+async def get_backtest_status(run_id: str) -> dict:
+    """Get the status and result of a backtest run."""
+    _get_strategy_table()
+    
+    with get_connection() as conn:
+        cur = conn.cursor()
+        row = cur.execute("SELECT * FROM strategy_backtests WHERE run_id = ?", (run_id,)).fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Backtest run '{run_id}' not found")
+    
+    return {
+        "run_id": row["run_id"],
+        "strategy_id": row["strategy_id"],
+        "strategy_version": row["strategy_version"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "finished_at": row["finished_at"],
+        "result": json.loads(row["result"]) if row["result"] else None,
+    }

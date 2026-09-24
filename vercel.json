@@ -1,0 +1,45 @@
+{
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/(.*)": "python -m uvicorn app.main:app --port $PORT"
+  },
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html",
+      "status": 200,
+      "force": true
+    }
+  ],
+  "environmentVariables": {
+    "GATEWAY_EXECUTION_MODE": {
+      "value": "paper",
+      "preview": "paper",
+      "production": "paper"
+    },
+    "ENABLE_OPENBB_DATA": {
+      "value": "false",
+      "preview": "false",
+      "production": "false"
+    },
+    "ENABLE_OPENBB_SERVER": {
+      "value": "false",
+      "preview": "false",
+      "production": "false"
+    },
+    "ALPACA_API_KEY": {
+      "fromEnv": "ALPACA_API_KEY"
+    },
+    "ALPACA_SECRET_KEY": {
+      "fromEnv": "ALPACA_SECRET_KEY"
+    },
+    "DATABASE_URL": {
+      "fromEnv": "DATABASE_URL"
+    },
+    "GATEWAY_PROVIDER_KEY": {
+      "fromEnv": "GATEWAY_PROVIDER_KEY"
+    }
+  }
+}

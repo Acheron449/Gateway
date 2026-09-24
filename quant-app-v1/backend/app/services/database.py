@@ -364,6 +364,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_event_snapshots_captured ON event_snapshots(captured_at)
             """
         )
+        # Phase 1-1.4 persistence tables (auth, preferences, watchlists, layouts)
+        cur.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, hashed_password TEXT, created_at TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS watchlists (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, symbols TEXT, created_at TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS layouts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, symbol TEXT, tab TEXT, timeframe TEXT, indicators TEXT, inspector_width INTEGER, UNIQUE(user_id, symbol))")
+        cur.execute("CREATE TABLE IF NOT EXISTS preferences (user_id TEXT PRIMARY KEY, theme TEXT, default_timezone TEXT, watchlists TEXT, saved_layouts TEXT)")
         conn.commit()
 
 

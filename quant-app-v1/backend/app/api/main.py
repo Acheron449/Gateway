@@ -29,6 +29,7 @@ from app.api.v1.journal import router as journal_router
 from app.api.v1.live import router as live_router
 from app.api.v1.news import quote_router, router as news_router
 from app.api.openbb_routes import router as openbb_router
+from app.api.openstock_routes import router as openstock_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.api.v1.risk import router as risk_router
 from app.api.v1.settings import router as settings_router
@@ -349,6 +350,7 @@ app.include_router(risk_router)  # Risk Dashboard
 app.include_router(divergence_router)  # Divergence Scorecards
 app.include_router(settings_router)  # Settings
 app.include_router(openbb_router)  # OpenBB Data Integration
+app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment
 
 # Protected routes (authentication required)
 app.include_router(watchlists_router, dependencies=[Depends(get_current_user_optional)])
