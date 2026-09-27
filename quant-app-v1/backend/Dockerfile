@@ -10,20 +10,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --upgrade pip setuptools wheel
 
-# Copy requirements and create wheels
+# Copy requirements and create wheels (explicit packaging for slowapi/limits)
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir --upgrade pip && \
-    pip install --user --no-cache-dir -r requirements.txt
+    pip install --user --no-cache-dir -r requirements.txt && \
+    pip install --user --no-cache-dir 'packaging>=20.0'
 
 # Stage 2: Runtime
 FROM python:3.12-slim
 
 WORKDIR /
 
-# Install runtime dependencies only
+# Install runtime dependencies only (ensure packaging for slowapi/limits)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    python3-packaging \
     && rm -rf /var/lib/apt/lists/*
+
+# Ensure packaging is on appuser's site-packages (user-site may be disabled for non-root)
+USER appuser
+RUN python -m pip install --no-cache-dir 'packaging>=20.0' || true
+USER root
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser
