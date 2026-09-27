@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir --upgrade pip && \
     pip install --user --no-cache-dir -r requirements.txt && \
-    pip install --user --no-cache-dir 'packaging>=20.0'
+    pip install --user --no-cache-dir 'packaging>=20.0' 'passlib>=1.7'
 
 # Stage 2: Runtime
 FROM python:3.12-slim
@@ -25,6 +25,7 @@ WORKDIR /
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     python3-packaging \
+    python3-passlib \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure Python can find system site-packages (packaging for slowapi)
