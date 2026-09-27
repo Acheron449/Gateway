@@ -21,16 +21,14 @@ FROM python:3.12-slim
 
 WORKDIR /
 
-# Install runtime dependencies only (ensure packaging for slowapi/limits)
+# Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     python3-packaging \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure packaging is on appuser's site-packages (user-site may be disabled for non-root)
-USER appuser
-RUN python -m pip install --no-cache-dir 'packaging>=20.0' || true
-USER root
+# Ensure Python can find system site-packages (packaging for slowapi)
+ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser
