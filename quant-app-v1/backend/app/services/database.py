@@ -8,7 +8,8 @@ from pathlib import Path
 from uuid import uuid4
 
 
-DB_PATH = Path(__file__).resolve().parents[3] / "quant_app.db"
+DB_PATH = Path("/app/data") / "quant_app.db"
+Path("/app/data").mkdir(parents=True, exist_ok=True)
 
 
 def _migrate_event_snapshots(cur):

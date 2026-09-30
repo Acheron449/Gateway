@@ -25,7 +25,12 @@ services:
       postgres:
         condition: service_healthy
     volumes:
+      # Source is read-only; the two state directories the app writes to
+      # (SQLite db in app/services/../data via database.py, provider keys in
+      # app/settings via registry.py) are overlaid as writable binds.
       - ./quant-app-v1/backend/app:/app:ro
+      - ./quant-app-v1/backend/app/data:/app/data
+      - ./quant-app-v1/backend/app/settings:/app/settings
     networks:
       - quant-network
     restart: unless-stopped

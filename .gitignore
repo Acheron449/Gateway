@@ -36,3 +36,6 @@ secrets/
 *.key
 *.pem
 *.crt
+# Backend container writable state (SQLite database, encrypted provider keys)
+quant-app-v1/backend/app/data/
+quant-app-v1/backend/app/settings/
