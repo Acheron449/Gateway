@@ -12,6 +12,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PYTHONUNBUFFERED: "1"
       GATEWAY_PROVIDER_KEY_FILE: /run/secrets/gateway_provider_key
+      # app.auth requires JWT_SECRET_KEY (quant-app-v1/backend/app/auth.py).
+      # .env previously named it JWT_SECRET; renamed to match the app. Flat
+      # interpolation (no nesting) for compose v1 and v2 compatibility; fails
+      # fast with a clear message if unset — never defaults to a secret.
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env next to docker-compose.yml}"
     env_file:
       - .env.docker
     secrets:
@@ -67,7 +72,12 @@ services:
       - quant-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # POSTGRES_USER/POSTGRES_DB are not exported as env vars when the
+      # POSTGRES_*_FILE secret variants are used, so read the mounted secret
+      # files instead. Without this, both vars are empty and the args collapse
+      # to `pg_isready -U -d`, making pg_isready treat `-d` as the username —
+      # hence 'FATAL: role "-d" does not exist' in the postgres logs every probe.
+      test: ["CMD-SHELL", "u=$$(cat /run/secrets/postgres_user 2>/dev/null | tr -d '[:space:]'); d=$$(cat /run/secrets/postgres_db 2>/dev/null | tr -d '[:space:]'); pg_isready -U \"$${u:-postgres}\" -d \"$${d:-$${u:-postgres}}\""]
       interval: 10s
       timeout: 5s
       retries: 5

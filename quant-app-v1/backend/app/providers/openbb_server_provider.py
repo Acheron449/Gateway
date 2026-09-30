@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.models import Candle, NewsItem, EconomicEvent, EventImportance, Provenance
-from app.services.provider_registry import MarketDataProvider, ProviderMeta
+from app.providers.base import MarketDataProvider, ProviderMeta
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +173,10 @@ class OpenBBServerProvider(MarketDataProvider):
 
         events = []
         for ev in data:
-            imp_map = {"low": EventImportance.LOW, "medium": EventImportance.MEDIUM, "high": EventImportance.HIGH}
-            importance = imp_map.get(str(ev.get("importance", "medium")).lower(), EventImportance.MEDIUM)
+            imp_map = {"low": EventImportance.LOW,
+                       "medium": EventImportance.MEDIUM,
+                       "high": EventImportance.HIGH}
+            importance = imp_map.get(ev.get("importance", "medium"), EventImportance.MEDIUM)
 
             events.append(EconomicEvent(
                 id=ev.get("event", str(hash(ev.get("title", "")))[:8]),
@@ -182,10 +184,12 @@ class OpenBBServerProvider(MarketDataProvider):
                 country=ev.get("country", "US"),
                 currency=ev.get("currency", "USD"),
                 importance=importance,
-                scheduled_at=pd.to_datetime(ev.get("date", datetime.now())),
+                scheduled_at=datetime.fromtimestamp(
+                    ev.get("timestamp", 0), tz=timezone.utc
+                ),
                 actual=float(ev.get("actual", 0.0)) if ev.get("actual") is not None else None,
                 forecast=float(ev.get("forecast", 0.0)) if ev.get("forecast") is not None else None,
-                prior=float(ev.get("previous", 0.0)) if ev.get("previous") is not None else None,
+                prior=float(ev.get("prior", 0.0)) if ev.get("prior") is not None else None,
                 revisions=ev.get("revisions", []),
                 related_symbols=ev.get("related_symbols", []),
                 provider_version="openbb-api-v1",
@@ -196,4 +200,3 @@ class OpenBBServerProvider(MarketDataProvider):
         if self._client:
             await self._client.aclose()
             self._client = None
-EOF
