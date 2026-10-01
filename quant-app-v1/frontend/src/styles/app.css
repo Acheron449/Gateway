@@ -1292,6 +1292,7 @@ body {
   color: var(--accent-paper-trading);
 }
 
+
 .view-accent-journal .nav-item.active,
 .view-accent-journal .watchlist-tab.active,
 .view-accent-journal .symbol-chip.active {

@@ -14,6 +14,7 @@ from app.services.database import (
 )
 from app.services.fill_simulator import FillSimulator, get_market_session, is_market_open
 from app.services.paper_portfolio import PaperPortfolioService
+from app.services.risk_engine import RiskCheckResult, get_risk_engine
 
 # Stub missing services for Phase 2 compatibility
 class ReconciliationService:
@@ -117,8 +118,11 @@ def _get_default_portfolio() -> str:
 
 
 def _get_current_price(instrument: str) -> float | None:
-    del instrument
-    return None
+    """Last trade price for risk checks and market-order validation."""
+    from app.services.market_data import get_quote_triplet_sync
+
+    quote = get_quote_triplet_sync(instrument)
+    return quote[2] if quote else None
 
 
 @router.get("", response_model=PortfolioResponse)

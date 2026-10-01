@@ -5,6 +5,8 @@ import { API_BASE } from "../../lib/constants";
 interface RightInspectorProps {
   activeView: string;
   selectedSymbol: string;
+  /** Compact rail mode (drag handle collapsed the panel). */
+  collapsed: boolean;
 }
 
 interface QuoteData {
@@ -62,6 +64,15 @@ interface CalendarEvent {
   currency: string;
 }
 
+interface InspectorNewsItem {
+  id: string;
+  headline: string;
+  url?: string;
+  source: string;
+  published_at: string;
+  related_symbols?: string[];
+}
+
 const EMPTY_STATE_MESSAGES: Record<string, string> = {
   overview: "Select a view to see contextual information",
   scanner: "Select a symbol from the scanner to inspect",
@@ -69,7 +80,7 @@ const EMPTY_STATE_MESSAGES: Record<string, string> = {
   calendar: "Upcoming economic events will appear here",
   strategies: "Select or create a strategy to see details",
   backtests: "Select a backtest run to see results",
-  "paper-trading": "Paper trading details appear here",
+  "paper-trading": "Place simulated orders from the paper desk",
   journal: "Select a trade to review",
 };
 
@@ -97,12 +108,13 @@ function formatProvenance(provenance?: QuoteData["provenance"]): string[] {
   ];
 }
 
-export function RightInspector({ activeView, selectedSymbol }: RightInspectorProps) {
+export function RightInspector({ activeView, selectedSymbol, collapsed }: RightInspectorProps) {
   const [quote, setQuote] = useState<QuoteData | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [instrument, setInstrument] = useState<InstrumentData | null>(null);
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [news, setNews] = useState<InspectorNewsItem[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -112,13 +124,14 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
     setLoading(true);
 
     try {
-      // Fetch quote, analysis, instrument, and history in parallel
-      const [quoteRes, analysisRes, instrumentRes, historyRes, calendarRes] = await Promise.allSettled([
+      // Fetch quote, analysis, instrument, history, calendar, and news in parallel
+      const [quoteRes, analysisRes, instrumentRes, historyRes, calendarRes, newsRes] = await Promise.allSettled([
         fetch(`${API_BASE}/quote/${encodeURIComponent(sym)}`),
         fetch(`${API_BASE}/analysis/${encodeURIComponent(sym)}`),
         fetch(`${API_BASE}/stocks/${encodeURIComponent(sym)}/metadata`),
         fetch(`${API_BASE}/history/${encodeURIComponent(sym)}?tf=1h&limit=50`),
         fetch(`${API_BASE}/news/calendar?limit=50`),
+        fetch(`${API_BASE}/news?symbol=${encodeURIComponent(sym)}&limit=6`),
       ]);
 
       if (quoteRes.status === "fulfilled" && quoteRes.value.ok) {
@@ -138,6 +151,20 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
         const payload = await calendarRes.value.json();
         setEvents(Array.isArray(payload.events) ? payload.events : []);
       }
+      if (newsRes.status === "fulfilled" && newsRes.value.ok) {
+        const payload = await newsRes.value.json();
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        setNews(
+          items.map((item: Record<string, unknown>) => ({
+            id: String(item.id ?? ""),
+            headline: String(item.headline ?? ""),
+            url: typeof item.url === "string" ? item.url : undefined,
+            source: String(item.source ?? "—"),
+            published_at: String(item.published_at ?? ""),
+            related_symbols: Array.isArray(item.related_symbols) ? (item.related_symbols as string[]) : [],
+          })),
+        );
+      }
     } catch (err) {
       console.error("Failed to load inspector data:", err);
     } finally {
@@ -148,6 +175,29 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  if (collapsed) {
+    const change = quote?.change_pct;
+    const up = change === undefined || change === null ? null : change >= 0;
+    return (
+      <aside className="inspector-rail" aria-label="Inspector rail">
+        <div className="rail-divider" aria-hidden="true" />
+        <button
+          className={`rail-icon ${activeView === "markets" ? "active" : ""}`}
+          title={`Inspector — ${selectedSymbol}`}
+          aria-label={`Inspector — ${selectedSymbol}`}
+          onClick={() => window.dispatchEvent(new CustomEvent("inspector-expand"))}
+        >
+          <span className="rail-symbol">{selectedSymbol.slice(0, 2)}</span>
+        </button>
+        {up !== null && (
+          <span className={`rail-trend ${up ? "up" : "down"}`} aria-hidden="true">
+            {up ? "▲" : "▼"}
+          </span>
+        )}
+      </aside>
+    );
+  }
 
   if (!selectedSymbol) {
     return (
@@ -229,6 +279,32 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
         </section>
 
         <section className="inspector-section">
+          <h3 className="section-label">Latest News</h3>
+          <div className="inspector-news">
+            {news.length > 0 ? (
+              news.slice(0, 5).map((item) => (
+                <a
+                  key={item.id || item.headline}
+                  className="inspector-news-item"
+                  href={item.url || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={item.headline}
+                >
+                  <span className="inspector-news-headline">{item.headline}</span>
+                  <span className="inspector-news-meta">
+                    {item.source}
+                    {item.published_at ? ` · ${new Date(item.published_at).toLocaleDateString()}` : ""}
+                  </span>
+                </a>
+              ))
+            ) : (
+              <p className="inspector-news-empty">No recent headlines for {selectedSymbol}</p>
+            )}
+          </div>
+        </section>
+
+        <section className="inspector-section">
           <h3 className="section-label">Signals & Confidence</h3>
           <div className="signal-display">
             <div className="signal-bar">
@@ -268,10 +344,15 @@ export function RightInspector({ activeView, selectedSymbol }: RightInspectorPro
           <section className="inspector-section order-preview">
             <h3 className="section-label">Paper Order Preview</h3>
             <div className="order-preview-content">
-              <p className="preview-note">Use the Paper Trading tab to place orders</p>
-              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-                {selectedSymbol} • BUY • 10 • est. {formatPrice(currentPrice * 10)} • risk checks: pass
+              <div className="preview-row">
+                <span>{selectedSymbol}</span>
+                <span className="side-badge buy">Buy</span>
+                <span>10</span>
               </div>
+              <p className="preview-note">
+                Estimated notional {formatPrice(currentPrice * 10)} — risk checks run server-side when the
+                order is submitted from the paper desk.
+              </p>
             </div>
           </section>
         )}

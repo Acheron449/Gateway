@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -65,6 +66,53 @@ def _alpaca_credentials() -> tuple[str, str] | None:
     key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY_ID")
     secret = os.getenv("ALPACA_SECRET_KEY")
     return (key, secret) if key and secret else None
+
+
+# --- Last-price source for paper trading (fill simulator + order ticket) ---
+
+_price_cache: dict[str, tuple[float, float]] = {}  # symbol -> (price, cached_at)
+_PRICE_TTL_SECONDS = 30.0
+_DEFAULT_HALF_SPREAD_BPS = float(os.getenv("PAPER_HALF_SPREAD_BPS", "5"))
+
+
+def _fetch_last_price_sync(symbol: str) -> float | None:
+    """Fetch the real last trade price via yfinance (credentials-free)."""
+    try:
+        import yfinance as yf
+
+        fast = yf.Ticker(symbol.upper()).fast_info
+        price = float(fast.last_price or 0)
+    except Exception:
+        return None
+    return price if math.isfinite(price) and price > 0 else None
+
+
+def get_quote_triplet_sync(symbol: str) -> tuple[float, float, float] | None:
+    """Return (bid, ask, last) for paper fills and risk checks.
+
+    The last price is a real quote from yfinance with a short TTL cache;
+    bid/ask are a small configurable spread around it — the paper-fill
+    model approximates the NBBO around the real last trade.
+    """
+    sym = symbol.strip().upper()
+    if not sym:
+        return None
+
+    now = time.time()
+    cached = _price_cache.get(sym)
+    price: float | None = None
+    if cached is not None and now - cached[1] < _PRICE_TTL_SECONDS:
+        price = cached[0]
+    else:
+        price = _fetch_last_price_sync(sym)
+        if price is not None:
+            _price_cache[sym] = (price, now)
+
+    if price is None:
+        return None
+
+    half = price * (_DEFAULT_HALF_SPREAD_BPS / 10_000.0)
+    return (price - half, price + half, price)
 
 
 def _stock_feed() -> str:

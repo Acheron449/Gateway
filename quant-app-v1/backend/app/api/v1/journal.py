@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -110,7 +111,6 @@ def _get_journal_table():
 
 
 def _row_to_entry(row) -> dict:
-    import json
     return {
         "id": row["id"],
         "symbol": row["symbol"],
@@ -244,7 +244,8 @@ async def get_journal_stats() -> JournalStatsResponse:
         """).fetchone()["avg_minutes"] or 0
         
         win_rate = (winning / closed * 100) if closed > 0 else 0
-        profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
+        # Cap to a JSON-safe finite number: Infinity breaks JSON.parse in browsers.
+        profit_factor = min(abs(avg_win / avg_loss), 999.99) if avg_loss != 0 else (999.99 if avg_win > 0 else 0.0)
         
         # Format avg hold time
         hours = int(hold_time // 60)
@@ -310,7 +311,6 @@ async def update_journal_entry(entry_id: str, request: JournalEntryUpdate) -> Jo
         updates.append("lessons = ?")
         params.append(request.lessons)
     if request.tags is not None:
-        import json
         updates.append("tags = ?")
         params.append(json.dumps(request.tags))
     

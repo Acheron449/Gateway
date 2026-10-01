@@ -1,6 +1,7 @@
 import { ColorType, createChart } from "lightweight-charts";
 import type {
   CandlestickData,
+  HistogramData,
   IChartApi,
   ISeriesApi,
   SeriesMarker,
@@ -41,6 +42,7 @@ export function MainChart({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const patternMarkersRef = useRef<SeriesMarker<Time>[]>([]);
   const eventMarkersRef = useRef<SeriesMarker<Time>[]>([]);
 
@@ -79,8 +81,19 @@ export function MainChart({
       wickDownColor: "#f85149",
     });
 
+    const volumeSeries = chart.addHistogramSeries({
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume",
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+    });
+
     chartRef.current = chart;
     seriesRef.current = series;
+    volumeSeriesRef.current = volumeSeries;
     patternMarkersRef.current = [];
     eventMarkersRef.current = eventMarkers;
 
@@ -93,6 +106,15 @@ export function MainChart({
     }));
     series.setData(mapped);
     series.setMarkers(eventMarkers);
+
+    const volumeData: HistogramData[] = historyData
+      .filter((b) => typeof b.volume === "number" && Number.isFinite(b.volume) && b.volume > 0)
+      .map((b) => ({
+        time: b.time as UTCTimestamp,
+        value: b.volume as number,
+        color: b.close >= b.open ? "rgba(63,185,80,0.45)" : "rgba(248,81,73,0.45)",
+      }));
+    volumeSeries.setData(volumeData);
 
     const ro =
       typeof ResizeObserver !== "undefined"
@@ -114,6 +136,7 @@ export function MainChart({
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      volumeSeriesRef.current = null;
     };
   }, [ticker, loading, historyData]);
 
@@ -147,14 +170,32 @@ export function MainChart({
   return (
     <div
       ref={rootRef}
+      className="main-chart"
       style={{
-        height: "min(420px, 52vh)",
+        height: "min(460px, 56vh)",
         width: "100%",
-        border: "1px solid #30363d",
-        borderRadius: "8px",
+        border: "1px solid var(--border-primary, #30363d)",
+        borderRadius: "10px",
         overflow: "hidden",
+        position: "relative",
       }}
       aria-busy={loading}
-    />
+    >
+      {loading && (
+        <div className="main-chart-status">
+          <div className="chart-spinner" aria-hidden="true" />
+          <span>Loading {ticker} candles…</span>
+        </div>
+      )}
+      {!loading && historyData.length === 0 && (
+        <div className="main-chart-status">
+          <span className="main-chart-empty-icon" aria-hidden="true">📈</span>
+          <span>No chart data for <strong>{ticker}</strong></span>
+          <span className="main-chart-empty-hint">
+            The market may be closed, the symbol unknown, or the data feed unreachable. Try another timeframe.
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

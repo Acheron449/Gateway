@@ -31,7 +31,6 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
               <div className="quick-actions">
                 <button className="action-button">New Strategy</button>
                 <button className="action-button">Run Backtest</button>
-                <button className="action-button">Place Order</button>
                 <button className="action-button">View Journal</button>
               </div>
             </div>
@@ -108,7 +107,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
             <h1>Paper Trading</h1>
             <p className="view-description">Simulated portfolio and order management</p>
           </div>
-          <PaperTrading />
+          <PaperTrading selectedSymbol={selectedSymbol} />
         </div>
       );
     case "journal":
@@ -148,7 +147,6 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
               <div className="quick-actions">
                 <button className="action-button">New Strategy</button>
                 <button className="action-button">Run Backtest</button>
-                <button className="action-button">Place Order</button>
                 <button className="action-button">View Journal</button>
               </div>
             </div>

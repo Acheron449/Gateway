@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 
 import sqlite3
 from contextlib import contextmanager
@@ -8,8 +9,13 @@ from pathlib import Path
 from uuid import uuid4
 
 
-DB_PATH = Path("/app/data") / "quant_app.db"
-Path("/app/data").mkdir(parents=True, exist_ok=True)
+# Data directory: file-relative by default, so it resolves to /app/data inside
+# the container (app/ is the working tree root there) and to the repo's
+# app/data/ for local runs — no hardcoded absolute path. Override with
+# GATEWAY_DATA_DIR if the state must live elsewhere.
+_DATA_DIR = Path(os.getenv("GATEWAY_DATA_DIR", str(Path(__file__).resolve().parent.parent / "data")))
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = _DATA_DIR / "quant_app.db"
 
 
 def _migrate_event_snapshots(cur):
@@ -47,6 +53,9 @@ def _migrate_event_snapshots(cur):
 @contextmanager
 def get_connection():
     connection = sqlite3.connect(DB_PATH)
+    # sqlite3.Row keeps integer indexing working while enabling column-name
+    # access (row["col"]), which several API modules rely on.
+    connection.row_factory = sqlite3.Row
     try:
         yield connection
     finally:

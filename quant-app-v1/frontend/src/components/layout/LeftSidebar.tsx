@@ -1,13 +1,19 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal" | "risk" | "divergence" | "settings";
+import { VIEWS, type View } from "../../lib/views";
 
 interface LeftSidebarProps {
   activeView: View;
-  setActiveView: (view: View) => void;
-  selectedSymbol: string;
-  setSelectedSymbol: (symbol: string) => void;
+  /** Compact icon rail mode (drag handle collapsed the panel). */
+  collapsed: boolean;
 }
+
+const GROUPS: { id: "workspace" | "myWork" | "settings"; label: string }[] = [
+  { id: "workspace", label: "Workspace" },
+  { id: "myWork", label: "My Work" },
+  { id: "settings", label: "Settings" },
+];
 
 const WATCHLIST_DEFAULTS = [
   { id: "default", name: "Default", symbols: ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL"] },
@@ -15,12 +21,12 @@ const WATCHLIST_DEFAULTS = [
   { id: "etf", name: "Major ETFs", symbols: ["SPY", "QQQ", "IWM", "VTI", "ARKK", "XLF"] },
 ] as const;
 
-export function LeftSidebar({
-  activeView,
-  setActiveView,
-  selectedSymbol,
-  setSelectedSymbol,
-}: LeftSidebarProps) {
+/**
+ * Left workspace sidebar. In rail mode (issue #7) only section icons show;
+ * clicking a rail icon expands that section and navigates to its first view.
+ */
+export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
+  const navigate = useNavigate();
   const [activeWatchlist, setActiveWatchlist] = useState("default");
   const [expandedSections, setExpandedSections] = useState({
     workspace: true,
@@ -33,71 +39,80 @@ export function LeftSidebar({
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
+  const goTo = (view: View) => navigate(`/app/${view}`);
   const currentWatchlist = WATCHLIST_DEFAULTS.find((w) => w.id === activeWatchlist) || WATCHLIST_DEFAULTS[0];
 
-  return (
-    <div className="left-sidebar">
-      <div className="sidebar-section">
-        <button
-          className="section-header"
-          onClick={() => toggleSection("workspace")}
-          aria-expanded={expandedSections.workspace}
-        >
-          <span className="section-icon">{expandedSections.workspace ? "▼" : "▶"}</span>
-          <span className="section-title">Workspace</span>
-        </button>
-        {expandedSections.workspace && (
-          <ul className="nav-list" role="listbox" aria-label="Workspace views">
-            {[
-              { id: "overview", label: "Overview", icon: "🏠" },
-              { id: "scanner", label: "Scanner", icon: "🔍" },
-              { id: "markets", label: "Markets", icon: "📈" },
-              { id: "calendar", label: "Calendar", icon: "📅" },
-            ].map((item) => (
-              <li key={item.id} role="option" aria-selected={activeView === item.id}>
+  if (collapsed) {
+    return (
+      <nav className="left-sidebar rail" aria-label="Workspace rail">
+        {GROUPS.map((group) => {
+          const views = VIEWS.filter((v) => v.group === group.id);
+          const groupActive = views.some((v) => v.id === activeView);
+          return (
+            <div className="rail-group" key={group.id}>
+              <div className="rail-divider" aria-hidden="true" />
+              {views.map((view) => (
                 <button
-                  className={`nav-button ${activeView === item.id ? "active" : ""}`}
-                  onClick={() => setActiveView(item.id as View)}
+                  key={view.id}
+                  className={`rail-icon ${activeView === view.id ? "active" : ""} ${groupActive ? "in-group" : ""}`}
+                  onClick={() => goTo(view.id)}
+                  title={view.label}
+                  aria-label={view.label}
                 >
-                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="nav-label">{item.label}</span>
+                  <span aria-hidden="true">{view.icon}</span>
                 </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+              ))}
+            </div>
+          );
+        })}
+        <div className="rail-footer">
+          <button
+            className="rail-icon"
+            onClick={() => navigate("/")}
+            title="About Gateway"
+            aria-label="About Gateway"
+          >
+            <span aria-hidden="true">⚡</span>
+          </button>
+        </div>
+      </nav>
+    );
+  }
 
-      <div className="sidebar-section">
-        <button
-          className="section-header"
-          onClick={() => toggleSection("myWork")}
-          aria-expanded={expandedSections.myWork}
-        >
-          <span className="section-icon">{expandedSections.myWork ? "▼" : "▶"}</span>
-          <span className="section-title">My Work</span>
-        </button>
-        {expandedSections.myWork && (
-          <ul className="nav-list" role="listbox" aria-label="My Work">
-            {[
-              { id: "strategies", label: "Strategies", icon: "🎯" },
-              { id: "backtests", label: "Backtests", icon: "📊" },
-              { id: "paper-trading", label: "Paper Trading", icon: "📝" },
-              { id: "journal", label: "Journal", icon: "📓" },
-            ].map((item) => (
-              <li key={item.id} role="option" aria-selected={activeView === item.id}>
-                <button
-                  className={`nav-button ${activeView === item.id ? "active" : ""}`}
-                  onClick={() => setActiveView(item.id as View)}
-                >
-                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="nav-label">{item.label}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+  return (
+    <nav className="left-sidebar" aria-label="Workspace">
+      {GROUPS.map((group) => {
+        const sectionKey = group.id as "workspace" | "myWork" | "settings";
+        const views = VIEWS.filter((v) => v.group === group.id);
+        const isOpen = expandedSections[sectionKey];
+        return (
+          <div className="sidebar-section" key={group.id}>
+            <button
+              className="section-header"
+              onClick={() => toggleSection(sectionKey)}
+              aria-expanded={isOpen}
+            >
+              <span className="section-icon">{isOpen ? "▼" : "▶"}</span>
+              <span className="section-title">{group.label}</span>
+            </button>
+            {isOpen && (
+              <ul className="nav-list" role="listbox" aria-label={group.label}>
+                {views.map((item) => (
+                  <li key={item.id} role="option" aria-selected={activeView === item.id}>
+                    <button
+                      className={`nav-button ${activeView === item.id ? "active" : ""}`}
+                      onClick={() => goTo(item.id)}
+                    >
+                      <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+                      <span className="nav-label">{item.label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
 
       <div className="sidebar-section">
         <div className="section-header-row">
@@ -131,10 +146,11 @@ export function LeftSidebar({
               {currentWatchlist.symbols.map((symbol) => (
                 <button
                   key={symbol}
-                  className={`symbol-chip ${selectedSymbol === symbol ? "active" : ""}`}
-                  onClick={() => setSelectedSymbol(symbol)}
+                  className={`symbol-chip ${symbol === "AAPL" ? "active" : ""}`}
+                  onClick={() => goTo("markets")}
                   role="option"
-                  aria-selected={selectedSymbol === symbol}
+                  aria-selected={symbol === "AAPL"}
+                  title={`Chart ${symbol}`}
                 >
                   {symbol}
                 </button>
@@ -144,39 +160,11 @@ export function LeftSidebar({
         )}
       </div>
 
-      <div className="sidebar-section">
-        <button
-          className="section-header"
-          onClick={() => toggleSection("settings")}
-          aria-expanded={expandedSections.settings}
-        >
-          <span className="section-icon">{expandedSections.settings ? "▼" : "▶"}</span>
-          <span className="section-title">Settings</span>
-        </button>
-        {expandedSections.settings && (
-          <ul className="nav-list" role="listbox" aria-label="Settings">
-            {[
-              { id: "settings", label: "Providers", icon: "🔧" },
-            ].map((item) => (
-              <li key={item.id} role="option" aria-selected={activeView === item.id}>
-                <button
-                  className={`nav-button ${activeView === item.id ? "active" : ""}`}
-                  onClick={() => setActiveView(item.id as View)}
-                >
-                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="nav-label">{item.label}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
       <div className="sidebar-footer">
         <div className="shortcuts-hint">
-          <kbd>⌘K</kbd> Command palette
+          <kbd>⌘K</kbd> Search & commands
         </div>
       </div>
-    </div>
+    </nav>
   );
 }

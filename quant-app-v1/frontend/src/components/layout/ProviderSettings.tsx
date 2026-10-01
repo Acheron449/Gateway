@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_BASE } from "../../lib/constants";
 import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
 
 interface ProviderMeta {
   name: string;
@@ -23,22 +24,7 @@ interface TestResult {
   configured: boolean;
   news_count?: number;
   calendar_count?: number;
-}
-
-interface ProviderCardProps {
-  provider: ProviderStatus;
-  selectedProvider: string | null;
-  onSelect: (name: string) => void;
-  inputApiKey: string;
-  showKey: boolean;
-  setInputApiKey: (value: string) => void;
-  setShowKey: (value: boolean) => void;
-  loading: boolean;
-  canManage: boolean;
-  testResult: TestResult | null;
-  onSaveKey: () => Promise<void>;
-  onTestKey: () => Promise<void>;
-  onDeleteKey: () => Promise<void>;
+  capabilities?: Record<string, string>;
 }
 
 function authHeaders(): Record<string, string> {
@@ -112,135 +98,169 @@ function normalizeTestResult(value: unknown): TestResult {
     result.calendar_count = value.calendar_count;
   }
 
+  if (isRecord(value.capabilities)) {
+    const capabilities: Record<string, string> = {};
+    for (const [key, val] of Object.entries(value.capabilities)) {
+      if (typeof val === "string") capabilities[key] = val;
+    }
+    if (Object.keys(capabilities).length > 0) result.capabilities = capabilities;
+  }
+
   return result;
 }
 
+/** Selectable provider row; key editor renders inside the expanded panel. */
 function ProviderCard({
   provider,
-  selectedProvider,
+  selected,
   onSelect,
   inputApiKey,
   showKey,
   setInputApiKey,
   setShowKey,
   loading,
-  canManage,
   testResult,
   onSaveKey,
   onTestKey,
   onDeleteKey,
-}: ProviderCardProps) {
-  const selected = selectedProvider === provider.name;
-
-  const renderDetails = () => (
-    <div className="provider-details">
-      <div className="provider-meta">
-        <div className="meta-item">
-          <span className="meta-label">Endpoint</span>
-          <span className="meta-value">{provider.meta.endpoint}</span>
-        </div>
-        <div className="meta-item">
-          <span className="meta-label">Rate Limit</span>
-          <span className="meta-value">{provider.meta.rate_limit_per_min ? `${provider.meta.rate_limit_per_min} req/min` : "N/A"}</span>
-        </div>
-        <div className="meta-item">
-          <span className="meta-label">Requires API Key</span>
-          <span className="meta-value">{provider.meta.requires_api_key ? "Yes" : "No"}</span>
-        </div>
-      </div>
-
-      <div className="provider-actions">
-        {provider.meta.requires_api_key ? (
-          <div className="key-management">
-            <div className="key-input-group">
-              <label>
-                API Key {showKey ? "(visible)" : "(hidden)"}
-                <input
-                  type={showKey ? "text" : "password"}
-                  value={inputApiKey}
-                  onChange={(event) => setInputApiKey(event.target.value)}
-                  disabled={!canManage}
-                  placeholder="Enter API key"
-                  className="api-key-input"
-                />
-              </label>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={showKey}
-                  onChange={(event) => setShowKey(event.target.checked)}
-                  disabled={!canManage}
-                />
-                Show Key
-              </label>
-            </div>
-            <div className="action-buttons">
-              <button
-                className="btn-primary"
-                onClick={onSaveKey}
-                disabled={loading || !canManage || !inputApiKey.trim()}
-              >
-                {loading ? "Saving..." : "Save Key"}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={onTestKey}
-                disabled={loading || !canManage || !provider.has_stored_key}
-                title={provider.has_stored_key ? "Test the stored API key" : "Save an API key before testing"}
-              >
-                Test Stored Key
-              </button>
-              <button
-                className="btn-danger"
-                onClick={onDeleteKey}
-                disabled={loading || !canManage || !provider.has_stored_key}
-              >
-                Delete Key
-              </button>
-            </div>
-            {testResult && (
-              <div className={`test-result ${testResult.success ? "success" : "error"}`}>
-                <span>{testResult.message}</span>
-                {(testResult.news_count !== undefined || testResult.calendar_count !== undefined) && (
-                  <span className="test-details">
-                    News: {testResult.news_count ?? "N/A"}, Calendar: {testResult.calendar_count ?? "N/A"}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="no-key-info">
-            <p>This provider does not support browser-managed API keys.</p>
-            <p className="hint">TradingView requires a paid subscription. No BYOK available.</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
+}: {
+  provider: ProviderStatus;
+  selected: boolean;
+  onSelect: (name: string) => void;
+  inputApiKey: string;
+  showKey: boolean;
+  setInputApiKey: (value: string) => void;
+  setShowKey: (value: boolean) => void;
+  loading: boolean;
+  testResult: TestResult | null;
+  onSaveKey: () => Promise<void>;
+  onTestKey: () => Promise<void>;
+  onDeleteKey: () => Promise<void>;
+}) {
   return (
     <div className={`provider-card ${selected ? "selected" : ""}`}>
-      <div className="provider-header" onClick={() => onSelect(provider.name)}>
+      <button
+        type="button"
+        className="provider-header"
+        onClick={() => onSelect(provider.name)}
+        aria-expanded={selected}
+      >
         <div className="provider-info">
           <h3>{provider.name}</h3>
-          <span className="provider-version">{provider.meta.version}</span>
+          <span className="provider-version">v{provider.meta.version}</span>
         </div>
         <div className="provider-status">
+          {provider.has_stored_key && <span className="stored-badge">Key stored</span>}
           <span className={`status-badge ${provider.configured ? "configured" : "not-configured"}`}>
-            {provider.configured ? "Configured" : "Not Configured"}
+            <span className="status-dot" aria-hidden="true" />
+            {provider.configured ? "Connected" : "Not configured"}
           </span>
-          {provider.has_stored_key && <span className="stored-badge">Key Stored</span>}
+          <span className={`provider-chevron ${selected ? "open" : ""}`} aria-hidden="true">
+            ▸
+          </span>
         </div>
-      </div>
+      </button>
 
-      {selected && renderDetails()}
+      {selected && (
+        <div className="provider-details">
+          <div className="provider-meta">
+            <div className="meta-item">
+              <span className="meta-label">Endpoint</span>
+              <span className="meta-value">{provider.meta.endpoint}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Rate limit</span>
+              <span className="meta-value">
+                {provider.meta.rate_limit_per_min ? `${provider.meta.rate_limit_per_min} req/min` : "N/A"}
+              </span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">BYOK</span>
+              <span className="meta-value">{provider.meta.requires_api_key ? "Supported" : "Not available"}</span>
+            </div>
+          </div>
+
+          <div className="provider-divider" role="separator" />
+
+          {provider.meta.requires_api_key ? (
+            <div className="key-management">
+              <div className="key-input-group">
+                <label className="key-field">
+                  <span>API key {showKey ? "(visible)" : "(hidden)"}</span>
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={inputApiKey}
+                    onChange={(event) => setInputApiKey(event.target.value)}
+                    placeholder="Paste your API key…"
+                    className="api-key-input"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={showKey}
+                    onChange={(event) => setShowKey(event.target.checked)}
+                  />
+                  Show key
+                </label>
+              </div>
+              <div className="action-buttons">
+                <button className="btn-primary" onClick={onSaveKey} disabled={loading || !inputApiKey.trim()}>
+                  {loading ? "Saving…" : "Save key"}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={onTestKey}
+                  disabled={loading || !provider.has_stored_key}
+                  title={provider.has_stored_key ? "Test the stored API key" : "Save an API key before testing"}
+                >
+                  Test stored key
+                </button>
+                <button className="btn-danger" onClick={onDeleteKey} disabled={loading || !provider.has_stored_key}>
+                  Delete key
+                </button>
+              </div>
+              {testResult && (
+                <div className={`test-result ${testResult.success ? "success" : "error"}`}>
+                  <span>{testResult.message}</span>
+                  {testResult.capabilities && (
+                    <span className="test-capabilities" aria-label="Capability results">
+                      {Object.entries(testResult.capabilities).map(([name, state]) => (
+                        <span key={name} className={`capability-chip ${state}`}>
+                          {name}: {state}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  {(testResult.news_count !== undefined || testResult.calendar_count !== undefined) && (
+                    <span className="test-details">
+                      News: {testResult.news_count ?? "N/A"} · Calendar: {testResult.calendar_count ?? "N/A"}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="no-key-info">
+              <p>This provider does not support browser-managed API keys.</p>
+              <p className="hint">
+                {provider.name === "TradingView"
+                  ? "TradingView embeds require a paid subscription — Gateway renders charts natively instead."
+                  : "Credentials are managed server-side via environment variables."}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 export function ProviderSettings() {
   const { isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [inputApiKey, setInputApiKey] = useState("");
@@ -256,7 +276,7 @@ export function ProviderSettings() {
     setLoadError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/settings/providers`);
+      const response = await fetch(`${API_BASE}/settings/providers`, { headers: authHeaders() });
       if (!response.ok) {
         throw new Error(await readResponseError(response));
       }
@@ -282,7 +302,9 @@ export function ProviderSettings() {
 
   const refreshProviderStatus = useCallback(async (name: string) => {
     try {
-      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}`);
+      const response = await fetch(`${API_BASE}/settings/providers/${encodeURIComponent(name)}`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error(await readResponseError(response));
       }
@@ -305,11 +327,11 @@ export function ProviderSettings() {
 
   useEffect(() => {
     void fetchProviders();
-  }, [fetchProviders]);
+  }, [fetchProviders, isAuthenticated]);
 
   const handleSelectProvider = useCallback(
     (name: string) => {
-      setSelectedProvider(name);
+      setSelectedProvider((current) => (current === name ? null : name));
       setInputApiKey("");
       setShowKey(false);
       setTestResult(null);
@@ -322,7 +344,7 @@ export function ProviderSettings() {
   const handleSaveKey = useCallback(async () => {
     const name = selectedProvider;
     const apiKey = inputApiKey.trim();
-    if (!name || !apiKey || loading) return;
+    if (!name || !apiKey || loading || !isAuthenticated) return;
 
     setLoading(true);
     setActionError(null);
@@ -350,11 +372,11 @@ export function ProviderSettings() {
     } finally {
       setLoading(false);
     }
-  }, [selectedProvider, inputApiKey, loading, fetchProviders]);
+  }, [selectedProvider, inputApiKey, loading, isAuthenticated, fetchProviders]);
 
   const handleTestKey = useCallback(async () => {
     const name = selectedProvider;
-    if (!name || loading) return;
+    if (!name || loading || !isAuthenticated) return;
 
     setLoading(true);
     setActionError(null);
@@ -380,11 +402,11 @@ export function ProviderSettings() {
     } finally {
       setLoading(false);
     }
-  }, [selectedProvider, loading, refreshProviderStatus]);
+  }, [selectedProvider, loading, isAuthenticated, refreshProviderStatus]);
 
   const handleDeleteKey = useCallback(async () => {
     const name = selectedProvider;
-    if (!name || loading) return;
+    if (!name || loading || !isAuthenticated) return;
     if (!window.confirm(`Delete stored API key for ${name}?`)) return;
 
     setLoading(true);
@@ -408,68 +430,85 @@ export function ProviderSettings() {
     } finally {
       setLoading(false);
     }
-  }, [selectedProvider, loading, fetchProviders]);
+  }, [selectedProvider, loading, isAuthenticated, fetchProviders]);
 
   if (loadingProviders && providers.length === 0) {
-    return <div className="settings-loading">Loading provider settings...</div>;
+    return <div className="settings-loading">Loading provider settings…</div>;
   }
 
   return (
     <div className="provider-settings">
       <div className="settings-header">
-        <h1>Data Provider Settings</h1>
+        <h1>Data Providers</h1>
         <p className="settings-description">
-          Configure your data providers. Finnhub provides news and economic calendar data.
-          <br />API keys are encrypted at rest using Fernet encryption.
+          Connect the market-data and news feeds that power Gateway's charts, scanner, and calendar.
+          Keys are encrypted at rest (Fernet) and never returned to the browser.
         </p>
       </div>
 
       {!isAuthenticated && (
-        <div className="settings-error" role="alert">
-          <span>Sign in to save, test, or delete provider API keys.</span>
+        <div className="auth-gate-card">
+          <div className="auth-gate-icon" aria-hidden="true">🔒</div>
+          <div className="auth-gate-copy">
+            <h2>Sign in to manage provider keys</h2>
+            <p>Viewing providers is open, but saving, testing, and deleting API keys requires an account.</p>
+          </div>
+          <div className="auth-gate-actions">
+            <button className="btn-primary" onClick={() => openAuth("login")}>
+              Sign in
+            </button>
+            <button className="btn-secondary" onClick={() => openAuth("signup")}>
+              Create account
+            </button>
+          </div>
         </div>
       )}
+
       {loadError && (
         <div className="settings-error" role="alert">
           <span>Failed to load providers: {loadError}</span>
-          <button className="btn-secondary" onClick={() => void fetchProviders()}>Retry</button>
+          <button className="btn-secondary" onClick={() => void fetchProviders()}>
+            Retry
+          </button>
         </div>
       )}
       {actionError && (
         <div className="settings-error" role="alert">
           <span>{actionError}</span>
-          <button className="btn-secondary" onClick={() => setActionError(null)}>Dismiss</button>
+          <button className="btn-secondary" onClick={() => setActionError(null)}>
+            Dismiss
+          </button>
         </div>
       )}
 
       <div className="providers-list">
-        {providers.map((provider) => (
-          <ProviderCard
-            key={provider.name}
-            provider={provider}
-            selectedProvider={selectedProvider}
-            onSelect={handleSelectProvider}
-            inputApiKey={inputApiKey}
-            showKey={showKey}
-            setInputApiKey={setInputApiKey}
-            setShowKey={setShowKey}
-            loading={loading}
-            canManage={isAuthenticated}
-            testResult={testResult}
-            onSaveKey={handleSaveKey}
-            onTestKey={handleTestKey}
-            onDeleteKey={handleDeleteKey}
-          />
+        {providers.map((provider, index) => (
+          <div key={provider.name}>
+            <ProviderCard
+              provider={provider}
+              selected={selectedProvider === provider.name}
+              onSelect={handleSelectProvider}
+              inputApiKey={inputApiKey}
+              showKey={showKey}
+              setInputApiKey={setInputApiKey}
+              setShowKey={setShowKey}
+              loading={loading}
+              testResult={testResult}
+              onSaveKey={handleSaveKey}
+              onTestKey={handleTestKey}
+              onDeleteKey={handleDeleteKey}
+            />
+            {index < providers.length - 1 && <div className="provider-divider between" role="separator" />}
+          </div>
         ))}
       </div>
 
       <div className="settings-section">
-        <h2>Encryption Key Management</h2>
+        <h2>Encryption key management</h2>
         <p className="settings-description">
-          API keys are encrypted at rest using Fernet symmetric encryption.
-          The encryption key is managed by the Gateway server in the{" "}
-          <code>GATEWAY_PROVIDER_KEY</code> environment variable or its configured key file.
-          Generated encryption keys are never sent to the browser.
+          API keys are encrypted with Fernet symmetric encryption. The key lives in the{" "}
+          <code>GATEWAY_PROVIDER_KEY</code> environment variable (or its key file) on the Gateway
+          server and is never sent to the browser.
         </p>
       </div>
     </div>

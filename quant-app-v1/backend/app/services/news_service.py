@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from app.models import NewsItem
 from app.providers import get_provider
+from app.providers.base import ProviderUnavailableError
 from app.services.database import (
     get_news_item as db_get_news_item,
     get_news_items as db_get_news_items,
@@ -16,6 +18,12 @@ from app.services.database import (
     insert_news_item,
     store_event_snapshot,
 )
+
+# Finnhub's news endpoint is per-symbol, so "general" news fans out across a
+# basket of liquid names.
+GENERAL_NEWS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "SPY", "TSLA", "AMZN"]
+_general_fetch_state = {"at": 0.0}
+_GENERAL_FETCH_TTL_SECONDS = 60.0
 
 
 def _news_tags(item: NewsItem) -> list[dict[str, Any]]:
@@ -44,7 +52,32 @@ async def fetch_and_store_news(
     if not provider or not provider.is_configured:
         return []
 
-    items = await provider.news(symbol=symbol, limit=limit)
+    if symbol is None:
+        # General news: serve recently stored items within a short TTL so
+        # repeated requests don't hammer the upstream provider.
+        now = time.time()
+        if now - _general_fetch_state["at"] < _GENERAL_FETCH_TTL_SECONDS:
+            stored = await get_news_items(limit=limit)
+            if stored:
+                return stored
+
+        merged: dict[str, NewsItem] = {}
+        per_symbol = max(3, limit // len(GENERAL_NEWS_SYMBOLS) + 1)
+        for sym in GENERAL_NEWS_SYMBOLS:
+            try:
+                fetched = await provider.news(symbol=sym, limit=per_symbol)
+            except ProviderUnavailableError:
+                continue
+            except Exception:
+                continue
+            for item in fetched:
+                merged.setdefault(item.id, item)
+            if len(merged) >= limit:
+                break
+        items = list(merged.values())[:limit]
+        _general_fetch_state["at"] = time.time()
+    else:
+        items = await provider.news(symbol=symbol, limit=limit)
 
     fetched_at = datetime.now(timezone.utc).isoformat()
     stored_items: list[NewsItem] = []

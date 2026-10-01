@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-type View = "overview" | "scanner" | "markets" | "calendar" | "strategies" | "backtests" | "paper-trading" | "journal" | "risk" | "divergence" | "settings";
+import type { View } from "../../lib/views";
 
 interface CommandPaletteProps {
   onClose: () => void;
@@ -26,14 +26,16 @@ const NAVIGATION_COMMANDS: Omit<CommandItem, "action">[] = [
   { id: "calendar", label: "Calendar", description: "Economic events calendar", category: "navigation", shortcut: "G C" },
   { id: "strategies", label: "Strategies", description: "Strategy studio", category: "navigation", shortcut: "G T" },
   { id: "backtests", label: "Backtests", description: "Run and analyze backtests", category: "navigation", shortcut: "G B" },
-  { id: "paper-trading", label: "Paper Trading", description: "Simulated portfolio", category: "navigation", shortcut: "G P" },
+  { id: "paper-trading", label: "Paper Trading", description: "Simulated portfolio and orders", category: "navigation", shortcut: "G P" },
   { id: "journal", label: "Journal", description: "Trade journal", category: "navigation", shortcut: "G J" },
+  { id: "risk", label: "Risk", description: "Risk dashboard", category: "navigation", shortcut: "G R" },
+  { id: "divergence", label: "Divergence", description: "Divergence scorecards", category: "navigation", shortcut: "G D" },
+  { id: "settings", label: "Providers", description: "Configure data providers", category: "navigation", shortcut: "G S" },
 ];
 
 const ACTION_COMMANDS: Omit<CommandItem, "action">[] = [
   { id: "new-strategy", label: "New Strategy", description: "Create a new trading strategy", category: "action", shortcut: "⌘N" },
   { id: "run-backtest", label: "Run Backtest", description: "Execute a backtest", category: "action", shortcut: "⌘R" },
-  { id: "place-order", label: "Place Order", description: "Submit a paper order", category: "action", shortcut: "⌘O" },
   { id: "toggle-left", label: "Toggle Workspace", description: "Show/hide left sidebar", category: "action", shortcut: "⌘\\" },
   { id: "toggle-right", label: "Toggle Inspector", description: "Show/hide right inspector", category: "action", shortcut: "⌘⇧\\" },
 ];
@@ -99,6 +101,32 @@ export function CommandPalette({
       return categoryOrder[a.category] - categoryOrder[b.category];
     });
 
+  // Free-text symbol search: typing something that matches nothing else offers
+  // to chart it directly (e.g. "PLTR").
+  const trimmed = query.trim().toUpperCase();
+  const freeTextSymbol =
+    trimmed.length >= 1 && trimmed.length <= 12 && /^[A-Z0-9.\-]+$/.test(trimmed)
+      ? trimmed
+      : null;
+  const hasExactMatch = freeTextSymbol !== null && filteredCommands.some((cmd) => cmd.label.toUpperCase() === freeTextSymbol);
+
+  const displayCommands: CommandItem[] =
+    freeTextSymbol && !hasExactMatch
+      ? [
+          {
+            id: `symbol-search-${freeTextSymbol}`,
+            label: freeTextSymbol,
+            description: `Chart ${freeTextSymbol}`,
+            category: "symbol" as const,
+            action: () => {
+              onSymbolSelect(freeTextSymbol);
+              onClose();
+            },
+          },
+          ...filteredCommands,
+        ]
+      : filteredCommands;
+
   useEffect(() => {
     inputRef.current?.focus();
     setSelectedIndex(0);
@@ -110,21 +138,21 @@ export function CommandPalette({
         onClose();
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedIndex((prev) => Math.min(prev + 1, filteredCommands.length - 1));
+        setSelectedIndex((prev) => Math.min(prev + 1, displayCommands.length - 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setSelectedIndex((prev) => Math.max(prev - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (filteredCommands[selectedIndex]) {
-          filteredCommands[selectedIndex].action();
+        if (displayCommands[selectedIndex]) {
+          displayCommands[selectedIndex].action();
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [filteredCommands, selectedIndex, onClose]);
+  }, [displayCommands, selectedIndex, onClose]);
 
   const scrollSelectedIntoView = useCallback(() => {
     const item = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`);
@@ -135,7 +163,7 @@ export function CommandPalette({
     scrollSelectedIntoView();
   }, [selectedIndex, scrollSelectedIntoView]);
 
-  if (filteredCommands.length === 0) {
+  if (displayCommands.length === 0) {
     return (
       <div className="command-palette-overlay" onClick={onClose}>
         <div className="command-palette" onClick={(e) => e.stopPropagation()}>
@@ -180,7 +208,7 @@ export function CommandPalette({
           <kbd className="command-shortcut">⌘K</kbd>
         </div>
         <ul className="command-list" ref={listRef} role="listbox" aria-label="Commands">
-          {filteredCommands.map((cmd, index) => (
+          {displayCommands.map((cmd, index) => (
             <li
               key={cmd.id}
               data-index={index}

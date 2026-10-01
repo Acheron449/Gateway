@@ -190,9 +190,14 @@ class FillSimulator:
         self.config = config
 
     def get_quote_for_fill(self, instrument: str) -> tuple[float, float, float] | None:
-        """Return live bid, ask, and last prices without substituting synthetic values."""
-        del instrument
-        return None
+        """Return (bid, ask, last) for fill simulation.
+
+        Last is a real yfinance quote (short TTL cache); bid/ask are a small
+        configurable spread around it so fills model crossing the book.
+        """
+        from app.services.market_data import get_quote_triplet_sync
+
+        return get_quote_triplet_sync(instrument)
 
     def try_fill_order(self, portfolio_id: str, order_id: str) -> Optional[dict]:
         """Attempt to fill an order. Returns fill info if filled, None otherwise."""

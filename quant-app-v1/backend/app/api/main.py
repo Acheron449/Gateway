@@ -13,6 +13,7 @@ import pandas_ta as ta
 import time
 import json
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -44,8 +45,10 @@ from app.config import get_settings
 from app.services.provenance import candle_provenance
 from app.auth import get_current_user_optional, OptionalUser
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute", "1000/hour"])
+# Rate limiter — generous defaults: the dashboard polls several endpoints
+# (ticker strip + parallel inspector fetches) per view change, and a tight
+# per-IP budget reads as random "Failed to fetch" errors in the UI.
+limiter = Limiter(key_func=get_remote_address, default_limits=["240/minute", "3000/hour"])
 
 # Security headers middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -335,6 +338,29 @@ app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
+# CORS for browser clients: the static frontend (e.g. :3000) calls this API
+# cross-origin (e.g. http://127.0.0.1:8000 baked into the built bundle), so
+# without CORS the browser blocks every response and fetches report
+# "Failed to fetch". Registered after SecurityHeadersMiddleware so it sits
+# outermost — preflight OPTIONS requests are answered here, and responses
+# carry both CORS and security headers. Origins are configurable via
+# GATEWAY_CORS_ORIGINS (comma-separated) for non-localhost deployments.
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "GATEWAY_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Add rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -359,8 +385,12 @@ app.include_router(preferences_router, dependencies=[Depends(get_current_user_op
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
+# NOTE: portfolio_router is included WITHOUT the router-level optional-user
+# dependency: its /portfolio/stream WebSocket would otherwise crash in
+# dependency solving (HTTPBearer requires a Request, which WebSocket routes
+# do not provide). The stream authenticates its own token query param.
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
-app.include_router(portfolio_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(portfolio_router)
 app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
 
 
@@ -394,6 +424,7 @@ def _resample_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dic
     for candle in candles:
         ts = int(candle.get('time', 0))
         bucket = (ts // step) * step
+        volume = float(candle.get('volume', 0.0) or 0.0)
         if bucket not in bucketed:
             bucketed[bucket] = {
                 'time': bucket,
@@ -401,27 +432,83 @@ def _resample_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dic
                 'high': float(candle.get('high', 0.0)),
                 'low': float(candle.get('low', 0.0)),
                 'close': float(candle.get('close', 0.0)),
+                'volume': volume,
             }
             continue
         entry = bucketed[bucket]
         entry['high'] = max(entry['high'], float(candle.get('high', entry['high'])))
         entry['low'] = min(entry['low'], float(candle.get('low', entry['low'])))
         entry['close'] = float(candle.get('close', entry['close']))
+        entry['volume'] = entry.get('volume', 0.0) + volume
     ordered = sorted(bucketed.values(), key=lambda x: x['time'])
     return ordered
 
 
+YF_TF_MAP: dict[str, tuple[str, str]] = {
+    # tf -> (yfinance interval, yfinance period)
+    '1m': ('1m', '7d'),
+    '5m': ('5m', '1mo'),
+    '15m': ('15m', '1mo'),
+    '30m': ('30m', '1mo'),
+    '1h': ('1h', '3mo'),
+    '4h': ('1h', '6mo'),  # resampled to 4h below
+    '1d': ('1d', '2y'),
+    '1wk': ('1wk', '5y'),
+}
+
+
+def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
+    """Credentials-free historical bars via yfinance (Gateway dependency).
+
+    Used when Alpaca credentials are absent so the native chart keeps working
+    without a paid data feed. Raises HTTPException(502) on empty responses.
+    """
+    import yfinance as yf
+
+    interval, period = YF_TF_MAP.get((tf or '1h').lower(), YF_TF_MAP['1h'])
+    frame = yf.Ticker(ticker.upper()).history(period=period, interval=interval, auto_adjust=False)
+    if frame is None or frame.empty:
+        raise HTTPException(status_code=502, detail=f"No history data available for {ticker.upper()}")
+
+    candles: list[dict[str, Any]] = []
+    for index, row in frame.iterrows():
+        ts = index.timestamp()
+        close = float(row['Close'])
+        if not math.isfinite(close) or close <= 0:
+            continue
+        volume = float(row.get('Volume', 0) or 0)
+        candles.append(
+            {
+                'time': int(ts),
+                'open': float(row['Open']),
+                'high': float(row['High']),
+                'low': float(row['Low']),
+                'close': close,
+                'volume': volume,
+            }
+        )
+    candles.sort(key=lambda c: c['time'])
+    return candles
+
+
 @app.get("/history/{ticker}")
 async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
-    """Return historical bars, optionally resampled to the requested timeframe."""
-    creds = _alpaca_credentials()
-    if not creds:
-        raise HTTPException(
-            status_code=503,
-            detail="Alpaca credentials not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY.",
-        )
+    """Return historical bars, optionally resampled to the requested timeframe.
 
-    chart_data = await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+    Prefers Alpaca when credentials are configured; otherwise falls back to
+    yfinance so the chart renders without a paid market-data subscription.
+    """
+    creds = _alpaca_credentials()
+    source = "alpaca"
+    if creds:
+        chart_data = await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+        if not chart_data:
+            chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+            source = "yfinance"
+    else:
+        chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+        source = "yfinance"
+
     resampled = _resample_candles(chart_data, tf)
     if limit and len(resampled) > 0:
         resampled = resampled[-max(10, min(int(limit), 2000)):]
@@ -429,7 +516,7 @@ async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dic
         {
             **candle,
             **candle_provenance(
-                source="alpaca",
+                source=source,
                 data_time=int(candle["time"]),
                 coverage=f"US equities / {tf}",
             ),
@@ -441,6 +528,66 @@ async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dic
 @app.get("/market/{ticker}/history")
 async def get_market_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
     return await get_history(ticker=ticker, tf=tf, limit=limit)
+
+
+_quotes_cache: dict[str, Any] = {"at": 0.0, "rows": []}
+_QUOTES_TTL_SECONDS = 45.0
+
+
+def _fetch_quotes_yfinance_sync(symbols: list[str]) -> list[dict[str, Any]]:
+    """Batch last-quote snapshot via yfinance for the ticker strip."""
+    import yfinance as yf
+
+    rows: list[dict[str, Any]] = []
+    for symbol in symbols:
+        sym = symbol.strip().upper()
+        if not sym:
+            continue
+        try:
+            fast = yf.Ticker(sym).fast_info
+            price = float(fast.last_price or 0)
+            prev = float(fast.previous_close or 0)
+        except Exception:
+            continue
+        if not math.isfinite(price) or price <= 0:
+            continue
+        change = price - prev if prev > 0 else 0.0
+        change_pct = (change / prev * 100.0) if prev > 0 else 0.0
+        rows.append(
+            {
+                "symbol": sym,
+                "price": round(price, 4),
+                "change": round(change, 4),
+                "change_pct": round(change_pct, 2),
+            }
+        )
+    return rows
+
+
+@app.get("/quotes")
+async def get_quotes(symbols: str = "") -> dict[str, Any]:
+    """Batch quote snapshot (last price, change, change%) for the ticker strip.
+
+    Results are cached briefly to stay well inside free data-feed limits.
+    """
+    requested = [s for s in (symbols or "").split(",") if s.strip()][:30]
+    if not requested:
+        return {"quotes": [], "status": "available", "message": None}
+
+    now = time.time()
+    if now - float(_quotes_cache.get("at", 0.0)) < _QUOTES_TTL_SECONDS and _quotes_cache.get("rows"):
+        cached_rows = _quotes_cache["rows"]
+        return {"quotes": [r for r in cached_rows if r["symbol"] in set(requested)], "status": "available", "message": None}
+
+    rows = await asyncio.to_thread(_fetch_quotes_yfinance_sync, requested)
+    if rows:
+        _quotes_cache["at"] = now
+        _quotes_cache["rows"] = rows
+    return {
+        "quotes": rows,
+        "status": "available" if rows else "unavailable",
+        "message": None if rows else "No quote data available (market closed or feed unreachable)",
+    }
 
 
 def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> list[dict[str, Any]]:

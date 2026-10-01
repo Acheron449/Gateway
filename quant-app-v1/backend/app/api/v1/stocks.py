@@ -32,8 +32,8 @@ async def get_ticker_metadata(ticker: str) -> dict:
     instrument = get_instrument(ticker)
     if instrument is None:
         raise HTTPException(status_code=404, detail=f"'{ticker.upper()}' is not in the supported instrument catalogue")
-    df = await market_data.fetch_ohlcv(ticker, limit=2)
-    latest = float(df["Close"].iloc[-1])
+    result = await market_data.fetch_ohlcv(ticker, limit=2)
+    latest = float(result.dataframe["Close"].iloc[-1])
     return {
         "ticker": instrument.symbol,
         "name": instrument.name,

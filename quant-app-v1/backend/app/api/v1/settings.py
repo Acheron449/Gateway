@@ -134,7 +134,13 @@ async def test_provider_key(
     provider_name: str,
     user: CurrentUser,
 ) -> Dict[str, Any]:
-    """Test a stored provider key without returning raw provider errors."""
+    """Test a stored provider key without returning raw provider errors.
+
+    Probes each capability independently so a partial entitlement (e.g.
+    Finnhub's premium-only economic calendar returning 403 on free keys)
+    is reported as such instead of failing the whole test, while a rejected
+    key (401/402) fails the test with an explicit message.
+    """
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
     if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -147,25 +153,101 @@ async def test_provider_key(
             "configured": False,
         }
 
+    from app.providers.base import ProviderUnavailableError
+
+    def _status_of(exc: Exception) -> int | None:
+        return getattr(exc, "status_code", None)
+
+    async def _probe(name: str, call):
+        try:
+            result = await call()
+            return {"capability": name, "ok": True, "count": len(result), "status": None, "detail": ""}
+        except ProviderUnavailableError as exc:
+            return {"capability": name, "ok": False, "count": 0, "status": _status_of(exc), "detail": str(exc)}
+        except Exception as exc:
+            return {"capability": name, "ok": False, "count": 0, "status": None, "detail": str(exc) or "failed"}
+
+    # Probe only capabilities the provider actually implements.
+    probes: list[tuple[str, Any]] = []
+    if callable(getattr(provider_instance, "quote", None)):
+        probes.append(("quote", lambda: provider_instance.quote("AAPL")))
+    if callable(getattr(provider_instance, "news", None)):
+        probes.append(("news", lambda: provider_instance.news(symbol="AAPL", limit=1)))
+    if callable(getattr(provider_instance, "calendar", None)):
+        probes.append(("calendar", lambda: provider_instance.calendar(limit=1)))
+
+    results: list[Dict[str, Any]] = []
     try:
-        news = await provider_instance.news(symbol="AAPL", limit=1)
-        calendar = await provider_instance.calendar(limit=1)
-        return {
-            "success": True,
-            "message": "Provider test completed",
-            "configured": True,
-            "status": "healthy",
-            "news_count": len(news),
-            "calendar_count": len(calendar),
-        }
-    except Exception:
+        for name, call in probes:
+            results.append(await _probe(name, call))
+    finally:
+        await provider_instance.close()
+
+    if not results:
         return {
             "success": False,
-            "message": "Provider test failed",
-            "configured": provider_instance.is_configured,
+            "message": "Provider exposes no testable capabilities",
+            "configured": True,
             "status": "unavailable",
             "news_count": 0,
             "calendar_count": 0,
+            "capabilities": {},
         }
-    finally:
-        await provider_instance.close()
+    by_name = {r["capability"]: r for r in results}
+    capabilities = {r["capability"]: ("ok" if r["ok"] else "failed") for r in results}
+
+    def _detail(name: str) -> tuple[bool, int | None, str]:
+        r = by_name[name]
+        return r["ok"], r["status"], r["detail"]
+
+    quote_ok, quote_status, quote_detail = _detail("quote")
+    news_ok, news_status, news_detail = _detail("news")
+    calendar_ok, calendar_status, calendar_detail = _detail("calendar")
+
+    # A 403 on a capability usually means the plan does not include it
+    # (Finnhub economic calendar is premium-only), not that the key is bad.
+    premium_only = {name for name, r in by_name.items() if not r["ok"] and r["status"] == 403}
+    for name in premium_only:
+        capabilities[name] = "premium"
+
+    auth_rejected = any(
+        r["status"] in (401, 402)
+        for r in by_name.values()
+        if r["status"] is not None
+    )
+
+    working = [name for name in ("quote", "news", "calendar") if by_name[name]["ok"]]
+    failed = [name for name in ("quote", "news", "calendar") if not by_name[name]["ok"]]
+
+    if auth_rejected or not working:
+        # Key-level failure: rejected outright, or nothing usable responded.
+        if auth_rejected:
+            message = "Finnhub rejected the key (HTTP 401/402). Double-check the saved API key."
+        else:
+            first_failed = by_name[failed[0]]
+            message = f"Provider test failed: {first_failed['detail']}"
+        return {
+            "success": False,
+            "message": message,
+            "configured": True,
+            "status": "unavailable",
+            "news_count": by_name["news"]["count"],
+            "calendar_count": by_name["calendar"]["count"],
+            "capabilities": capabilities,
+        }
+
+    premium_names = {"quote": "quotes", "news": "news", "calendar": "the economic calendar"}
+    parts = [f"{premium_names[name]} verified" for name in working]
+    message = f"Key works: {', '.join(parts)}"
+    if premium_only:
+        message += f"; {', '.join(premium_names[name] for name in sorted(premium_only))} require(s) a premium plan (HTTP 403)"
+
+    return {
+        "success": True,
+        "message": message,
+        "configured": True,
+        "status": "healthy" if not failed else "degraded",
+        "news_count": by_name["news"]["count"],
+        "calendar_count": by_name["calendar"]["count"],
+        "capabilities": capabilities,
+    }

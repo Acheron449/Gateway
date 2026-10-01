@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { API_BASE, WS_BASE } from "../../lib/constants";
 
 interface Position {
   instrument_id: string;
@@ -10,9 +12,8 @@ interface Position {
   realized_pnl: number;
 }
 
-interface Order {
+interface PaperOrder {
   id: string;
-  portfolio_id: string;
   instrument_id: string;
   side: string;
   type: string;
@@ -43,7 +44,7 @@ interface Portfolio {
   equity: number;
   buying_power: number;
   positions: Position[];
-  open_orders: Order[];
+  open_orders: PaperOrder[];
   recent_fills: Fill[];
 }
 
@@ -52,421 +53,470 @@ interface OrderRequest {
   side: "buy" | "sell";
   order_type: "market" | "limit" | "stop";
   quantity: number;
-  limit_price?: number;
-  stop_price?: number;
+  limit_price?: number | null;
+  stop_price?: number | null;
 }
 
-const API_BASE = "/api/v1";
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("gateway_auth_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function fetchPortfolio(): Promise<Portfolio> {
-  const res = await fetch(`${API_BASE}/portfolio`);
-  if (!res.ok) throw new Error("Failed to fetch portfolio");
+  const res = await fetch(`${API_BASE}/portfolio`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.text()) || "Failed to fetch portfolio");
   return res.json();
 }
 
 async function submitOrder(order: OrderRequest): Promise<{ order_id: string; status: string; message: string }> {
   const res = await fetch(`${API_BASE}/portfolio/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(order),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Order failed");
+    let detail = `Order failed (${res.status})`;
+    try {
+      const payload = await res.json();
+      if (typeof payload.detail === "string") detail = payload.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
   }
   return res.json();
 }
 
-export function PaperTrading() {
+async function simulateFill(orderId: string): Promise<{ filled: boolean; price?: number }> {
+  const res = await fetch(`${API_BASE}/portfolio/orders/${encodeURIComponent(orderId)}/simulate-fill`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Fill simulation failed");
+  return res.json();
+}
+
+const money = (value: number | null | undefined, digits = 2) =>
+  value === null || value === undefined
+    ? "—"
+    : value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+/**
+ * Paper trading desk: live account summary, order ticket, positions,
+ * open orders (with one-click fill simulation), and recent fills.
+ * State streams over the authenticated /portfolio/stream WebSocket with a
+ * REST polling fallback.
+ */
+export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const queryClient = useQueryClient();
-  const [useWebSocket, setUseWebSocket] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const [wsError, setWsError] = useState<string | null>(null);
-
-  const { data: portfolio, isLoading, error, refetch } = useQuery({
-    queryKey: ["portfolio"],
-    queryFn: fetchPortfolio,
-    refetchInterval: useWebSocket ? false : 2000,
-  });
-
-  const orderMutation = useMutation({
-    mutationFn: submitOrder,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portfolio"] });
-    },
-    onError: (err: Error) => {
-      alert(`Order failed: ${err.message}`);
-    },
-  });
-
   const [orderForm, setOrderForm] = useState<OrderRequest>({
-    instrument: "",
+    instrument: selectedSymbol ?? "AAPL",
     side: "buy",
     order_type: "market",
-    quantity: 1,
-    limit_price: undefined,
-    stop_price: undefined,
+    quantity: 10,
+    limit_price: null,
+    stop_price: null,
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+  const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
+  const [fillBusyId, setFillBusyId] = useState<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const { data: portfolio, isLoading, error: loadError, refetch } = useQuery({
+    queryKey: ["portfolio"],
+    queryFn: fetchPortfolio,
+    refetchInterval: live ? false : 5000,
   });
 
+  // Keep the ticket's symbol in sync when the user changes it elsewhere.
   useEffect(() => {
-    if (!useWebSocket) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      return;
+    if (selectedSymbol) {
+      setOrderForm((form) => ({ ...form, instrument: selectedSymbol }));
     }
+  }, [selectedSymbol]);
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}${API_BASE}/portfolio/stream`);
-
-    ws.onopen = () => {
-      setWsError(null);
-      console.log("Portfolio WebSocket connected");
-    };
-
-    ws.onmessage = (event) => {
+  // Market session badge.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "portfolio_update") {
-          queryClient.setQueryData(["portfolio"], msg.data);
-        }
-      } catch (e) {
-        console.error("WS parse error", e);
+        const res = await fetch(`${API_BASE}/portfolio/market-status`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setMarketOpen(Boolean(data.is_open));
+      } catch {
+        /* badge is decoration */
       }
     };
-
-    ws.onerror = () => {
-      setWsError("WebSocket connection error");
-    };
-
-    ws.onclose = () => {
-      console.log("Portfolio WebSocket disconnected");
-      setTimeout(() => {
-        if (useWebSocket && wsRef.current === ws) {
-          setUseWebSocket(true);
-        }
-      }, 2000);
-    };
-
-    wsRef.current = ws;
-
+    void load();
+    const id = window.setInterval(load, 60_000);
     return () => {
-      ws.close();
-      wsRef.current = null;
+      cancelled = true;
+      window.clearInterval(id);
     };
-  }, [useWebSocket, queryClient]);
+  }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Authenticated live stream: server pushes portfolio state each second and
+  // auto-fills accepted orders while connected.
+  useEffect(() => {
+    const token = localStorage.getItem("gateway_auth_token");
+    if (!token) return undefined;
+
+    let closed = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: number | null = null;
+
+    const connect = () => {
+      if (closed) return;
+      try {
+        socket = new WebSocket(`${WS_BASE}/portfolio/stream?token=${encodeURIComponent(token)}`);
+      } catch {
+        return;
+      }
+      wsRef.current = socket;
+      socket.onopen = () => setLive(true);
+      socket.onmessage = (event: MessageEvent) => {
+        try {
+          const msg = JSON.parse(event.data as string) as { type?: string; data?: Portfolio };
+          if (msg.type === "portfolio_update" && msg.data) {
+            queryClient.setQueryData(["portfolio"], msg.data);
+          }
+        } catch {
+          /* ignore malformed frames */
+        }
+      };
+      socket.onclose = () => {
+        setLive(false);
+        if (!closed) retryTimer = window.setTimeout(connect, 4000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      socket?.close();
+      wsRef.current = null;
+      setLive(false);
+    };
+  }, [queryClient]);
+
+  const positions = useMemo(() => portfolio?.positions ?? [], [portfolio]);
+  const openOrders = useMemo(() => portfolio?.open_orders ?? [], [portfolio]);
+  const recentFills = useMemo(() => portfolio?.recent_fills ?? [], [portfolio]);
+
+  const estimatedCost = useMemo(() => {
+    const last = recentFills.find((f) => f.instrument_id === orderForm.instrument.toUpperCase())?.price;
+    return last ? last * orderForm.quantity : null;
+  }, [recentFills, orderForm.instrument, orderForm.quantity]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    orderMutation.mutate(orderForm);
+    setError(null);
+    setNotice(null);
+    setSubmitting(true);
+    try {
+      const result = await submitOrder({
+        instrument: orderForm.instrument.trim().toUpperCase(),
+        side: orderForm.side,
+        order_type: orderForm.order_type,
+        quantity: Number(orderForm.quantity),
+        limit_price: orderForm.order_type === "limit" ? Number(orderForm.limit_price) : undefined,
+        stop_price: orderForm.order_type === "stop" ? Number(orderForm.stop_price) : undefined,
+      });
+      setNotice(`${result.message} — order ${result.order_id.slice(0, 8)}`);
+      void refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Order failed");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+  const handleSimulateFill = async (orderId: string) => {
+    setFillBusyId(orderId);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await simulateFill(orderId);
+      setNotice(result.filled ? `Order filled at ${money(result.price)}` : "Order not fillable yet (no quote or market closed)");
+      void refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Fill failed");
+    } finally {
+      setFillBusyId(null);
+    }
   };
-
-  const formatNumber = (value: number) => {
-    return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
-  };
-
-  const getPnlColor = (value: number) => (value >= 0 ? "text-green-600" : "text-red-600");
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
-      </div>
-    );
+    return <div className="paper-loading">Loading paper portfolio…</div>;
   }
 
-  if (error) {
+  if (loadError) {
     return (
-      <div className="p-4 text-red-600">
-        Error loading portfolio: {(error as Error).message}
-        <button onClick={() => refetch()} className="ml-2 px-3 py-1 bg-blue-500 text-white rounded">
+      <div className="paper-error" role="alert">
+        Paper portfolio unavailable: {loadError instanceof Error ? loadError.message : "unknown error"}
+        <button className="btn-secondary" onClick={() => void refetch()}>
           Retry
         </button>
       </div>
     );
   }
 
-  const p = portfolio!;
-
   return (
-    <div className="space-y-6 p-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Paper Trading Portfolio</h1>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={useWebSocket}
-            onChange={(e) => setUseWebSocket(e.target.checked)}
-            className="w-4 h-4"
-          />
-          Real-time updates
-        </label>
+    <div className="paper-trading">
+      <div className="paper-summary">
+        <div className="paper-metrics">
+          <div className="paper-metric">
+            <span className="paper-metric-label">Equity</span>
+            <span className="paper-metric-value">${money(portfolio?.equity)}</span>
+          </div>
+          <div className="paper-metric">
+            <span className="paper-metric-label">Cash</span>
+            <span className="paper-metric-value">${money(portfolio?.cash)}</span>
+          </div>
+          <div className="paper-metric">
+            <span className="paper-metric-label">Buying power</span>
+            <span className="paper-metric-value">${money(portfolio?.buying_power)}</span>
+          </div>
+          <div className="paper-metric">
+            <span className="paper-metric-label">Positions</span>
+            <span className="paper-metric-value">{positions.length}</span>
+          </div>
+        </div>
+        <div className="paper-status">
+          <span className={`paper-live ${live ? "on" : ""}`}>{live ? "Live stream" : "Polling"}</span>
+          <span className={`paper-session ${marketOpen ? "open" : "closed"}`}>
+            {marketOpen === null ? "Market status…" : marketOpen ? "Market open" : "Market closed"}
+          </span>
+          <span className="mode-badge paper">Paper</span>
+        </div>
       </div>
 
-      {wsError && (
-        <div className="text-yellow-600 text-sm">⚠ {wsError} - falling back to polling</div>
+      {(notice || error) && (
+        <div className={error ? "paper-alert error" : "paper-alert"} role="status">
+          <span>{error ?? notice}</span>
+          <button className="btn-ghost" onClick={() => { setNotice(null); setError(null); }}>
+            Dismiss
+          </button>
+        </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-lg shadow p-4 border-l-4 border-blue-500">
-          <div className="text-sm text-gray-500">Cash</div>
-          <div className="text-2xl font-bold">{formatCurrency(p.cash)}</div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4 border-l-4 border-green-500">
-          <div className="text-sm text-gray-500">Equity</div>
-          <div className="text-2xl font-bold">{formatCurrency(p.equity)}</div>
-        </div>
-        <div className="bg-white rounded-lg shadow p-4 border-l-4 border-purple-500">
-          <div className="text-sm text-gray-500">Buying Power</div>
-          <div className="text-2xl font-bold">{formatCurrency(p.buying_power)}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section className="bg-white rounded-lg shadow">
-          <div className="px-4 py-3 border-b flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Positions</h2>
-            <span className="text-sm text-gray-500">{p.positions.length} positions</span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Avg Cost</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Market Value</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Unrealized P&L</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Realized P&L</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {p.positions.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-500">No positions</td>
-                  </tr>
-                ) : (
-                  p.positions.map((pos) => (
-                    <tr key={pos.instrument_id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-mono text-sm">{pos.instrument_id}</td>
-                      <td className="px-4 py-3 text-sm">{formatNumber(pos.quantity)}</td>
-                      <td className="px-4 py-3 text-sm">{formatCurrency(pos.avg_cost)}</td>
-                      <td className="px-4 py-3 text-sm">{formatCurrency(pos.market_value)}</td>
-                      <td className={`px-4 py-3 text-sm font-medium ${getPnlColor(pos.unrealized_pnl)}`}>
-                        {formatCurrency(pos.unrealized_pnl)}
-                      </td>
-                      <td className={`px-4 py-3 text-sm font-medium ${getPnlColor(pos.realized_pnl)}`}>
-                        {formatCurrency(pos.realized_pnl)}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="bg-white rounded-lg shadow">
-          <div className="px-4 py-3 border-b flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Open Orders</h2>
-            <span className="text-sm text-gray-500">{p.open_orders.length} orders</span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Side</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Limit</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Filled</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {p.open_orders.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-gray-500">No open orders</td>
-                  </tr>
-                ) : (
-                  p.open_orders.map((order) => (
-                    <tr key={order.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-2 text-xs font-mono">{order.id.slice(0, 8)}...</td>
-                      <td className="px-4 py-2 text-sm font-mono">{order.instrument_id}</td>
-                      <td className="px-4 py-2 text-sm">
-                        <span className={`px-2 py-0.5 rounded text-xs ${order.side === "buy" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                          {order.side.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-sm">{order.type.toUpperCase()}</td>
-                      <td className="px-4 py-2 text-sm">{formatNumber(order.qty)}</td>
-                      <td className="px-4 py-2 text-sm">{order.limit_price ? formatCurrency(order.limit_price) : "-"}</td>
-                      <td className="px-4 py-2 text-sm">
-                        <span className={`px-2 py-0.5 rounded text-xs ${
-                          order.status === "filled" ? "bg-green-100 text-green-700" :
-                          order.status === "cancelled" ? "bg-gray-100 text-gray-700" :
-                          order.status === "rejected" ? "bg-red-100 text-red-700" :
-                          "bg-yellow-100 text-yellow-700"
-                        }`}>
-                          {order.status.replace("_", " ")}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-sm">{formatNumber(order.filled_qty)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <section className="bg-white rounded-lg shadow">
-        <div className="px-4 py-3 border-b">
-          <h2 className="text-lg font-semibold">Place Order</h2>
-        </div>
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Symbol</label>
-              <input
-                type="text"
-                value={orderForm.instrument}
-                onChange={(e) => setOrderForm({ ...orderForm, instrument: e.target.value.toUpperCase() })}
-                placeholder="AAPL"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Side</label>
-              <select
-                value={orderForm.side}
-                onChange={(e) => setOrderForm({ ...orderForm, side: e.target.value as "buy" | "sell" })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="buy">Buy</option>
-                <option value="sell">Sell</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Order Type</label>
-              <select
-                value={orderForm.order_type}
-                onChange={(e) => setOrderForm({ ...orderForm, order_type: e.target.value as "market" | "limit" | "stop" })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="market">Market</option>
-                <option value="limit">Limit</option>
-                <option value="stop">Stop</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={orderForm.quantity}
-                onChange={(e) => setOrderForm({ ...orderForm, quantity: parseFloat(e.target.value) || 1 })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            {(orderForm.order_type === "limit" || orderForm.order_type === "stop") && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {orderForm.order_type === "limit" ? "Limit Price" : "Stop Price"}
-                </label>
+      <div className="paper-grid">
+        <section className="paper-card order-ticket">
+          <h3>Order ticket</h3>
+          <form onSubmit={handleSubmit} className="paper-order-form">
+            <div className="paper-form-row">
+              <label className="paper-field">
+                <span>Symbol</span>
+                <input
+                  type="text"
+                  value={orderForm.instrument}
+                  onChange={(e) => setOrderForm({ ...orderForm, instrument: e.target.value.toUpperCase() })}
+                  required
+                  spellCheck={false}
+                />
+              </label>
+              <label className="paper-field">
+                <span>Quantity</span>
                 <input
                   type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={orderForm.limit_price ?? orderForm.stop_price ?? ""}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    if (orderForm.order_type === "limit") {
-                      setOrderForm({ ...orderForm, limit_price: val });
-                    } else {
-                      setOrderForm({ ...orderForm, stop_price: val });
-                    }
-                  }}
-                  placeholder="Price"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  min="1"
+                  step="1"
+                  value={orderForm.quantity}
+                  onChange={(e) => setOrderForm({ ...orderForm, quantity: Number(e.target.value) || 1 })}
                   required
                 />
-              </div>
-            )}
-          </div>
-          <button
-            type="submit"
-            disabled={orderMutation.isPending}
-            className="w-full md:w-auto px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {orderMutation.isPending ? "Submitting..." : "Submit Order"}
-          </button>
-          {orderMutation.isError && (
-            <div className="text-red-600 text-sm">
-              {(orderMutation.error as Error).message}
+              </label>
             </div>
-          )}
-        </form>
-      </section>
 
-      <section className="bg-white rounded-lg shadow">
-        <div className="px-4 py-3 border-b">
-          <h2 className="text-lg font-semibold">Recent Fills</h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Symbol</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Side</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Commission</th>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Liquidity</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {p.recent_fills.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-500">No recent fills</td>
-                </tr>
-              ) : (
-                p.recent_fills.slice(0, 20).map((fill) => (
-                  <tr key={fill.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-2 text-sm">
-                      {new Date(fill.timestamp).toLocaleTimeString()}
-                    </td>
-                    <td className="px-4 py-2 text-sm font-mono">{fill.instrument_id}</td>
-                    <td className="px-4 py-2 text-sm">
-                      <span className={`px-2 py-0.5 rounded text-xs ${fill.side === "buy" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                        {fill.side.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-sm">{formatNumber(fill.qty)}</td>
-                    <td className="px-4 py-2 text-sm">{formatCurrency(fill.price)}</td>
-                    <td className="px-4 py-2 text-sm">{formatCurrency(fill.commission)}</td>
-                    <td className="px-4 py-2 text-sm text-gray-500">{fill.liquidity || "-"}</td>
-                  </tr>
-                ))
+            <div className="paper-side-toggle" role="group" aria-label="Order side">
+              <button
+                type="button"
+                className={`side-buy ${orderForm.side === "buy" ? "active" : ""}`}
+                onClick={() => setOrderForm({ ...orderForm, side: "buy" })}
+              >
+                Buy
+              </button>
+              <button
+                type="button"
+                className={`side-sell ${orderForm.side === "sell" ? "active" : ""}`}
+                onClick={() => setOrderForm({ ...orderForm, side: "sell" })}
+              >
+                Sell
+              </button>
+            </div>
+
+            <div className="paper-form-row">
+              <label className="paper-field">
+                <span>Type</span>
+                <select
+                  value={orderForm.order_type}
+                  onChange={(e) => setOrderForm({ ...orderForm, order_type: e.target.value as OrderRequest["order_type"] })}
+                >
+                  <option value="market">Market</option>
+                  <option value="limit">Limit</option>
+                  <option value="stop">Stop</option>
+                </select>
+              </label>
+              {orderForm.order_type === "limit" && (
+                <label className="paper-field">
+                  <span>Limit price</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    value={orderForm.limit_price ?? ""}
+                    onChange={(e) => setOrderForm({ ...orderForm, limit_price: e.target.value ? Number(e.target.value) : null })}
+                    required
+                  />
+                </label>
               )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              {orderForm.order_type === "stop" && (
+                <label className="paper-field">
+                  <span>Stop price</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    value={orderForm.stop_price ?? ""}
+                    onChange={(e) => setOrderForm({ ...orderForm, stop_price: e.target.value ? Number(e.target.value) : null })}
+                    required
+                  />
+                </label>
+              )}
+            </div>
+
+            <div className="paper-order-foot">
+              {estimatedCost !== null && (
+                <span className="paper-est">Est. cost ≈ ${money(estimatedCost)}</span>
+              )}
+              <button
+                type="submit"
+                className={`btn-primary paper-submit ${orderForm.side}`}
+                disabled={submitting || !orderForm.instrument.trim() || orderForm.quantity < 1}
+              >
+                {submitting ? "Submitting…" : `${orderForm.side === "buy" ? "Buy" : "Sell"} ${orderForm.quantity} ${orderForm.instrument.toUpperCase() || "—"}`}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="paper-card">
+          <h3>Positions</h3>
+          {positions.length === 0 ? (
+            <p className="paper-empty">No open positions — place your first order on the ticket.</p>
+          ) : (
+            <table className="paper-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Qty</th>
+                  <th>Avg cost</th>
+                  <th>Market value</th>
+                  <th>Unrealized PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map((p) => (
+                  <tr key={p.instrument_id}>
+                    <td className="paper-symbol">{p.instrument_id}</td>
+                    <td>{p.quantity}</td>
+                    <td>{money(p.avg_cost)}</td>
+                    <td>{money(p.market_value)}</td>
+                    <td className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
+                      {p.unrealized_pnl >= 0 ? "+" : ""}
+                      {money(p.unrealized_pnl)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        <section className="paper-card">
+          <h3>Open orders</h3>
+          {openOrders.length === 0 ? (
+            <p className="paper-empty">No working orders.</p>
+          ) : (
+            <table className="paper-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Type</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Status</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {openOrders.map((o) => (
+                  <tr key={o.id}>
+                    <td className="paper-symbol">{o.instrument_id}</td>
+                    <td>
+                      <span className={`side-badge ${o.side}`}>{o.side === "buy" ? "Buy" : "Sell"}</span>
+                    </td>
+                    <td>{o.type}</td>
+                    <td>{o.qty}</td>
+                    <td>{o.limit_price ? money(o.limit_price) : o.stop_price ? money(o.stop_price) : "—"}</td>
+                    <td>{o.status}</td>
+                    <td>
+                      <button
+                        className="btn-secondary paper-fill-btn"
+                        onClick={() => void handleSimulateFill(o.id)}
+                        disabled={fillBusyId === o.id}
+                      >
+                        {fillBusyId === o.id ? "…" : "Simulate fill"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        <section className="paper-card">
+          <h3>Recent fills</h3>
+          {recentFills.length === 0 ? (
+            <p className="paper-empty">No fills yet.</p>
+          ) : (
+            <table className="paper-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Comm.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentFills.map((f) => (
+                  <tr key={f.id}>
+                    <td>{new Date(f.timestamp).toLocaleTimeString()}</td>
+                    <td className="paper-symbol">{f.instrument_id}</td>
+                    <td>
+                      <span className={`side-badge ${f.side}`}>{f.side === "buy" ? "Buy" : "Sell"}</span>
+                    </td>
+                    <td>{f.qty}</td>
+                    <td>{money(f.price)}</td>
+                    <td>{money(f.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
-
-export default PaperTrading;

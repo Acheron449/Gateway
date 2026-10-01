@@ -21,7 +21,16 @@ class ProviderConfig(TypedDict, total=False):
 
 
 class ProviderUnavailableError(RuntimeError):
-    pass
+    """Raised when an upstream provider call cannot be completed.
+
+    ``status_code`` optionally carries the upstream HTTP status so callers can
+    distinguish auth failures (401/402) from premium-only endpoints (403) and
+    generic outages.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class MarketDataProvider(ABC):

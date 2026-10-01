@@ -12,6 +12,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PYTHONUNBUFFERED: "1"
       GATEWAY_PROVIDER_KEY_FILE: /run/secrets/gateway_provider_key
+      # Browser-facing origins allowed to call the API (comma-separated)
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
       # app.auth requires JWT_SECRET_KEY (quant-app-v1/backend/app/auth.py).
       # .env previously named it JWT_SECRET; renamed to match the app. Flat
       # interpolation (no nesting) for compose v1 and v2 compatibility; fails

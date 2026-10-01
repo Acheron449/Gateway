@@ -14,7 +14,10 @@ from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavail
 
 
 FINNHUB_BASE = "https://finnhub.io/api/v1"
-FINNHUB_NEWS_ENDPOINT = "/stock/news"
+# NOTE: company news lives at /company-news (params: symbol, from, to).
+# The previous "/stock/news" path does not exist and made every key test 404.
+FINNHUB_NEWS_ENDPOINT = "/company-news"
+# Premium-only on Finnhub: free keys receive HTTP 403 here.
 FINNHUB_CALENDAR_ENDPOINT = "/calendar/economic"
 FINNHUB_QUOTE_ENDPOINT = "/quote"
 FINNHUB_VERSION = "finnhub-v1"
@@ -142,7 +145,9 @@ class FinnhubProvider(MarketDataProvider):
         except Exception as exc:
             raise ProviderUnavailableError("Finnhub news request failed") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError("Finnhub news request was rejected")
+            raise ProviderUnavailableError(
+                "Finnhub news request was rejected", status_code=response.status_code
+            )
         try:
             payload = response.json()
         except Exception as exc:
@@ -196,7 +201,9 @@ class FinnhubProvider(MarketDataProvider):
         except Exception as exc:
             raise ProviderUnavailableError("Finnhub calendar request failed") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError("Finnhub calendar request was rejected")
+            raise ProviderUnavailableError(
+                "Finnhub calendar request was rejected", status_code=response.status_code
+            )
         try:
             payload = response.json()
         except Exception as exc:
@@ -257,7 +264,9 @@ class FinnhubProvider(MarketDataProvider):
         except Exception as exc:
             raise ProviderUnavailableError("Finnhub quote request failed") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError("Finnhub quote request was rejected")
+            raise ProviderUnavailableError(
+                "Finnhub quote request was rejected", status_code=response.status_code
+            )
         try:
             payload = response.json()
         except Exception as exc:
