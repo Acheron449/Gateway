@@ -21,12 +21,15 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.agents import router as agents_router
+from app.api.v1.agentic_lab import router as agentic_lab_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.backtest import router as backtest_router
 from app.api.v1.catalogue import router as catalogue_router
 from app.api.v1.divergence import router as divergence_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
+from app.api.v1.llm import router as llm_router
 from app.api.v1.live import router as live_router
 from app.api.v1.news import quote_router, router as news_router
 from app.api.openbb_routes import router as openbb_router
@@ -387,6 +390,8 @@ app.include_router(journal_router)  # Trade Journal
 app.include_router(risk_router)  # Risk Dashboard
 app.include_router(divergence_router)  # Divergence Scorecards
 app.include_router(settings_router)  # Settings
+app.include_router(llm_router)  # AI model providers, chat harness, context feeder
+app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
 app.include_router(openbb_router)  # OpenBB Data Integration
 app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment
 
@@ -404,6 +409,7 @@ app.include_router(backtest_router, dependencies=[Depends(get_current_user_optio
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router)
 app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(agents_router, dependencies=[Depends(get_current_user_optional)])  # TradingAgents multi-agent runs
 
 
 @app.get("/")

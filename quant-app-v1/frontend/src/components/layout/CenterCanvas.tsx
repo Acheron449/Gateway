@@ -3,6 +3,8 @@ import { ChartContainer } from "../../components/ChartContainer";
 import { AssetSelector } from "../../components/features/AssetSelector";
 import { PaperTrading } from "../../components/features/PaperTrading";
 import { CalendarView } from "./CalendarView";
+import { AiHarness } from "./AiHarness";
+import { AgenticLab } from "./AgenticLab";
 import { NewsFeed } from "../../components/features/NewsFeed";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
@@ -82,10 +84,22 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <CalendarView />
         </div>
       );
+    case "harness":
+      return (
+        <div className="canvas-view canvas-view-wide">
+          <AiHarness selectedSymbol={selectedSymbol} />
+        </div>
+      );
     case "strategies":
       return (
         <div className="canvas-view">
           <StrategyStudio />
+        </div>
+      );
+    case "agentic-lab":
+      return (
+        <div className="canvas-view canvas-view-wide">
+          <AgenticLab selectedSymbol={selectedSymbol} />
         </div>
       );
     case "backtests":

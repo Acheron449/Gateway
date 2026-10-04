@@ -3,7 +3,9 @@ export type View =
   | "scanner"
   | "markets"
   | "calendar"
+  | "harness"
   | "strategies"
+  | "agentic-lab"
   | "backtests"
   | "paper-trading"
   | "journal"
@@ -23,7 +25,9 @@ export const VIEWS: ViewDef[] = [
   { id: "scanner", label: "Scanner", icon: "🔍", group: "workspace" },
   { id: "markets", label: "Markets", icon: "📈", group: "workspace" },
   { id: "calendar", label: "Calendar", icon: "📅", group: "workspace" },
+  { id: "harness", label: "AI Harness", icon: "🤖", group: "workspace" },
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
+  { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
   { id: "backtests", label: "Backtests", icon: "📊", group: "myWork" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝", group: "myWork" },
   { id: "journal", label: "Journal", icon: "📓", group: "myWork" },
