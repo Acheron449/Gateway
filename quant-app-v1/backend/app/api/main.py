@@ -42,8 +42,20 @@ from app.api.v1.preferences import router as preferences_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
+from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
 from app.auth import get_current_user_optional, OptionalUser
+
+
+def _yf():
+    """Lazy import declared at the top of the file.
+
+    yfinance is loaded on first use (history/quote fetches) rather than at
+    API-import time, so booting the server never pays for the dependency.
+    """
+    import yfinance as yf
+
+    return yf
 
 # Rate limiter — generous defaults: the dashboard polls several endpoints
 # (ticker strip + parallel inspector fetches) per view change, and a tight
@@ -410,7 +422,7 @@ async def health(request: Request) -> dict:
     }
 
 
-TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '5h': 18000, '1d': 86400}
 
 
 def _resample_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
@@ -452,6 +464,7 @@ YF_TF_MAP: dict[str, tuple[str, str]] = {
     '30m': ('30m', '1mo'),
     '1h': ('1h', '3mo'),
     '4h': ('1h', '6mo'),  # resampled to 4h below
+    '5h': ('1h', '6mo'),  # resampled to 5h below
     '1d': ('1d', '2y'),
     '1wk': ('1wk', '5y'),
 }
@@ -463,7 +476,7 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
     Used when Alpaca credentials are absent so the native chart keeps working
     without a paid data feed. Raises HTTPException(502) on empty responses.
     """
-    import yfinance as yf
+    yf = _yf()
 
     interval, period = YF_TF_MAP.get((tf or '1h').lower(), YF_TF_MAP['1h'])
     frame = yf.Ticker(ticker.upper()).history(period=period, interval=interval, auto_adjust=False)
@@ -491,21 +504,176 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
     return candles
 
 
-@app.get("/history/{ticker}")
-async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
-    """Return historical bars, optionally resampled to the requested timeframe.
+# Chart data providers selectable by the UI (`?provider=`).
+_HISTORY_PROVIDER_IDS: dict[str, str] = {
+    "yahoo": "Yahoo Finance",
+    "yfinance": "Yahoo Finance",
+    "yahoo finance": "Yahoo Finance",
+    "yahoo-finance": "Yahoo Finance",
+    "alpaca": "Alpaca",
+    "openbb": "OpenBB",
+    "openbb-server": "OpenBB-Server",
+    "openbb server": "OpenBB-Server",
+}
 
-    Prefers Alpaca when credentials are configured; otherwise falls back to
-    yfinance so the chart renders without a paid market-data subscription.
+
+def _canonical_history_provider(provider: str | None) -> str:
+    """Resolve a user/provider id (or display name) to a canonical name."""
+    wanted = (provider or "Yahoo Finance").strip().casefold()
+    if not wanted:
+        return "Yahoo Finance"
+    canonical = _HISTORY_PROVIDER_IDS.get(wanted)
+    if canonical:
+        return canonical
+    for name in ("Yahoo Finance", "Alpaca", "OpenBB", "OpenBB-Server"):
+        if name.casefold() == wanted:
+            return name
+    return "Yahoo Finance"
+
+
+def _history_provider_catalogue() -> list[dict[str, Any]]:
+    """Providers the interactive chart can be pointed at (default: Yahoo Finance)."""
+    settings = get_settings()
+    return [
+        {
+            "id": "yahoo",
+            "name": "Yahoo Finance",
+            "detail": "Free Yahoo Finance bars via yfinance · no API key",
+            "available": True,
+            "is_default": True,
+        },
+        {
+            "id": "alpaca",
+            "name": "Alpaca",
+            "detail": "Alpaca market-data bars · API keys required",
+            "available": bool(_alpaca_credentials()),
+            "is_default": False,
+        },
+        {
+            "id": "openbb",
+            "name": "OpenBB",
+            "detail": "OpenBB Platform data integrations",
+            "available": bool(settings.enable_openbb_data),
+            "is_default": False,
+        },
+        {
+            "id": "openbb-server",
+            "name": "OpenBB Server",
+            "detail": "Self-hosted OpenBB API server",
+            "available": bool(settings.enable_openbb_server),
+            "is_default": False,
+        },
+    ]
+
+
+@app.get("/history/providers")
+async def get_history_providers() -> dict[str, Any]:
+    """List chart data providers so the UI can offer a picker."""
+    return {"providers": _history_provider_catalogue(), "default": "yahoo"}
+
+
+def _history_time_to_epoch(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    timestamp = getattr(value, "timestamp", None)
+    if callable(timestamp):
+        try:
+            return int(timestamp())
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
+    """Normalize provider candle rows (dicts or dataclasses) to chart candles."""
+    candles: list[dict[str, Any]] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            raw_time = row.get("time", row.get("timestamp"))
+            raw_ohlc = (row.get("open"), row.get("high"), row.get("low"), row.get("close"))
+            raw_volume = row.get("volume", 0)
+        else:
+            raw_time = getattr(row, "time", None)
+            raw_ohlc = tuple(getattr(row, key, None) for key in ("open", "high", "low", "close"))
+            raw_volume = getattr(row, "volume", 0)
+        epoch = _history_time_to_epoch(raw_time)
+        try:
+            open_, high, low, close = (float(value) for value in raw_ohlc)
+        except (TypeError, ValueError):
+            continue
+        if epoch is None or not math.isfinite(close) or close <= 0:
+            continue
+        candles.append(
+            {
+                "time": epoch,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": float(raw_volume or 0),
+            }
+        )
+    candles.sort(key=lambda candle: candle["time"])
+    return candles
+
+
+async def _fetch_history_alt_provider_sync(
+    provider: str, ticker: str, tf: str
+) -> list[dict[str, Any]] | None:
+    """Fetch bars from a non-Yahoo provider; None when unavailable/empty."""
+    if provider == "Alpaca":
+        creds = _alpaca_credentials()
+        if not creds:
+            return None
+        return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+
+    if provider in ("OpenBB", "OpenBB-Server"):
+        instance = get_registry_provider(provider)
+        if instance is None or not instance.is_configured:
+            return None
+        interval, _period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
+        rows = await instance.history(ticker.upper(), interval, "1y")
+        return _normalize_history_rows(rows)
+
+    return None
+
+
+@app.get("/history/{ticker}")
+async def get_history(
+    ticker: str,
+    tf: str = "1h",
+    limit: int = 500,
+    provider: str = "Yahoo Finance",
+) -> list[dict[str, Any]]:
+    """Return historical bars for the chart from the selected provider.
+
+    Defaults to Yahoo Finance (yfinance) — the credentials-free Gateway
+    default. Any other provider falls back to Yahoo Finance when it is not
+    configured, unreachable, or returns no data.
     """
-    creds = _alpaca_credentials()
-    source = "alpaca"
-    if creds:
-        chart_data = await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
-        if not chart_data:
-            chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
-            source = "yfinance"
-    else:
+    chosen = _canonical_history_provider(provider)
+    chart_data: list[dict[str, Any]] | None = None
+    source = "yfinance"
+
+    if chosen != "Yahoo Finance":
+        try:
+            chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf)
+        except HTTPException:
+            chart_data = None
+        except Exception as exc:
+            logger.warning(f"history provider '{chosen}' failed for {ticker.upper()}: {exc}")
+            chart_data = None
+        if chart_data:
+            source = chosen.casefold().replace(" ", "-")
+
+    if not chart_data:
         chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
         source = "yfinance"
 
@@ -526,8 +694,13 @@ async def get_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dic
 
 
 @app.get("/market/{ticker}/history")
-async def get_market_history(ticker: str, tf: str = "1h", limit: int = 500) -> list[dict[str, Any]]:
-    return await get_history(ticker=ticker, tf=tf, limit=limit)
+async def get_market_history(
+    ticker: str,
+    tf: str = "1h",
+    limit: int = 500,
+    provider: str = "Yahoo Finance",
+) -> list[dict[str, Any]]:
+    return await get_history(ticker=ticker, tf=tf, limit=limit, provider=provider)
 
 
 _quotes_cache: dict[str, Any] = {"at": 0.0, "rows": []}
@@ -536,7 +709,7 @@ _QUOTES_TTL_SECONDS = 45.0
 
 def _fetch_quotes_yfinance_sync(symbols: list[str]) -> list[dict[str, Any]]:
     """Batch last-quote snapshot via yfinance for the ticker strip."""
-    import yfinance as yf
+    yf = _yf()
 
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
@@ -575,18 +748,26 @@ async def get_quotes(symbols: str = "") -> dict[str, Any]:
         return {"quotes": [], "status": "available", "message": None}
 
     now = time.time()
-    if now - float(_quotes_cache.get("at", 0.0)) < _QUOTES_TTL_SECONDS and _quotes_cache.get("rows"):
-        cached_rows = _quotes_cache["rows"]
-        return {"quotes": [r for r in cached_rows if r["symbol"] in set(requested)], "status": "available", "message": None}
+    # Merge-cache per symbol: callers request different baskets (watchlists)
+    # within one TTL, so only fetch symbols we don't already have fresh.
+    cached: dict[str, Any] = {
+        r["symbol"]: r for r in _quotes_cache.get("rows", []) if isinstance(r, dict) and r.get("symbol")
+    }
+    if now - float(_quotes_cache.get("at", 0.0)) >= _QUOTES_TTL_SECONDS:
+        cached = {}
 
-    rows = await asyncio.to_thread(_fetch_quotes_yfinance_sync, requested)
-    if rows:
+    missing = [s for s in requested if s not in cached]
+    if missing:
+        fetched = await asyncio.to_thread(_fetch_quotes_yfinance_sync, missing)
+        cached.update({r["symbol"]: r for r in fetched})
         _quotes_cache["at"] = now
-        _quotes_cache["rows"] = rows
+        _quotes_cache["rows"] = list(cached.values())
+
+    quotes = [cached[s] for s in requested if s in cached]
     return {
-        "quotes": rows,
-        "status": "available" if rows else "unavailable",
-        "message": None if rows else "No quote data available (market closed or feed unreachable)",
+        "quotes": quotes,
+        "status": "available" if quotes else "unavailable",
+        "message": None if quotes else "No quote data available (market closed or feed unreachable)",
     }
 
 

@@ -6,7 +6,7 @@ import pytest
 
 from app.api.main import app
 from app.config import Settings
-from app.models import Instrument, Order, OrderSide, Portfolio, Quote, provenance_now
+from app.models import Instrument, Order, OrderSide, OrderStatus, OrderType, Portfolio, Quote, provenance_now
 from app.services import market_data
 from app.services.catalogue import (
     InstrumentCatalogueError,
@@ -15,6 +15,7 @@ from app.services.catalogue import (
     load_catalogue,
     search_instruments,
 )
+from app.services.market_data import OhlcvResult
 
 
 async def fetch(path: str) -> httpx.Response:
@@ -142,11 +143,19 @@ async def test_legacy_stocks_search_is_catalogue_backed() -> None:
 
 @pytest.mark.asyncio
 async def test_stocks_metadata_includes_catalogue_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake_ohlcv(ticker: str, limit: int = 500):
+    async def _fake_ohlcv(ticker: str, limit: int = 500) -> OhlcvResult:
         df = pd.DataFrame(
             {"Open": [1.0], "High": [2.0], "Low": [1.0], "Close": [2.0], "Volume": [100]}
         )
-        return df
+        return OhlcvResult(
+            dataframe=df,
+            provenance={
+                "source": "yfinance",
+                "provider_version": "test",
+                "coverage": "US equities / daily",
+                "delay_seconds": 86400,
+            }
+        )
 
     monkeypatch.setattr(market_data, "fetch_ohlcv", _fake_ohlcv)
     body = (await fetch("/stocks/AAPL/metadata")).json()

@@ -2,10 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useHistory, HISTORY_TFS, type HistoryTf } from "../hooks/useHistory";
 import { useSocket } from "../hooks/useSocket";
+import { useChartPrefs } from "../lib/chartPrefs";
 import type { PatternSignal } from "../types/market";
 
 import { MainChart } from "./charts/MainChart";
 import { IndicatorOverlay } from "./charts/IndicatorOverlay";
+import { IndicatorsButton } from "./charts/IndicatorPanel";
+import { ProviderSelect } from "./charts/ProviderSelect";
 import { PatternList } from "./features/PatternList";
 import { KronosForecast } from "./features/KronosForecast";
 
@@ -15,7 +18,8 @@ export interface ChartContainerProps {
 
 export function ChartContainer({ ticker }: ChartContainerProps) {
   const [timeframe, setTimeframe] = useState<HistoryTf>("1h");
-  const { data, loading, error } = useHistory(ticker, timeframe);
+  const [{ provider, indicators }] = useChartPrefs();
+  const { data, loading, error } = useHistory(ticker, timeframe, 500, provider);
   const liveUpdate = useSocket(ticker);
   const [patterns, setPatterns] = useState<PatternSignal[]>([]);
 
@@ -61,6 +65,8 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
             </button>
           ))}
         </div>
+        <ProviderSelect />
+        <IndicatorsButton />
         <IndicatorOverlay rsi={rsi} />
         <span className="chart-feed-note">Native candle chart · live via <code>/ws/trading</code></span>
       </div>
@@ -69,6 +75,7 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
         historyData={data}
         loading={loading}
         liveUpdate={liveUpdate}
+        indicators={indicators}
       />
       <KronosForecast bars={data} />
       <PatternList activePatterns={patterns} onZoomToPattern={handleZoomToPattern} />

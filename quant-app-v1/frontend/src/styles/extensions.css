@@ -1922,6 +1922,12 @@ body.panel-resizing .resize-handle {
   gap: 16px;
 }
 
+/* The paper desk is fluid by design — fill the canvas instead of the
+   1200px reading-width cap that other views use. */
+.canvas-view.canvas-view-wide {
+  max-width: none;
+}
+
 .paper-summary {
   display: flex;
   align-items: center;
@@ -2203,6 +2209,922 @@ body.panel-resizing .resize-handle {
   text-align: right;
 }
 
+/* ===== PAPER DESK (broker-style layout) ===== */
+/* Column widths double as drag-handle anchors: the component overrides these
+   via inline style when the user has resized a section (inline > stylesheet). */
+.paper-desk {
+  --desk-rail-w: 76px;
+  --desk-watchlist-w: 224px;
+  --desk-ticket-w: 340px;
+  --desk-gap: 14px;
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--desk-rail-w) var(--desk-watchlist-w) minmax(0, 1fr) var(--desk-ticket-w);
+  gap: var(--desk-gap);
+  align-items: start;
+}
+
+/* Drag handles sit in the gaps between sections (absolutely positioned so
+   overflow:hidden/auto on the panels can’t clip them). */
+.desk-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  align-items: flex-start;
+  z-index: 40;
+}
+
+.desk-handle .resize-handle-grip {
+  margin-top: 56px;
+}
+
+.desk-handle-rail {
+  left: calc(var(--desk-rail-w, 76px) - 4px);
+}
+
+.desk-handle-watchlist {
+  left: calc(var(--desk-rail-w, 76px) + var(--desk-gap, 14px) + var(--desk-watchlist-w, 224px) - 4px);
+}
+
+.desk-handle-ticket {
+  right: calc(var(--desk-ticket-w, 340px) - 4px);
+}
+
+/* Row handle between the quote list and the chart (vertical resize).
+   Negative margins keep it centered in desk-center's existing 14px gap. */
+.resize-handle-horizontal {
+  cursor: row-resize;
+}
+
+.resize-handle-horizontal .resize-handle-grip {
+  width: 28px;
+  height: 3px;
+}
+
+.desk-handle-row {
+  margin: -10.5px 0;
+}
+
+@media (max-width: 1700px) {
+  .paper-desk {
+    --desk-rail-w: 68px;
+    --desk-watchlist-w: 180px;
+    --desk-ticket-w: 300px;
+    --desk-gap: 10px;
+  }
+
+  .desk-inst-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+
+  .desk-quotes th,
+  .desk-quotes td {
+    padding: 8px 6px;
+  }
+
+  .desk-quote-btn {
+    min-width: 88px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    gap: 6px;
+  }
+
+  .desk-chevron {
+    display: none;
+  }
+
+  .desk-rail {
+    padding: 8px 4px;
+  }
+}
+
+@media (max-width: 1600px) {
+  .paper-desk {
+    grid-template-columns: var(--desk-rail-w) minmax(0, 1fr) var(--desk-ticket-w);
+  }
+
+  .desk-watchlist,
+  .desk-handle-watchlist {
+    display: none;
+  }
+}
+
+@media (max-width: 1160px) {
+  .paper-desk {
+    grid-template-columns: var(--desk-rail-w) minmax(0, 1fr) var(--desk-ticket-w);
+  }
+
+  .desk-watchlist,
+  .desk-handle-watchlist {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .paper-desk {
+    --desk-rail-w: 64px;
+    grid-template-columns: var(--desk-rail-w) minmax(0, 1fr);
+  }
+
+  .desk-ticket {
+    grid-column: 1 / -1;
+    position: static;
+  }
+
+  .desk-handle-ticket {
+    display: none;
+  }
+}
+
+/* Left icon rail */
+.desk-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 12px;
+  padding: 10px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+}
+
+.desk-rail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.desk-rail-item:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.desk-rail-item.active {
+  background: rgb(59 130 246 / 0.14);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.desk-rail-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.desk-rail-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.desk-rail-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-primary);
+}
+
+/* Watchlist */
+.desk-watchlist {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 140px);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 12px 8px;
+}
+
+.desk-wl-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+}
+
+.desk-wl-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 10px;
+}
+
+.desk-wl-title-gap {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-primary);
+  padding-top: 14px;
+}
+
+.desk-wl-edit {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.desk-wl-item {
+  text-align: left;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.desk-wl-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.desk-wl-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* Center column: status, quote list, chart */
+.desk-center {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.desk-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+}
+
+.desk-status-metrics {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-status-metrics b {
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-right: 5px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.desk-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.desk-card > h3 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  padding: 8px 8px 4px;
+}
+
+/* Quote list — its own fixed-height scroll panel so the trade chart below
+   stays visible without scrolling past the table. */
+.desk-quotes-card {
+  padding: 0 6px;
+  overflow: auto;
+  max-height: 40vh;
+}
+
+.desk-quotes thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-secondary);
+}
+
+.desk-quotes {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-quotes th {
+  text-align: left;
+  padding: 12px 8px;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.desk-quotes th:nth-child(3),
+.desk-quotes th:nth-child(4) {
+  text-align: center;
+}
+
+.desk-sort {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.desk-quotes tbody tr {
+  border-bottom: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast, 0.15s ease);
+}
+
+.desk-quotes tbody tr:last-child {
+  border-bottom: none;
+}
+
+.desk-quotes tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.desk-quotes tbody tr.selected {
+  background: rgb(59 130 246 / 0.1);
+}
+
+.desk-quotes td {
+  padding: 10px 8px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.desk-inst {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.desk-inst-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  font-size: 15px;
+  flex-shrink: 0;
+  filter: saturate(0.9);
+}
+
+.desk-inst-icon.lg {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 22px;
+}
+
+.desk-inst-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.desk-change {
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.desk-change.up {
+  color: var(--accent-success, #22c55e);
+  background: rgb(34 197 94 / 0.12);
+}
+
+.desk-change.down {
+  color: var(--accent-danger, #ef4444);
+  background: rgb(239 68 68 / 0.12);
+}
+
+.desk-quote-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 108px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-secondary);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.desk-quote-btn span {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.desk-quote-btn b {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-quote-btn.sell b {
+  color: var(--accent-danger, #ef4444);
+}
+
+.desk-quote-btn.buy b {
+  color: var(--accent-success, #22c55e);
+}
+
+.desk-quote-btn:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+  background: var(--bg-tertiary);
+}
+
+.desk-quote-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.desk-chevron {
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 18px;
+  width: 24px;
+}
+
+/* Chart card */
+.desk-chart-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.desk-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 2px 4px;
+}
+
+.desk-chart-inst {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.desk-chart-prices {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.desk-chart-prices .desk-quote-btn {
+  min-width: 0;
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+
+.desk-chart-body {
+  min-width: 0;
+}
+
+.desk-tf-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+/* Right trade ticket */
+.desk-ticket {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* never squash ticket sections — the panel itself scrolls */
+  align-items: stretch;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 6px 14px 14px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}
+
+.desk-ticket > * {
+  flex-shrink: 0;
+}
+
+.desk-ticket-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-primary);
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  z-index: 1;
+}
+
+.desk-ticket-tab {
+  flex: 1;
+  padding: 13px 4px 11px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--transition-fast, 0.15s ease);
+}
+
+.desk-ticket-tab:hover {
+  color: var(--text-primary);
+}
+
+.desk-ticket-tab.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+.desk-ticket-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.desk-ticket-title h3 {
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1.15;
+}
+
+.desk-ticket-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.desk-ticket-prices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.desk-price-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 13px 8px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-secondary);
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.desk-price-box span {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.desk-price-box b {
+  font-size: 19px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-price-box.sell b {
+  color: var(--accent-danger, #ef4444);
+}
+
+.desk-price-box.buy b {
+  color: var(--accent-success, #22c55e);
+}
+
+.desk-price-box:hover {
+  border-color: var(--accent-primary);
+}
+
+.desk-price-box.armed.sell {
+  border-color: var(--accent-danger, #ef4444);
+  background: rgb(239 68 68 / 0.1);
+}
+
+.desk-price-box.armed.buy {
+  border-color: var(--accent-success, #22c55e);
+  background: rgb(34 197 94 / 0.1);
+}
+
+/* +AI Bites row */
+.desk-bites {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}
+
+.desk-bites-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.desk-bites-info {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.desk-bites-cta {
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-primary);
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.desk-bites-cta:hover {
+  background: rgb(59 130 246 / 0.14);
+}
+
+.desk-ticket-body {
+  min-height: 120px;
+}
+
+/* Right inspector embedded as the ticket's "Overview" tab: inherit the
+   ticket's padding and scrolling instead of standalone-sidebar chrome.
+   Existing section styling is untouched — no extra borders are added. */
+.desk-ticket-body .inspector-content {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+  position: relative;
+}
+
+/* Live statistics */
+.desk-ls-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.desk-ls-title span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.desk-ls-changes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  text-align: center;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border-primary);
+}
+
+.desk-ls-cell b {
+  display: block;
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-ls-cell b.up {
+  color: var(--accent-success, #22c55e);
+}
+
+.desk-ls-cell b.down {
+  color: var(--accent-danger, #ef4444);
+}
+
+.desk-ls-cell span {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.desk-ls-rate {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 12px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-ls-rate b {
+  color: var(--text-primary);
+}
+
+.desk-ls-range-head,
+.desk-ls-range-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--accent-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-ls-range-meta {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.desk-ls-range-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.desk-ls-range {
+  margin-bottom: 12px;
+}
+
+.desk-ls-bar {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(59 130 246 / 0.35), rgb(59 130 246 / 0.85));
+  margin: 7px 0 6px;
+}
+
+.desk-ls-marker {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  background: var(--text-primary);
+  border: 2px solid var(--bg-primary);
+  border-radius: 3px;
+  rotate: 45deg;
+}
+
+.desk-insight {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.desk-insight-dir {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-insight-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.desk-insight-badge.bullish {
+  background: rgb(34 197 94 / 0.16);
+  color: var(--accent-success, #22c55e);
+}
+
+.desk-insight-badge.bearish {
+  background: rgb(239 68 68 / 0.16);
+  color: var(--accent-danger, #ef4444);
+}
+
+/* Ticket news footer */
+.desk-ticket-news {
+  border-top: 1px solid var(--border-primary);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.desk-news-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: border-color var(--transition-fast, 0.15s ease);
+}
+
+.desk-news-item:hover {
+  border-color: var(--accent-primary);
+}
+
+.desk-news-source {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.desk-news-headline {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .desk-quote-btn {
+    min-width: 0;
+  }
+
+  .desk-quotes th,
+  .desk-quotes td {
+    padding: 8px 6px;
+    font-size: 12.5px;
+  }
+}
+
 /* ===== INSPECTOR NEWS (right sidebar) ===== */
 .inspector-news {
   display: flex;
@@ -2259,4 +3181,454 @@ body.panel-resizing .resize-handle {
   margin-top: 6px;
   font-size: 11.5px;
   color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Custom chart: provider dropdown, indicator popup panel, canvas tooltip
+   ========================================================================== */
+
+.chart-canvas {
+  cursor: crosshair;
+}
+
+.chart-canvas:active {
+  cursor: grabbing;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  background: rgba(22, 27, 34, 0.96);
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 6px;
+  padding: 6px 9px;
+  min-width: 130px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.chart-tooltip .ct-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  line-height: 1.55;
+}
+
+.chart-tooltip .ct-label {
+  color: var(--text-muted, #8b949e);
+}
+
+.chart-tooltip .ct-value {
+  color: var(--text-primary, #c9d1d9);
+  font-weight: 600;
+}
+
+/* --- Provider dropdown ---------------------------------------------------- */
+
+.provider-select {
+  position: relative;
+}
+
+.provider-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #161b22;
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.provider-select-btn:hover,
+.provider-select-btn.open {
+  background: #1f2630;
+  border-color: #444c56;
+}
+
+.provider-select-btn .ps-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fb950;
+  box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.22);
+}
+
+.provider-select-btn .ps-caret {
+  color: #8b949e;
+}
+
+.provider-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 90;
+  width: 310px;
+  background: #161b22;
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 8px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+}
+
+.provider-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px 8px;
+  color: #8b949e;
+  border-bottom: 1px solid var(--border-primary, #30363d);
+  margin-bottom: 6px;
+}
+
+.provider-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e6edf3;
+  font-size: 13px;
+}
+
+.provider-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 264px;
+  overflow-y: auto;
+}
+
+.provider-option {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: #c9d1d9;
+}
+
+.provider-option.is-highlighted {
+  background: #1f2630;
+}
+
+.provider-option.is-current .po-name {
+  color: #58a6ff;
+}
+
+.provider-option.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.provider-option .po-name {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.provider-option .po-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.provider-option .po-check {
+  color: #3fb950;
+  font-size: 12px;
+}
+
+.provider-empty {
+  padding: 12px 8px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+/* --- Indicators toolbar button ------------------------------------------- */
+
+.indicator-menu-anchor {
+  position: relative;
+}
+
+.chart-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #161b22;
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.chart-tool-btn:hover,
+.chart-tool-btn.open {
+  background: #1f2630;
+  border-color: #444c56;
+}
+
+.chart-tool-btn .ctb-glyph {
+  color: #58a6ff;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.chart-tool-btn .ctb-count {
+  background: #1f6feb;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+
+/* --- Indicator popup panel ------------------------------------------------ */
+
+.indicator-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 95;
+  width: min(660px, calc(100vw - 32px));
+  height: min(430px, calc(100vh - 220px));
+  display: grid;
+  grid-template-columns: 212px 1fr;
+  background: #161b22;
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 10px;
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+/* Anchor the popup to the right edge when it lives in the desk toolbar. */
+.desk-chart-tools .indicator-panel,
+.desk-chart-tools .provider-menu {
+  left: auto;
+  right: 0;
+}
+
+.indicator-panel-nav {
+  border-right: 1px solid var(--border-primary, #30363d);
+  background: #11161d;
+  padding: 12px 10px;
+  overflow-y: auto;
+}
+
+.indicator-panel-nav .ip-nav-title {
+  color: #58a6ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin: 4px 6px 8px;
+}
+
+.ip-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 13px;
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ip-nav-item:hover {
+  background: #1c2431;
+}
+
+.ip-nav-item.is-active {
+  background: #2b3543;
+}
+
+.ip-nav-item .ip-nav-glyph {
+  color: #8b949e;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.ip-nav-item .ip-nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ip-nav-item .ip-badge {
+  background: #1f6feb;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+
+.ip-nav-rule {
+  border: none;
+  border-top: 1px solid var(--border-primary, #30363d);
+  margin: 10px 4px;
+}
+
+.indicator-panel-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ip-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  color: #8b949e;
+}
+
+.ip-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #1f6feb;
+  outline: none;
+  color: #e6edf3;
+  font-size: 15px;
+  padding: 3px 0 5px;
+}
+
+.ip-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+}
+
+.ip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+
+.ip-row:hover {
+  background: #1c2431;
+}
+
+.ip-row.is-active {
+  background: #17253f;
+}
+
+.ip-star {
+  background: transparent;
+  border: none;
+  color: #6e7681;
+  font-size: 15px;
+  line-height: 1;
+  width: 20px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ip-star.is-fav {
+  color: #f0b90b;
+}
+
+.ip-row .ip-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #e6edf3;
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ip-row.is-active .ip-name {
+  color: #58a6ff;
+  font-weight: 600;
+}
+
+.ip-row .ip-info {
+  color: #6e7681;
+  font-size: 13px;
+  opacity: 0;
+  cursor: help;
+  flex-shrink: 0;
+}
+
+.ip-row:hover .ip-info {
+  opacity: 1;
+}
+
+.ip-row .ip-active-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fb950;
+  flex-shrink: 0;
+}
+
+.ip-empty {
+  color: #8b949e;
+  font-size: 13px;
+  padding: 18px 10px;
+}
+
+/* --- Desk chart toolbar grouping ----------------------------------------- */
+
+.desk-chart-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .indicator-panel {
+    grid-template-columns: 168px 1fr;
+  }
+
+  .provider-menu {
+    width: 260px;
+  }
 }

@@ -102,7 +102,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
       );
     case "paper-trading":
       return (
-        <div className="canvas-view">
+        <div className="canvas-view canvas-view-wide">
           <div className="view-header">
             <h1>Paper Trading</h1>
             <p className="view-description">Simulated portfolio and order management</p>

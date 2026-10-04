@@ -17,6 +17,7 @@ from app.providers.finnhub_provider import FinnhubProvider
 from app.providers.openbb_provider import OpenBBConfig, OpenBBProvider
 from app.providers.openbb_server_provider import OpenBBServerProvider
 from app.providers.openstock_provider import OpenStockSymbolProvider
+from app.providers.yahoo_provider import YahooFinanceProvider
 
 
 class TradingViewProvider(MarketDataProvider):
@@ -46,6 +47,7 @@ class TradingViewProvider(MarketDataProvider):
 
 
 _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
+    "Yahoo Finance": YahooFinanceProvider,
     "Finnhub": FinnhubProvider,
     "TradingView": TradingViewProvider,
     "OpenBB": OpenBBProvider,
@@ -230,6 +232,7 @@ def get_provider(
 
 def list_providers() -> dict[str, ProviderMeta]:
     return {
+        "Yahoo Finance": YahooFinanceProvider().meta,
         "Finnhub": FinnhubProvider("").meta,
         "TradingView": TradingViewProvider("").meta,
         "OpenBB": OpenBBProvider().meta,
@@ -249,6 +252,7 @@ def register_provider(name: str, cls: type[MarketDataProvider]) -> None:
 _PROVIDERS = _PROVIDER_CLASSES
 
 __all__ = [
+    "YahooFinanceProvider",
     "FinnhubProvider",
     "TradingViewProvider",
     "MarketDataProvider",

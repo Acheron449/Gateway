@@ -14,6 +14,14 @@ from app.providers.openbb_provider import OpenBBProvider, OpenBBConfig
 from app.services.provenance import candle_provenance
 
 
+def _yf():
+    """Lazy import declared at the top of the file: yfinance loads on first
+    use (quote/OHLCV fetches) instead of at module-import time."""
+    import yfinance as yf
+
+    return yf
+
+
 # --- Data Models ---
 
 @dataclass
@@ -78,7 +86,7 @@ _DEFAULT_HALF_SPREAD_BPS = float(os.getenv("PAPER_HALF_SPREAD_BPS", "5"))
 def _fetch_last_price_sync(symbol: str) -> float | None:
     """Fetch the real last trade price via yfinance (credentials-free)."""
     try:
-        import yfinance as yf
+        yf = _yf()
 
         fast = yf.Ticker(symbol.upper()).fast_info
         price = float(fast.last_price or 0)
@@ -134,7 +142,7 @@ async def fetch_ohlcv(ticker: str, limit: int = 500) -> OhlcvResult:
     for real-time streaming in ``api.main``.
     """
     def _fetch() -> pd.DataFrame:
-        import yfinance as yf
+        yf = _yf()
 
         result = yf.Ticker(ticker.upper()).history(period="2y", interval="1d", auto_adjust=False)
         if result.empty:

@@ -8,11 +8,13 @@ export type HistoryTf = (typeof HISTORY_TFS)[number];
 
 /**
  * Fetches historical market data for a given ticker symbol from the REST API.
- * @param ticker The stock ticker symbol (e.g., "AAPL").
- * @param tf     Requested timeframe ("1h" | "1d" | "1wk"); the backend resamples.
+ * @param ticker   The stock ticker symbol (e.g., "AAPL").
+ * @param tf       Requested timeframe; the backend resamples ("1m" | "5m" | "5h" | "1h" | "1d" | "1wk" …).
+ * @param limit    Optional max bar count (range-style chips like 1M/3M/1Y pass a slice size).
+ * @param provider Data provider id from GET /history/providers ("yahoo" by default).
  * @returns An object containing the fetched data, loading state, and any error encountered.
  */
-export function useHistory(ticker: string, tf: HistoryTf = "1h") {
+export function useHistory(ticker: string, tf: string = "1h", limit = 500, provider: string = "yahoo") {
   const [data, setData] = useState<HistoryCandle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +32,10 @@ export function useHistory(ticker: string, tf: HistoryTf = "1h") {
     setLoading(true);
     setError(null);
 
-    fetch(`${API_BASE}/history/${encodeURIComponent(sym)}?tf=${encodeURIComponent(tf)}`, { signal: ac.signal })
+    fetch(
+      `${API_BASE}/history/${encodeURIComponent(sym)}?tf=${encodeURIComponent(tf)}&limit=${encodeURIComponent(limit)}&provider=${encodeURIComponent(provider)}`,
+      { signal: ac.signal },
+    )
       .then(async (res) => {
         if (!res.ok) {
           const text = await res.text().catch(() => "");
@@ -58,7 +63,7 @@ export function useHistory(ticker: string, tf: HistoryTf = "1h") {
       .finally(() => setLoading(false));
 
     return () => ac.abort();
-  }, [ticker, tf]);
+  }, [ticker, tf, limit, provider]);
 
   return { data, loading, error };
 }

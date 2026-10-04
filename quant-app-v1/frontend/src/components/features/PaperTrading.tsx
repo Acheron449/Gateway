@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { API_BASE, WS_BASE } from "../../lib/constants";
+import { useHistory } from "../../hooks/useHistory";
+import { useSocket } from "../../hooks/useSocket";
+import { useChartPrefs } from "../../lib/chartPrefs";
+import { MainChart } from "../charts/MainChart";
+import { IndicatorsButton } from "../charts/IndicatorPanel";
+import { ProviderSelect } from "../charts/ProviderSelect";
+import { ResizeHandle } from "../layout/ResizeHandle";
+import { RightInspector } from "../layout/RightInspector";
 
 interface Position {
   instrument_id: string;
@@ -57,9 +65,201 @@ interface OrderRequest {
   stop_price?: number | null;
 }
 
+interface QuoteRow {
+  symbol: string;
+  price: number;
+  change: number;
+  change_pct: number;
+}
+
+interface DeskStats {
+  change5m: number | null;
+  change1h: number | null;
+  change1d: number | null;
+  sellRate: number | null;
+  ranges: { label: string; low: number; high: number; marker: number | null }[];
+}
+
+interface NewsItem {
+  id: string;
+  headline: string;
+  url?: string;
+  source?: string;
+  published_at?: string;
+}
+
+interface AnalysisData {
+  ticker?: string;
+  direction?: string;
+  overall_confidence?: number;
+  rsi?: number;
+}
+
+/** Icon + friendly name per instrument (fallback: ticker itself). */
+const INSTRUMENT_META: Record<string, { name: string; icon: string; tint: string }> = {
+  "GC=F": { name: "Gold", icon: "🥇", tint: "#eab308" },
+  "SI=F": { name: "Silver", icon: "🥈", tint: "#94a3b8" },
+  "EURUSD=X": { name: "EUR/USD", icon: "🇪🇺", tint: "#2563eb" },
+  "AUDUSD=X": { name: "AUD/USD", icon: "🇦🇺", tint: "#16a34a" },
+  "USDJPY=X": { name: "USD/JPY", icon: "🇯🇵", tint: "#dc2626" },
+  "GBPUSD=X": { name: "GBP/USD", icon: "🇬🇧", tint: "#7c3aed" },
+  "^AXJO": { name: "ASX 200", icon: "🇦🇺", tint: "#0ea5e9" },
+  "BTC-USD": { name: "Bitcoin", icon: "₿", tint: "#f7931a" },
+  "ETH-USD": { name: "Ethereum", icon: "Ξ", tint: "#627eea" },
+  "SOL-USD": { name: "Solana", icon: "◎", tint: "#14b8a6" },
+  "XRP-USD": { name: "XRP", icon: "✕", tint: "#64748b" },
+  AAPL: { name: "Apple", icon: "", tint: "#a3a3a3" },
+  MSFT: { name: "Microsoft", icon: "🪟", tint: "#3b82f6" },
+  NVDA: { name: "Nvidia", icon: "🅷", tint: "#76b900" },
+  TSLA: { name: "Tesla", icon: "⚡", tint: "#ef4444" },
+  AMZN: { name: "Amazon", icon: "📦", tint: "#f59e0b" },
+  GOOGL: { name: "Alphabet", icon: "G", tint: "#ea4335" },
+  META: { name: "Meta", icon: "∞", tint: "#06b6d4" },
+  AMD: { name: "AMD", icon: "▲", tint: "#dc2626" },
+  SPY: { name: "S&P 500", icon: "🇺🇸", tint: "#22c55e" },
+  QQQ: { name: "Nasdaq 100", icon: "📊", tint: "#0ea5e9" },
+  JPM: { name: "JPMorgan", icon: "🏦", tint: "#1d4ed8" },
+};
+
+const POPULAR_SYMBOLS = [
+  "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META",
+  "SPY", "QQQ", "JPM", "BTC-USD", "ETH-USD", "GC=F", "EURUSD=X", "USDJPY=X",
+];
+
+interface WatchGroup {
+  id: string;
+  label: string;
+  section: "popular" | "mine";
+  symbols: string[];
+}
+
+const WATCHLIST_GROUPS: WatchGroup[] = [
+  { id: "all", label: "All Popular", section: "popular", symbols: POPULAR_SYMBOLS },
+  {
+    id: "spotlight",
+    label: "Spotlight",
+    section: "popular",
+    symbols: ["NVDA", "TSLA", "BTC-USD", "GC=F", "SPY", "MSFT", "ETH-USD"],
+  },
+  {
+    id: "options",
+    label: "Popular Options",
+    section: "popular",
+    symbols: ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "MSFT", "AMD", "AMZN"],
+  },
+  { id: "movers", label: "Risers & Fallers", section: "popular", symbols: POPULAR_SYMBOLS },
+  {
+    id: "tech",
+    label: "Tech",
+    section: "mine",
+    symbols: ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMD"],
+  },
+  { id: "fx", label: "FX", section: "mine", symbols: ["EURUSD=X", "AUDUSD=X", "USDJPY=X", "GBPUSD=X"] },
+  { id: "crypto", label: "Crypto", section: "mine", symbols: ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"] },
+];
+
+/** Chart chips → backend tf (+ optional bar limit for range-style chips). */
+const TF_CHIPS: { label: string; tf: string; limit?: number }[] = [
+  { label: "5m", tf: "5m" },
+  { label: "1H", tf: "1h" },
+  { label: "5H", tf: "5h" },
+  { label: "1D", tf: "1d" },
+  { label: "1W", tf: "1wk" },
+  { label: "1M", tf: "1d", limit: 22 },
+  { label: "3M", tf: "1d", limit: 66 },
+  { label: "1Y", tf: "1d", limit: 252 },
+  { label: "Max", tf: "1d", limit: 2000 },
+];
+
+type DeskTicketTab = "overview" | "trade" | "info" | "insights";
+
+const TICKET_TABS: { id: DeskTicketTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "trade", label: "Trade" },
+  { id: "info", label: "Info" },
+  { id: "insights", label: "+Insights" },
+];
+
+type DeskSection = "trade" | "positions" | "orders" | "closed" | "insights" | "funds";
+
+/** Restorable column widths for the desk grid (null → responsive CSS default). */
+const DESK_WIDTH_KEYS = {
+  rail: "gateway_ui_desk_rail_w",
+  watchlist: "gateway_ui_desk_watchlist_w",
+  ticket: "gateway_ui_desk_ticket_w",
+} as const;
+
+const DESK_DEFAULTS = { rail: 76, watchlist: 224, ticket: 340 };
+const DESK_LIMITS = {
+  rail: { min: 56, max: 160 },
+  watchlist: { min: 150, max: 420 },
+  ticket: { min: 260, max: 560 },
+};
+
+/** Quote-list height (the panel above the chart) — dragged vertically. */
+const DESK_QUOTES_H_KEY = "gateway_ui_desk_quotes_h";
+const QUOTES_H_MIN = 160;
+const quotesHMax = () => Math.max(QUOTES_H_MIN + 80, Math.floor(window.innerHeight * 0.7));
+const quotesHDefault = () => Math.floor(window.innerHeight * 0.4);
+
+function readDeskWidth(key: string, min: number, max: number): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    const value = raw === null ? NaN : Number(raw);
+    return Number.isFinite(value) && value >= min && value <= max ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+const DEFAULT_GROUP: WatchGroup = WATCHLIST_GROUPS[0] ?? {
+  id: "all",
+  label: "All Popular",
+  section: "popular",
+  symbols: [],
+};
+const DEFAULT_TF = TF_CHIPS.find((c) => c.label === "1D") ?? { label: "1D", tf: "1d" };
+
+const RAIL_ITEMS: { id: DeskSection; label: string; icon: string }[] = [
+  { id: "trade", label: "Trade", icon: "📈" },
+  { id: "positions", label: "Open Positions", icon: " ↔" },
+  { id: "orders", label: "Orders", icon: "🏷️" },
+  { id: "closed", label: "Closed Positions", icon: "🕘" },
+  { id: "insights", label: "+Insights", icon: "✨" },
+  { id: "funds", label: "Funds", icon: "🏦" },
+];
+
+/** Price → display string with sensible precision (FX keeps 5 decimals). */
+function fmtPrice(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (Math.abs(value) < 2) return value.toFixed(5);
+  if (Math.abs(value) < 100) return value.toFixed(3);
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "" : ""}${value.toFixed(2)}%`;
+}
+
+const money = (value: number | null | undefined, digits = 2) =>
+  value === null || value === undefined
+    ? "—"
+    : value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("gateway_auth_token");
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function meta(symbol: string): { name: string; icon: string; tint: string } {
+  return INSTRUMENT_META[symbol] ?? { name: symbol, icon: symbol.slice(0, 1), tint: "#64748b" };
+}
+
+/** Indicative two-way price from last (matches backend half-spread default). */
+function twoWay(price: number): { sell: number; buy: number } {
+  const half = price * 0.0005;
+  return { sell: price - half, buy: price + half };
 }
 
 async function fetchPortfolio(): Promise<Portfolio> {
@@ -96,26 +296,26 @@ async function simulateFill(orderId: string): Promise<{ filled: boolean; price?:
   return res.json();
 }
 
-const money = (value: number | null | undefined, digits = 2) =>
-  value === null || value === undefined
-    ? "—"
-    : value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-
 /**
- * Paper trading desk: live account summary, order ticket, positions,
- * open orders (with one-click fill simulation), and recent fills.
- * State streams over the authenticated /portfolio/stream WebSocket with a
- * REST polling fallback.
+ * Broker-style paper trading desk: left section rail, watchlist, quote list,
+ * candle chart, and a right-hand trade ticket with live statistics.
  */
 export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const queryClient = useQueryClient();
-  const [orderForm, setOrderForm] = useState<OrderRequest>({
-    instrument: selectedSymbol ?? "AAPL",
-    side: "buy",
-    order_type: "market",
+
+  const [section, setSection] = useState<DeskSection>("trade");
+  const [groupId, setGroupId] = useState("all");
+  const [symbol, setSymbol] = useState((selectedSymbol ?? "AAPL").toUpperCase());
+  const [ticketTab, setTicketTab] = useState<DeskTicketTab>("overview");
+  const [tfIndex, setTfIndex] = useState(3); // 1D default
+  const [sortKey, setSortKey] = useState<"name" | "change">("name");
+
+  const [orderForm, setOrderForm] = useState({
+    side: "buy" as "buy" | "sell",
+    order_type: "market" as "market" | "limit" | "stop",
     quantity: 10,
-    limit_price: null,
-    stop_price: null,
+    limit_price: null as number | null,
+    stop_price: null as number | null,
   });
   const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -125,18 +325,223 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const [fillBusyId, setFillBusyId] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Draggable column widths (drag a section's edge; double-click resets).
+  const [railW, setRailW] = useState<number | null>(() =>
+    readDeskWidth(DESK_WIDTH_KEYS.rail, DESK_LIMITS.rail.min, DESK_LIMITS.rail.max),
+  );
+  const [watchlistW, setWatchlistW] = useState<number | null>(() =>
+    readDeskWidth(DESK_WIDTH_KEYS.watchlist, DESK_LIMITS.watchlist.min, DESK_LIMITS.watchlist.max),
+  );
+  const [ticketW, setTicketW] = useState<number | null>(() =>
+    readDeskWidth(DESK_WIDTH_KEYS.ticket, DESK_LIMITS.ticket.min, DESK_LIMITS.ticket.max),
+  );
+  // Quote-list height: null → responsive CSS default (40vh).
+  const [quotesH, setQuotesH] = useState<number | null>(() => {
+    const stored = readDeskWidth(DESK_QUOTES_H_KEY, QUOTES_H_MIN, 4000);
+    return stored === null ? null : Math.min(stored, quotesHMax());
+  });
+
+  const deskRef = useRef<HTMLDivElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
+  const watchlistRef = useRef<HTMLElement | null>(null);
+  const ticketRef = useRef<HTMLElement | null>(null);
+  const quotesRef = useRef<HTMLElement | null>(null);
+
+  const deskStyle = {
+    "--desk-rail-w": railW !== null ? `${railW}px` : undefined,
+    "--desk-watchlist-w": watchlistW !== null ? `${watchlistW}px` : undefined,
+    "--desk-ticket-w": ticketW !== null ? `${ticketW}px` : undefined,
+  } as React.CSSProperties;
+
+  const MIN_CENTER = 360;
+
+  /** Apply the clamp, store the width, and persist it (drag or double-click). */
+  const setDeskWidth = (
+    kind: keyof typeof DESK_LIMITS,
+    value: number,
+    setter: (w: number) => void,
+  ) => {
+    const clamped = clampDeskWidth(kind, value);
+    setter(clamped);
+    try {
+      localStorage.setItem(DESK_WIDTH_KEYS[kind], String(clamped));
+    } catch {
+      /* private mode — ignore */
+    }
+  };
+
+  /** Quote-list height: viewport-relative bounds, persisted. */
+  const applyQuotesHeight = (value: number) => {
+    const clamped = Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, value));
+    setQuotesH(clamped);
+    try {
+      localStorage.setItem(DESK_QUOTES_H_KEY, String(clamped));
+    } catch {
+      /* private mode — ignore */
+    }
+  };
+
+  // Re-clamp the quote list when the window resizes (bounds are vh-based).
+  useEffect(() => {
+    const onResize = () =>
+      setQuotesH((h) => (h === null ? h : Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, h))));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  /**
+   * Clamp a dragged column so the fluid center keeps at least MIN_CENTER px.
+   * The other columns are measured live (hidden ones count as 0).
+   */
+  const clampDeskWidth = (kind: keyof typeof DESK_LIMITS, next: number): number => {
+    const { min, max } = DESK_LIMITS[kind];
+    let value = Math.min(max, Math.max(min, next));
+    const desk = deskRef.current;
+    if (desk) {
+      const gap = parseFloat(getComputedStyle(desk).columnGap) || 14;
+      const refs = { rail: railRef, watchlist: watchlistRef, ticket: ticketRef };
+      let others = 0;
+      let items = 2; // center + the dragged section
+      for (const key of ["rail", "watchlist", "ticket"] as const) {
+        if (key === kind) continue;
+        const rect = refs[key].current?.getBoundingClientRect();
+        if (rect && rect.width > 0) {
+          others += rect.width;
+          items += 1;
+        }
+      }
+      const room = desk.clientWidth - others - gap * (items - 1) - MIN_CENTER;
+      value = Math.max(min, Math.min(value, room));
+    }
+    return value;
+  };
+
+  // Follow the global symbol picker (top bar / command palette).
+  useEffect(() => {
+    if (selectedSymbol) setSymbol(selectedSymbol.toUpperCase());
+  }, [selectedSymbol]);
+
+  const group = WATCHLIST_GROUPS.find((g) => g.id === groupId) ?? DEFAULT_GROUP;
+  const tf = TF_CHIPS.find((_, i) => i === tfIndex) ?? DEFAULT_TF;
+
   const { data: portfolio, isLoading, error: loadError, refetch } = useQuery({
     queryKey: ["portfolio"],
     queryFn: fetchPortfolio,
     refetchInterval: live ? false : 5000,
   });
 
-  // Keep the ticket's symbol in sync when the user changes it elsewhere.
-  useEffect(() => {
-    if (selectedSymbol) {
-      setOrderForm((form) => ({ ...form, instrument: selectedSymbol }));
-    }
-  }, [selectedSymbol]);
+  // Batch quotes for the active watchlist (server caches per symbol).
+  const { data: quotes = [] } = useQuery({
+    queryKey: ["desk-quotes", group.id],
+    queryFn: async () => {
+      const res = await fetch(
+        `${API_BASE}/quotes?symbols=${encodeURIComponent(group.symbols.join(","))}`,
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      const payload = (await res.json()) as { quotes?: QuoteRow[] };
+      return payload.quotes ?? [];
+    },
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
+  // Intraday bars power the Live Statistics block (5m/1h changes + ranges).
+  const { data: statBars = [] } = useQuery({
+    queryKey: ["desk-stat-bars", symbol],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/history/${encodeURIComponent(symbol)}?tf=5m&limit=300`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      return (await res.json()) as { time: number; open: number; high: number; low: number; close: number }[];
+    },
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+  const { data: newsItems = [] } = useQuery({
+    queryKey: ["desk-news", symbol],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/news?symbol=${encodeURIComponent(symbol)}&limit=3`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const payload = (await res.json()) as { items?: Record<string, unknown>[] };
+      return (payload.items ?? []).map((item): NewsItem => ({
+        id: String(item.id ?? ""),
+        headline: String(item.headline ?? ""),
+        url: typeof item.url === "string" ? item.url : undefined,
+        source: typeof item.source === "string" ? item.source : undefined,
+        published_at: typeof item.published_at === "string" ? item.published_at : undefined,
+      }));
+    },
+    refetchInterval: 120_000,
+    staleTime: 60_000,
+  });
+
+  // Analysis is only needed for the Info/+Insights tabs.
+  const { data: analysis } = useQuery({
+    queryKey: ["desk-analysis", symbol],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/analysis/${encodeURIComponent(symbol)}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      return (await res.json()) as AnalysisData;
+    },
+    enabled: ticketTab !== "trade",
+    staleTime: 300_000,
+    retry: 1,
+  });
+
+  const [{ provider: chartProvider, indicators: chartIndicators }] = useChartPrefs();
+  const { data: chartBars = [], loading: chartLoading } = useHistory(
+    symbol,
+    tf.tf,
+    tf.limit ?? 500,
+    chartProvider,
+  );
+  const liveUpdate = useSocket(symbol);
+
+  const quote = quotes.find((q) => q.symbol === symbol) ?? null;
+  const fallbackPrice = statBars.length ? (statBars[statBars.length - 1]?.close ?? null) : null;
+  const lastPrice = quote?.price ?? fallbackPrice;
+  const two = lastPrice !== null ? twoWay(lastPrice) : null;
+  const changePct = quote?.change_pct ?? null;
+
+  const stats: DeskStats = useMemo(() => {
+    const n = statBars.length;
+    const last = n ? statBars[n - 1] : null;
+    const prev = n > 1 ? statBars[n - 2] : null;
+    const hourAgo = n > 12 ? statBars[n - 13] : null;
+    const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : null);
+
+    const sliceRange = (bars: typeof statBars) => {
+      if (!bars.length) return null;
+      let low = Infinity;
+      let high = -Infinity;
+      for (const b of bars) {
+        if (b.low < low) low = b.low;
+        if (b.high > high) high = b.high;
+      }
+      return { low, high };
+    };
+
+    const range5 = last ? sliceRange([last]) : null;
+    const range1h = sliceRange(n >= 12 ? statBars.slice(n - 12) : statBars);
+    const range1d = sliceRange(statBars);
+    const sell = lastPrice !== null ? twoWay(lastPrice).sell : null;
+    const marker = (r: { low: number; high: number } | null) => {
+      if (!r || sell === null || r.high <= r.low) return null;
+      return Math.min(1, Math.max(0, (sell - r.low) / (r.high - r.low)));
+    };
+
+    return {
+      change5m: last && prev ? pct(last.close, prev.close) : null,
+      change1h: last && hourAgo ? pct(last.close, hourAgo.close) : null,
+      change1d: changePct,
+      sellRate: sell,
+      ranges: [
+        { label: "5 Minutes", low: range5?.low ?? 0, high: range5?.high ?? 0, marker: marker(range5) },
+        { label: "1 Hour", low: range1h?.low ?? 0, high: range1h?.high ?? 0, marker: marker(range1h) },
+        { label: "1 Day", low: range1d?.low ?? 0, high: range1d?.high ?? 0, marker: marker(range1d) },
+      ],
+    };
+  }, [statBars, changePct, lastPrice]);
 
   // Market session badge.
   useEffect(() => {
@@ -209,10 +614,45 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const openOrders = useMemo(() => portfolio?.open_orders ?? [], [portfolio]);
   const recentFills = useMemo(() => portfolio?.recent_fills ?? [], [portfolio]);
 
+  const rows = useMemo(() => {
+    const mapped = group.symbols.map((sym) => {
+      const q = quotes.find((row) => row.symbol === sym);
+      const price = q?.price ?? null;
+      return {
+        symbol: sym,
+        meta: meta(sym),
+        price,
+        changePct: q?.change_pct ?? null,
+        two: price !== null ? twoWay(price) : null,
+      };
+    });
+    const sorted = [...mapped];
+    if (group.id === "movers") {
+      sorted.sort((a, b) => Math.abs(b.changePct ?? 0) - Math.abs(a.changePct ?? 0));
+    } else if (sortKey === "change") {
+      sorted.sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0));
+    } else {
+      sorted.sort((a, b) => a.meta.name.localeCompare(b.meta.name));
+    }
+    return sorted;
+  }, [group, quotes, sortKey]);
+
+  const pickSymbol = (sym: string) => {
+    setSymbol(sym.toUpperCase());
+    window.dispatchEvent(new CustomEvent("symbol-select", { detail: sym.toUpperCase() }));
+  };
+
+  const quoteTrade = (sym: string, side: "buy" | "sell") => {
+    pickSymbol(sym);
+    setOrderForm((form) => ({ ...form, side }));
+    setTicketTab("trade");
+  };
+
   const estimatedCost = useMemo(() => {
-    const last = recentFills.find((f) => f.instrument_id === orderForm.instrument.toUpperCase())?.price;
-    return last ? last * orderForm.quantity : null;
-  }, [recentFills, orderForm.instrument, orderForm.quantity]);
+    if (lastPrice === null) return null;
+    const px = orderForm.side === "buy" ? two!.buy : two!.sell;
+    return px * orderForm.quantity;
+  }, [lastPrice, two, orderForm.side, orderForm.quantity]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -221,7 +661,7 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     setSubmitting(true);
     try {
       const result = await submitOrder({
-        instrument: orderForm.instrument.trim().toUpperCase(),
+        instrument: symbol.trim().toUpperCase(),
         side: orderForm.side,
         order_type: orderForm.order_type,
         quantity: Number(orderForm.quantity),
@@ -267,36 +707,10 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     );
   }
 
+  const activeMeta = meta(symbol);
+
   return (
     <div className="paper-trading">
-      <div className="paper-summary">
-        <div className="paper-metrics">
-          <div className="paper-metric">
-            <span className="paper-metric-label">Equity</span>
-            <span className="paper-metric-value">${money(portfolio?.equity)}</span>
-          </div>
-          <div className="paper-metric">
-            <span className="paper-metric-label">Cash</span>
-            <span className="paper-metric-value">${money(portfolio?.cash)}</span>
-          </div>
-          <div className="paper-metric">
-            <span className="paper-metric-label">Buying power</span>
-            <span className="paper-metric-value">${money(portfolio?.buying_power)}</span>
-          </div>
-          <div className="paper-metric">
-            <span className="paper-metric-label">Positions</span>
-            <span className="paper-metric-value">{positions.length}</span>
-          </div>
-        </div>
-        <div className="paper-status">
-          <span className={`paper-live ${live ? "on" : ""}`}>{live ? "Live stream" : "Polling"}</span>
-          <span className={`paper-session ${marketOpen ? "open" : "closed"}`}>
-            {marketOpen === null ? "Market status…" : marketOpen ? "Market open" : "Market closed"}
-          </span>
-          <span className="mode-badge paper">Paper</span>
-        </div>
-      </div>
-
       {(notice || error) && (
         <div className={error ? "paper-alert error" : "paper-alert"} role="status">
           <span>{error ?? notice}</span>
@@ -306,216 +720,637 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
         </div>
       )}
 
-      <div className="paper-grid">
-        <section className="paper-card order-ticket">
-          <h3>Order ticket</h3>
-          <form onSubmit={handleSubmit} className="paper-order-form">
-            <div className="paper-form-row">
-              <label className="paper-field">
-                <span>Symbol</span>
-                <input
-                  type="text"
-                  value={orderForm.instrument}
-                  onChange={(e) => setOrderForm({ ...orderForm, instrument: e.target.value.toUpperCase() })}
-                  required
-                  spellCheck={false}
-                />
-              </label>
-              <label className="paper-field">
-                <span>Quantity</span>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={orderForm.quantity}
-                  onChange={(e) => setOrderForm({ ...orderForm, quantity: Number(e.target.value) || 1 })}
-                  required
-                />
-              </label>
-            </div>
+      {/* Account status — directly under the page header/description */}
+      <div className="desk-status">
+        <div className="desk-status-metrics">
+          <span><b>Equity</b> ${money(portfolio?.equity)}</span>
+          <span><b>Cash</b> ${money(portfolio?.cash)}</span>
+          <span><b>Buying power</b> ${money(portfolio?.buying_power)}</span>
+          <span><b>Positions</b> {positions.length}</span>
+        </div>
+      </div>
 
-            <div className="paper-side-toggle" role="group" aria-label="Order side">
+      <div className="paper-desk" style={deskStyle} ref={deskRef}>
+        {/* Left icon rail */}
+        <nav className="desk-rail" aria-label="Trading desk sections" ref={railRef}>
+          {RAIL_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              className={`desk-rail-item ${section === item.id ? "active" : ""}`}
+              onClick={() => setSection(item.id)}
+              aria-pressed={section === item.id}
+            >
+              <span className="desk-rail-icon" aria-hidden="true">{item.icon}</span>
+              <span className="desk-rail-label">{item.label}</span>
+            </button>
+          ))}
+          <div className="desk-rail-foot">
+            <span className={`paper-live ${live ? "on" : ""}`}>{live ? "Live" : "Poll"}</span>
+            <span className={`paper-session ${marketOpen ? "open" : "closed"}`}>
+              {marketOpen === null ? "…" : marketOpen ? "Open" : "Closed"}
+            </span>
+            <span className="mode-badge paper">Paper</span>
+          </div>
+        </nav>
+
+        {/* Watchlist */}
+        <aside className="desk-watchlist" ref={watchlistRef}>
+          <div className="desk-wl-scroll">
+            <h3 className="desk-wl-title">Most Popular</h3>
+            {WATCHLIST_GROUPS.filter((g) => g.section === "popular").map((g) => (
               <button
-                type="button"
-                className={`side-buy ${orderForm.side === "buy" ? "active" : ""}`}
-                onClick={() => setOrderForm({ ...orderForm, side: "buy" })}
+                key={g.id}
+                className={`desk-wl-item ${groupId === g.id ? "active" : ""}`}
+                onClick={() => { setGroupId(g.id); setSection("trade"); }}
               >
-                Buy
+                {g.label}
               </button>
+            ))}
+            <h3 className="desk-wl-title desk-wl-title-gap">
+              My Watchlists
+              <button className="desk-wl-edit" title="Watchlist editing is decorative" aria-hidden="true">✎</button>
+            </h3>
+            {WATCHLIST_GROUPS.filter((g) => g.section === "mine").map((g) => (
               <button
-                type="button"
-                className={`side-sell ${orderForm.side === "sell" ? "active" : ""}`}
-                onClick={() => setOrderForm({ ...orderForm, side: "sell" })}
+                key={g.id}
+                className={`desk-wl-item ${groupId === g.id ? "active" : ""}`}
+                onClick={() => { setGroupId(g.id); setSection("trade"); }}
               >
-                Sell
+                {g.label}
               </button>
-            </div>
+            ))}
+          </div>
+        </aside>
 
-            <div className="paper-form-row">
-              <label className="paper-field">
-                <span>Type</span>
-                <select
-                  value={orderForm.order_type}
-                  onChange={(e) => setOrderForm({ ...orderForm, order_type: e.target.value as OrderRequest["order_type"] })}
-                >
-                  <option value="market">Market</option>
-                  <option value="limit">Limit</option>
-                  <option value="stop">Stop</option>
-                </select>
-              </label>
-              {orderForm.order_type === "limit" && (
-                <label className="paper-field">
-                  <span>Limit price</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={orderForm.limit_price ?? ""}
-                    onChange={(e) => setOrderForm({ ...orderForm, limit_price: e.target.value ? Number(e.target.value) : null })}
-                    required
-                  />
-                </label>
-              )}
-              {orderForm.order_type === "stop" && (
-                <label className="paper-field">
-                  <span>Stop price</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={orderForm.stop_price ?? ""}
-                    onChange={(e) => setOrderForm({ ...orderForm, stop_price: e.target.value ? Number(e.target.value) : null })}
-                    required
-                  />
-                </label>
-              )}
-            </div>
-
-            <div className="paper-order-foot">
-              {estimatedCost !== null && (
-                <span className="paper-est">Est. cost ≈ ${money(estimatedCost)}</span>
-              )}
-              <button
-                type="submit"
-                className={`btn-primary paper-submit ${orderForm.side}`}
-                disabled={submitting || !orderForm.instrument.trim() || orderForm.quantity < 1}
+        {/* Center: quote list + chart (Trade) or account panels */}
+        <main className="desk-center">
+          {section === "trade" && (
+            <>
+              <section
+                className="desk-card desk-quotes-card"
+                ref={quotesRef}
+                style={quotesH !== null ? { height: `${quotesH}px`, maxHeight: "none" } : undefined}
               >
-                {submitting ? "Submitting…" : `${orderForm.side === "buy" ? "Buy" : "Sell"} ${orderForm.quantity} ${orderForm.instrument.toUpperCase() || "—"}`}
-              </button>
-            </div>
-          </form>
-        </section>
+                <table className="desk-quotes">
+                  <thead>
+                    <tr>
+                      <th>
+                        <button className="desk-sort" onClick={() => setSortKey("name")}>
+                          Instrument <span aria-hidden="true">{sortKey === "name" ? "⇅" : "⇅"}</span>
+                        </button>
+                      </th>
+                      <th>
+                        <button className="desk-sort" onClick={() => setSortKey("change")}>
+                          Change <span aria-hidden="true">⇅</span>
+                        </button>
+                      </th>
+                      <th>Sell</th>
+                      <th>Buy</th>
+                      <th aria-hidden="true" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => {
+                      const up = (row.changePct ?? 0) >= 0;
+                      const selected = row.symbol === symbol;
+                      return (
+                        <tr
+                          key={row.symbol}
+                          className={selected ? "selected" : ""}
+                          onClick={() => pickSymbol(row.symbol)}
+                        >
+                          <td>
+                            <span className="desk-inst">
+                              <span className="desk-inst-icon" style={{ background: row.meta.tint }} aria-hidden="true">
+                                {row.meta.icon}
+                              </span>
+                              <span className="desk-inst-name">{row.meta.name}</span>
+                            </span>
+                          </td>
+                          <td>
+                            <span className={`desk-change ${up ? "up" : "down"}`}>
+                              {row.changePct === null ? "—" : fmtPct(row.changePct)}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="desk-quote-btn sell"
+                              onClick={(e) => { e.stopPropagation(); quoteTrade(row.symbol, "sell"); }}
+                              disabled={!row.two}
+                            >
+                              <span>Sell</span>
+                              <b>{row.two ? fmtPrice(row.two.sell) : "—"}</b>
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              className="desk-quote-btn buy"
+                              onClick={(e) => { e.stopPropagation(); quoteTrade(row.symbol, "buy"); }}
+                              disabled={!row.two}
+                            >
+                              <span>Buy</span>
+                              <b>{row.two ? fmtPrice(row.two.buy) : "—"}</b>
+                            </button>
+                          </td>
+                          <td className="desk-chevron" aria-hidden="true">›</td>
+                        </tr>
+                      );
+                    })}
+                    {rows.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="paper-empty">No instruments in this watchlist.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </section>
 
-        <section className="paper-card">
-          <h3>Positions</h3>
-          {positions.length === 0 ? (
-            <p className="paper-empty">No open positions — place your first order on the ticket.</p>
-          ) : (
-            <table className="paper-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Qty</th>
-                  <th>Avg cost</th>
-                  <th>Market value</th>
-                  <th>Unrealized PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map((p) => (
-                  <tr key={p.instrument_id}>
-                    <td className="paper-symbol">{p.instrument_id}</td>
-                    <td>{p.quantity}</td>
-                    <td>{money(p.avg_cost)}</td>
-                    <td>{money(p.market_value)}</td>
-                    <td className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
-                      {p.unrealized_pnl >= 0 ? "+" : ""}
-                      {money(p.unrealized_pnl)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+              {/* Drag vertically: more instruments vs. a taller chart */}
+              <ResizeHandle
+                side="top"
+                orientation="horizontal"
+                mode="delta"
+                className="desk-handle-row"
+                measureRef={quotesRef}
+                width={quotesH ?? quotesHDefault()}
+                minWidth={QUOTES_H_MIN}
+                maxWidth={quotesHMax()}
+                collapseBelow={QUOTES_H_MIN}
+                collapsedWidth={QUOTES_H_MIN}
+                defaultWidth={quotesHDefault()}
+                storageKey={DESK_QUOTES_H_KEY}
+                ariaLabel="Resize quote list height"
+                onChange={applyQuotesHeight}
+              />
 
-        <section className="paper-card">
-          <h3>Open orders</h3>
-          {openOrders.length === 0 ? (
-            <p className="paper-empty">No working orders.</p>
-          ) : (
-            <table className="paper-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Type</th>
-                  <th>Qty</th>
-                  <th>Price</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {openOrders.map((o) => (
-                  <tr key={o.id}>
-                    <td className="paper-symbol">{o.instrument_id}</td>
-                    <td>
-                      <span className={`side-badge ${o.side}`}>{o.side === "buy" ? "Buy" : "Sell"}</span>
-                    </td>
-                    <td>{o.type}</td>
-                    <td>{o.qty}</td>
-                    <td>{o.limit_price ? money(o.limit_price) : o.stop_price ? money(o.stop_price) : "—"}</td>
-                    <td>{o.status}</td>
-                    <td>
-                      <button
-                        className="btn-secondary paper-fill-btn"
-                        onClick={() => void handleSimulateFill(o.id)}
-                        disabled={fillBusyId === o.id}
-                      >
-                        {fillBusyId === o.id ? "…" : "Simulate fill"}
+              <section className="desk-card desk-chart-card">
+                <div className="desk-chart-toolbar">
+                  <span className="desk-chart-inst">
+                    <span className="desk-inst-icon" style={{ background: activeMeta.tint }} aria-hidden="true">
+                      {activeMeta.icon}
+                    </span>
+                    <b>{activeMeta.name}</b>
+                    <span className={`desk-change ${(changePct ?? 0) >= 0 ? "up" : "down"}`}>
+                      {changePct === null ? "—" : fmtPct(changePct)}
+                    </span>
+                  </span>
+                  {two && (
+                    <span className="desk-chart-prices">
+                      <button className="desk-quote-btn sell" onClick={() => quoteTrade(symbol, "sell")}>
+                        <span>Sell</span><b>{fmtPrice(two.sell)}</b>
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <button className="desk-quote-btn buy" onClick={() => quoteTrade(symbol, "buy")}>
+                        <span>Buy</span><b>{fmtPrice(two.buy)}</b>
+                      </button>
+                    </span>
+                  )}
+                  <div className="desk-chart-tools">
+                    <ProviderSelect />
+                    <IndicatorsButton />
+                  </div>
+                </div>
+                <div className="desk-chart-body">
+                  <MainChart
+                    ticker={symbol}
+                    historyData={chartBars}
+                    loading={chartLoading}
+                    liveUpdate={liveUpdate}
+                    indicators={chartIndicators}
+                  />
+                </div>
+                <div className="desk-tf-row" role="group" aria-label="Chart timeframe">
+                  {TF_CHIPS.map((chip, i) => (
+                    <button
+                      key={chip.label}
+                      className={`tf-button ${i === tfIndex ? "active" : ""}`}
+                      onClick={() => setTfIndex(i)}
+                      aria-pressed={i === tfIndex}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </>
           )}
-        </section>
 
-        <section className="paper-card">
-          <h3>Recent fills</h3>
-          {recentFills.length === 0 ? (
-            <p className="paper-empty">No fills yet.</p>
-          ) : (
-            <table className="paper-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Qty</th>
-                  <th>Price</th>
-                  <th>Comm.</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentFills.map((f) => (
-                  <tr key={f.id}>
-                    <td>{new Date(f.timestamp).toLocaleTimeString()}</td>
-                    <td className="paper-symbol">{f.instrument_id}</td>
-                    <td>
-                      <span className={`side-badge ${f.side}`}>{f.side === "buy" ? "Buy" : "Sell"}</span>
-                    </td>
-                    <td>{f.qty}</td>
-                    <td>{money(f.price)}</td>
-                    <td>{money(f.commission)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {section === "positions" && (
+            <section className="desk-card">
+              <h3>Open positions</h3>
+              {positions.length === 0 ? (
+                <p className="paper-empty">No open positions — use the trade ticket to place your first order.</p>
+              ) : (
+                <table className="paper-table">
+                  <thead>
+                    <tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Market value</th><th>Unrealized PnL</th></tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((p) => (
+                      <tr key={p.instrument_id}>
+                        <td className="paper-symbol">{p.instrument_id}</td>
+                        <td>{p.quantity}</td>
+                        <td>{money(p.avg_cost)}</td>
+                        <td>{money(p.market_value)}</td>
+                        <td className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
+                          {p.unrealized_pnl >= 0 ? "+" : ""}{money(p.unrealized_pnl)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
           )}
-        </section>
+
+          {section === "orders" && (
+            <section className="desk-card">
+              <h3>Open orders</h3>
+              {openOrders.length === 0 ? (
+                <p className="paper-empty">No working orders.</p>
+              ) : (
+                <table className="paper-table">
+                  <thead>
+                    <tr><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Price</th><th>Status</th><th /></tr>
+                  </thead>
+                  <tbody>
+                    {openOrders.map((o) => (
+                      <tr key={o.id}>
+                        <td className="paper-symbol">{o.instrument_id}</td>
+                        <td><span className={`side-badge ${o.side}`}>{o.side === "buy" ? "Buy" : "Sell"}</span></td>
+                        <td>{o.type}</td>
+                        <td>{o.qty}</td>
+                        <td>{o.limit_price ? money(o.limit_price) : o.stop_price ? money(o.stop_price) : "—"}</td>
+                        <td>{o.status}</td>
+                        <td>
+                          <button
+                            className="btn-secondary paper-fill-btn"
+                            onClick={() => void handleSimulateFill(o.id)}
+                            disabled={fillBusyId === o.id}
+                          >
+                            {fillBusyId === o.id ? "…" : "Simulate fill"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          )}
+
+          {section === "closed" && (
+            <section className="desk-card">
+              <h3>Closed positions / recent fills</h3>
+              {recentFills.length === 0 ? (
+                <p className="paper-empty">No fills yet.</p>
+              ) : (
+                <table className="paper-table">
+                  <thead>
+                    <tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Comm.</th></tr>
+                  </thead>
+                  <tbody>
+                    {recentFills.map((f) => (
+                      <tr key={f.id}>
+                        <td>{new Date(f.timestamp).toLocaleTimeString()}</td>
+                        <td className="paper-symbol">{f.instrument_id}</td>
+                        <td><span className={`side-badge ${f.side}`}>{f.side === "buy" ? "Buy" : "Sell"}</span></td>
+                        <td>{f.qty}</td>
+                        <td>{money(f.price)}</td>
+                        <td>{money(f.commission)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          )}
+
+          {section === "insights" && (
+            <section className="desk-card">
+              <h3>+Insights — {activeMeta.name}</h3>
+              {analysis ? (
+                <div className="desk-insight">
+                  <div className="desk-insight-dir">
+                    <span className={`desk-insight-badge ${analysis.direction ?? "neutral"}`}>
+                      {(analysis.direction ?? "neutral").toUpperCase()}
+                    </span>
+                    <span>Confidence {Math.round((analysis.overall_confidence ?? 0) * 100)}%</span>
+                    <span>RSI {analysis.rsi !== undefined ? analysis.rsi.toFixed(1) : "—"}</span>
+                  </div>
+                  <p className="paper-empty">Model read for {symbol}. Trade from the ticket — this is not advice.</p>
+                </div>
+              ) : (
+                <p className="paper-empty">No analysis available for {symbol}.</p>
+              )}
+            </section>
+          )}
+
+          {section === "funds" && (
+            <section className="desk-card">
+              <h3>Funds</h3>
+              <div className="paper-metrics">
+                <div className="paper-metric">
+                  <span className="paper-metric-label">Equity</span>
+                  <span className="paper-metric-value">${money(portfolio?.equity)}</span>
+                </div>
+                <div className="paper-metric">
+                  <span className="paper-metric-label">Cash</span>
+                  <span className="paper-metric-value">${money(portfolio?.cash)}</span>
+                </div>
+                <div className="paper-metric">
+                  <span className="paper-metric-label">Buying power</span>
+                  <span className="paper-metric-value">${money(portfolio?.buying_power)}</span>
+                </div>
+                <div className="paper-metric">
+                  <span className="paper-metric-label">Open positions</span>
+                  <span className="paper-metric-value">{positions.length}</span>
+                </div>
+              </div>
+              <p className="paper-empty">
+                Simulated cash only — orders fill against live quotes with a {"\u201c"}paper{"\u201d"} spread and commission.
+              </p>
+            </section>
+          )}
+        </main>
+
+        <aside className="desk-ticket" ref={ticketRef}>
+          <div className="desk-ticket-tabs" role="tablist" aria-label="Ticket views">
+            {TICKET_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={ticketTab === tab.id}
+                className={`desk-ticket-tab ${ticketTab === tab.id ? "active" : ""}`}
+                onClick={() => setTicketTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="desk-ticket-head">
+            <span className="desk-inst-icon lg" style={{ background: activeMeta.tint }} aria-hidden="true">
+              {activeMeta.icon}
+            </span>
+            <div className="desk-ticket-title">
+              <h3>{activeMeta.name}</h3>
+              <span className="desk-ticket-sub">
+                ({symbol}){" "}
+                <span className={`desk-change ${(changePct ?? 0) >= 0 ? "up" : "down"}`}>
+                  {changePct === null ? "—" : fmtPct(changePct)} {(changePct ?? 0) >= 0 ? "↑" : "↓"}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="desk-ticket-prices">
+            <button
+              className={`desk-price-box sell ${orderForm.side === "sell" && ticketTab === "trade" ? "armed" : ""}`}
+              onClick={() => { setOrderForm((f) => ({ ...f, side: "sell" })); setTicketTab("trade"); }}
+            >
+              <span>Sell</span>
+              <b>{two ? fmtPrice(two.sell) : "—"}</b>
+            </button>
+            <button
+              className={`desk-price-box buy ${orderForm.side === "buy" && ticketTab === "trade" ? "armed" : ""}`}
+              onClick={() => { setOrderForm((f) => ({ ...f, side: "buy" })); setTicketTab("trade"); }}
+            >
+              <span>Buy</span>
+              <b>{two ? fmtPrice(two.buy) : "—"}</b>
+            </button>
+          </div>
+
+          <div className="desk-bites">
+            <span className="desk-bites-label" title="Quick model take on the selected instrument">
+              <span aria-hidden="true">📊</span> +AI Bites
+              <span className="desk-bites-info" aria-hidden="true">ⓘ</span>
+            </span>
+            <button className="desk-bites-cta" onClick={() => setTicketTab("insights")}>
+              Get analysis
+            </button>
+          </div>
+
+          <div className="desk-ticket-body">
+            {ticketTab === "overview" && (
+              <RightInspector activeView="paper-trading" selectedSymbol={symbol} collapsed={false} />
+            )}
+
+            {ticketTab === "trade" && (
+              <form onSubmit={handleSubmit} className="paper-order-form">
+                <div className="paper-form-row">
+                  <label className="paper-field">
+                    <span>Quantity</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={orderForm.quantity}
+                      onChange={(e) => setOrderForm({ ...orderForm, quantity: Number(e.target.value) || 1 })}
+                      required
+                    />
+                  </label>
+                  <label className="paper-field">
+                    <span>Type</span>
+                    <select
+                      value={orderForm.order_type}
+                      onChange={(e) => setOrderForm({ ...orderForm, order_type: e.target.value as "market" | "limit" | "stop" })}
+                    >
+                      <option value="market">Market</option>
+                      <option value="limit">Limit</option>
+                      <option value="stop">Stop</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="paper-side-toggle" role="group" aria-label="Order side">
+                  <button
+                    type="button"
+                    className={`side-buy ${orderForm.side === "buy" ? "active" : ""}`}
+                    onClick={() => setOrderForm({ ...orderForm, side: "buy" })}
+                  >
+                    Buy
+                  </button>
+                  <button
+                    type="button"
+                    className={`side-sell ${orderForm.side === "sell" ? "active" : ""}`}
+                    onClick={() => setOrderForm({ ...orderForm, side: "sell" })}
+                  >
+                    Sell
+                  </button>
+                </div>
+
+                {orderForm.order_type === "limit" && (
+                  <label className="paper-field">
+                    <span>Limit price</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={orderForm.limit_price ?? ""}
+                      onChange={(e) => setOrderForm({ ...orderForm, limit_price: e.target.value ? Number(e.target.value) : null })}
+                      required
+                    />
+                  </label>
+                )}
+                {orderForm.order_type === "stop" && (
+                  <label className="paper-field">
+                    <span>Stop price</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={orderForm.stop_price ?? ""}
+                      onChange={(e) => setOrderForm({ ...orderForm, stop_price: e.target.value ? Number(e.target.value) : null })}
+                      required
+                    />
+                  </label>
+                )}
+
+                <div className="paper-order-foot">
+                  {estimatedCost !== null && <span className="paper-est">Est. ≈ ${money(estimatedCost)}</span>}
+                  <button
+                    type="submit"
+                    className={`btn-primary paper-submit ${orderForm.side}`}
+                    disabled={submitting || orderForm.quantity < 1 || two === null}
+                  >
+                    {submitting
+                      ? "Submitting…"
+                      : `${orderForm.side === "buy" ? "Buy" : "Sell"} ${orderForm.quantity} ${symbol}`}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {ticketTab === "info" && (
+              <div className="desk-live-stats">
+                <h4 className="desk-ls-title">Live Statistics <span aria-hidden="true">ⓘ</span></h4>
+                <div className="desk-ls-changes" role="group" aria-label="Change over time">
+                  {[
+                    { label: "5 Minutes", value: stats.change5m },
+                    { label: "1 Hour", value: stats.change1h },
+                    { label: "1 Day", value: stats.change1d },
+                  ].map((cell) => (
+                    <div key={cell.label} className="desk-ls-cell">
+                      <b className={(cell.value ?? 0) >= 0 ? "up" : "down"}>{fmtPct(cell.value)}</b>
+                      <span>{cell.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="desk-ls-rate">
+                  Current sell rate: <b>{stats.sellRate !== null ? fmtPrice(stats.sellRate) : "—"}</b>
+                </div>
+
+                <div className="desk-ls-ranges">
+                  <div className="desk-ls-range-head"><span>Low</span><span>High</span></div>
+                  {stats.ranges.map((range) => (
+                    <div key={range.label} className="desk-ls-range">
+                      <div className="desk-ls-bar">
+                        <span
+                          className="desk-ls-marker"
+                          style={{ left: `${Math.round((range.marker ?? 0) * 100)}%` }}
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <div className="desk-ls-range-meta">
+                        <span>{fmtPrice(range.low)}</span>
+                        <span className="desk-ls-range-label">{range.label}</span>
+                        <span>{fmtPrice(range.high)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {ticketTab === "insights" && (
+              <div className="desk-insight">
+                {analysis ? (
+                  <div className="desk-insight-dir">
+                    <span className={`desk-insight-badge ${analysis.direction ?? "neutral"}`}>
+                      {(analysis.direction ?? "neutral").toUpperCase()}
+                    </span>
+                    <span>Confidence {Math.round((analysis.overall_confidence ?? 0) * 100)}%</span>
+                    <span>RSI {analysis.rsi !== undefined ? analysis.rsi.toFixed(1) : "—"}</span>
+                  </div>
+                ) : (
+                  <p className="paper-empty">Loading analysis for {symbol}…</p>
+                )}
+                <p className="paper-empty">Model read only — not investment advice.</p>
+              </div>
+            )}
+          </div>
+
+          {ticketTab !== "overview" && (
+            <div className="desk-ticket-news">
+              <h4 className="desk-ls-title">In the news</h4>
+            {newsItems.length > 0 ? (
+              newsItems.map((item) => (
+                <a
+                  key={item.id || item.headline}
+                  className="desk-news-item"
+                  href={item.url || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={item.headline}
+                >
+                  <span className="desk-news-source">{item.source || "News"}</span>
+                  <span className="desk-news-headline">{item.headline}</span>
+                </a>
+              ))
+            ) : (
+              <p className="paper-empty">No recent headlines for {symbol}.</p>
+            )}
+            </div>
+          )}
+        </aside>
+
+        {/* Drag a section's edge to resize it; double-click resets. */}
+        <ResizeHandle
+          side="left"
+          mode="delta"
+          className="desk-handle desk-handle-rail"
+          measureRef={railRef}
+          width={railW ?? DESK_DEFAULTS.rail}
+          minWidth={DESK_LIMITS.rail.min}
+          maxWidth={DESK_LIMITS.rail.max}
+          collapseBelow={DESK_LIMITS.rail.min}
+          collapsedWidth={DESK_LIMITS.rail.min}
+          defaultWidth={DESK_DEFAULTS.rail}
+          storageKey={DESK_WIDTH_KEYS.rail}
+          ariaLabel="Resize section rail"
+          onChange={(w) => setDeskWidth("rail", w, setRailW)}
+        />
+        <ResizeHandle
+          side="left"
+          mode="delta"
+          className="desk-handle desk-handle-watchlist"
+          measureRef={watchlistRef}
+          width={watchlistW ?? DESK_DEFAULTS.watchlist}
+          minWidth={DESK_LIMITS.watchlist.min}
+          maxWidth={DESK_LIMITS.watchlist.max}
+          collapseBelow={DESK_LIMITS.watchlist.min}
+          collapsedWidth={DESK_LIMITS.watchlist.min}
+          defaultWidth={DESK_DEFAULTS.watchlist}
+          storageKey={DESK_WIDTH_KEYS.watchlist}
+          ariaLabel="Resize watchlist"
+          onChange={(w) => setDeskWidth("watchlist", w, setWatchlistW)}
+        />
+        <ResizeHandle
+          side="right"
+          mode="delta"
+          className="desk-handle desk-handle-ticket"
+          measureRef={ticketRef}
+          width={ticketW ?? DESK_DEFAULTS.ticket}
+          minWidth={DESK_LIMITS.ticket.min}
+          maxWidth={DESK_LIMITS.ticket.max}
+          collapseBelow={DESK_LIMITS.ticket.min}
+          collapsedWidth={DESK_LIMITS.ticket.min}
+          defaultWidth={DESK_DEFAULTS.ticket}
+          storageKey={DESK_WIDTH_KEYS.ticket}
+          ariaLabel="Resize trade ticket"
+          onChange={(w) => setDeskWidth("ticket", w, setTicketW)}
+        />
       </div>
     </div>
   );

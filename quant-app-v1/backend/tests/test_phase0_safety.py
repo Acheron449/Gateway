@@ -42,7 +42,7 @@ async def test_history_attaches_provenance(monkeypatch: pytest.MonkeyPatch) -> N
         "to_thread",
         AsyncMock(return_value=[{"time": 1_700_000_000, "open": 1, "high": 2, "low": 1, "close": 2}]),
     )
-    rows = await main.get_history("AAPL", tf="1h")
+    rows = await main.get_history("AAPL", tf="1h", provider="Alpaca")
     assert rows[0]["source"] == "alpaca"
     assert rows[0]["data_time"].endswith("+00:00")
     assert rows[0]["fetched_at"]

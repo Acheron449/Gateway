@@ -113,20 +113,24 @@ function AppShell() {
 
         <CenterCanvas activeView={activeView} selectedSymbol={selectedSymbol} />
 
-        <div className="side-panel right-panel-shell" style={{ width: rightWidth }}>
-          <RightInspector activeView={activeView} selectedSymbol={selectedSymbol} collapsed={rightWidth <= RIGHT_COLLAPSED} />
-          <ResizeHandle
-            side="right"
-            width={rightWidth}
-            minWidth={RIGHT_MIN}
-            collapseBelow={220}
-            collapsedWidth={RIGHT_COLLAPSED}
-            maxWidth={480}
-            onChange={setRightWidth}
-            storageKey="gateway_ui_right_width"
-            ariaLabel="Resize inspector"
-          />
-        </div>
+        {/* On paper-trading the inspector is embedded in the desk ticket as
+            its "Overview" tab, so the standalone shell is suppressed there. */}
+        {activeView !== "paper-trading" && (
+          <div className="side-panel right-panel-shell" style={{ width: rightWidth }}>
+            <RightInspector activeView={activeView} selectedSymbol={selectedSymbol} collapsed={rightWidth <= RIGHT_COLLAPSED} />
+            <ResizeHandle
+              side="right"
+              width={rightWidth}
+              minWidth={RIGHT_MIN}
+              collapseBelow={220}
+              collapsedWidth={RIGHT_COLLAPSED}
+              maxWidth={480}
+              onChange={setRightWidth}
+              storageKey="gateway_ui_right_width"
+              ariaLabel="Resize inspector"
+            />
+          </div>
+        )}
 
         {commandPaletteOpen && (
           <CommandPalette
