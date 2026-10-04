@@ -120,6 +120,8 @@ class NewsItem(BaseModel):
     headline: str
     url: str | None = None
     source: str
+    # Optional preview image shown by the news panels (Yahoo/Finnhub supply one).
+    thumbnail: str | None = None
     published_at: datetime = Field(description="UTC publication time")
     fetched_at: datetime = Field(description="UTC time Gateway received the story")
     categories: list[str] = Field(default_factory=list)

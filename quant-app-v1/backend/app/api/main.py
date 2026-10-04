@@ -39,6 +39,7 @@ from app.api.v1.risk import router as risk_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.stocks import router as stocks_router
 from app.api.v1.strategies import router as strategies_router
+from app.api.v1.filings import router as filings_router
 from app.api.v1.watchlists import router as watchlists_router
 from app.api.v1.layouts import router as layouts_router
 from app.api.v1.preferences import router as preferences_router
@@ -384,6 +385,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(auth_router)
 app.include_router(catalogue_router)  # Public catalogue access
 app.include_router(news_router)  # Public news/calendar access
+app.include_router(filings_router)  # SEC filings feed for the Overview card
 app.include_router(quote_router)  # Public normalized quote access
 app.include_router(strategies_router)  # Strategy Studio
 app.include_router(journal_router)  # Trade Journal
@@ -516,6 +518,8 @@ _HISTORY_PROVIDER_IDS: dict[str, str] = {
     "yfinance": "Yahoo Finance",
     "yahoo finance": "Yahoo Finance",
     "yahoo-finance": "Yahoo Finance",
+    "ccxt": "CCXT",
+    "kraken": "CCXT",  # ccxt backs onto a configurable exchange (default: kraken)
     "alpaca": "Alpaca",
     "tradingview": "TradingView",
     "tv": "TradingView",
@@ -534,7 +538,7 @@ def _canonical_history_provider(provider: str | None) -> str:
     canonical = _HISTORY_PROVIDER_IDS.get(wanted)
     if canonical:
         return canonical
-    for name in ("Yahoo Finance", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server"):
+    for name in ("Yahoo Finance", "CCXT", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server"):
         if name.casefold() == wanted:
             return name
     return "Yahoo Finance"
@@ -548,6 +552,33 @@ def _alltick_available() -> bool:
         return False
 
 
+def _ccxt_available() -> bool:
+    """True when the ccxt backup provider is importable in this environment."""
+    try:
+        instance = get_registry_provider("CCXT")
+        return bool(instance and instance.is_configured)
+    except Exception:
+        return False
+
+
+def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | None:
+    """CCXT fallback used when yfinance fails on a crypto symbol.
+
+    Returns None (instead of raising) for non-crypto symbols or any ccxt
+    error, so the caller can surface the original yfinance failure.
+    """
+    try:
+        instance = get_registry_provider("CCXT")
+        if instance is None or not instance.is_configured:
+            return None
+        interval, period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
+        rows = asyncio.run(instance.history(ticker.upper(), interval, period))
+        return _normalize_history_rows(rows) or None
+    except Exception as exc:
+        logger.warning(f"ccxt history backup failed for {ticker.upper()}: {exc}")
+        return None
+
+
 def _history_provider_catalogue() -> list[dict[str, Any]]:
     """Providers the interactive chart can be pointed at (default: Yahoo Finance)."""
     settings = get_settings()
@@ -558,6 +589,13 @@ def _history_provider_catalogue() -> list[dict[str, Any]]:
             "detail": "Free Yahoo Finance bars via yfinance · no API key",
             "available": True,
             "is_default": True,
+        },
+        {
+            "id": "ccxt",
+            "name": "CCXT",
+            "detail": "Public exchange OHLCV via ccxt (crypto pairs) · no API key · backup for yfinance",
+            "available": _ccxt_available(),
+            "is_default": False,
         },
         {
             "id": "tradingview",
@@ -665,7 +703,7 @@ async def _fetch_history_alt_provider_sync(
             return None
         return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
 
-    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick"):
+    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick", "CCXT"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None
@@ -705,8 +743,29 @@ async def get_history(
             source = chosen.casefold().replace(" ", "-")
 
     if not chart_data:
-        chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
-        source = "yfinance"
+        # Primary path: yfinance (keyless Yahoo Finance bars).
+        try:
+            chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+            source = "yfinance"
+        except HTTPException:
+            chart_data = None
+        except Exception as exc:
+            logger.warning(f"yfinance history failed for {ticker.upper()}: {exc}")
+            chart_data = None
+
+    if not chart_data:
+        # Backup path: CCXT public exchange data (crypto pairs only).  This
+        # keeps charts alive when Yahoo is down/rate-limited or the user
+        # explicitly switched to CCXT and Yahoo could not answer either.
+        chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, ticker.upper(), tf)
+        if chart_data:
+            source = "ccxt"
+
+    if not chart_data:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No history data available for {ticker.upper()} (yfinance and ccxt backup both failed)",
+        )
 
     resampled = _resample_candles(chart_data, tf)
     if limit and len(resampled) > 0:

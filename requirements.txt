@@ -29,6 +29,7 @@ skfolio==0.5.2               # Portfolio construction and risk-aware allocation 
 httpx==0.28.1                 # Modern, async HTTP client (faster than 'requests' for APIs)
 websockets>=13.0             # For handling live market data streams
 yfinance==0.2.65              # Easy access to Yahoo Finance historical data
+ccxt>=4.0.0                   # Backup market-data provider (public exchange OHLCV for crypto pairs)
 # alpaca-trade-api==3.1.1       # (Removed: requires websockets<11, conflicts with yfinance>=13)
 alpaca-py==0.37.0             # Alpaca API client
 fastapi-utils==0.8.0          # Utilities for FastAPI, including rate limiting and caching

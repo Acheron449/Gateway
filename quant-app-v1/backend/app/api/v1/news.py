@@ -64,61 +64,113 @@ _CALENDAR_SOURCE_DETAILS = {
     "Finnhub": "Finnhub economic calendar · API key · premium-gated",
 }
 
+# News sources in preference order for provider="auto".  Finnhub answers when
+# a key is stored; Yahoo Finance (yfinance) is the keyless fallback so the
+# panels still fill when Finnhub is unconfigured, gated, or down.
+_NEWS_CHAIN = ("Finnhub", "Yahoo Finance")
+
+_NEWS_SOURCE_DETAILS = {
+    "Finnhub": "Finnhub company news · API key · free tier",
+    "Yahoo Finance": "Yahoo Finance headlines via yfinance · no API key",
+}
+
+_NEWS_COVERAGE = "US equities news"
+
 
 @router.get("", response_model=NewsResponse)
 async def get_news(
     symbol: Optional[str] = Query(None, description="Filter by symbol (e.g., AAPL)"),
     limit: int = Query(10, ge=1, le=50, description="Maximum number of items"),
-    provider: str = Query("Finnhub", description="Data provider"),
+    provider: str = Query(
+        "auto",
+        description="News source: 'auto' walks the source chain (Finnhub → Yahoo Finance), or name one explicitly",
+    ),
     response: Response = None,
 ) -> NewsResponse:
-    """Fetch and persist news headlines with provenance."""
-    provider_instance = get_provider(provider)
-    if provider_instance is None:
-        if response is not None:
-            response.status_code = 503
-        return NewsResponse(
-            symbol=symbol,
-            items=[],
-            provenance=_unavailable_provenance(provider, "unknown", "US equities news", f"Provider '{provider}' is not available"),
-            count=0,
-            status="unavailable",
-            message=f"Provider '{provider}' is not available",
-        )
+    """Fetch and persist news headlines with provenance.
 
-    if not provider_instance.is_configured:
-        message = f"Provider '{provider_instance.name}' is not configured"
-        if response is not None:
-            response.status_code = 503
+    ``provider=auto`` (the default) tries each source in ``_NEWS_CHAIN`` and
+    returns the first that answers with stories, mirroring the calendar's
+    chain behaviour.  An explicitly named provider is used strictly — its
+    failure is reported rather than silently substituted.
+    """
+    requested = (provider or "auto").strip()
+    if requested.casefold() == "auto":
+        order: list[str] = list(_NEWS_CHAIN)
+    else:
+        order = [requested]
+
+    reasons: list[str] = []
+    empty_source: Optional[str] = None
+    fail_name, fail_version = requested, "unknown"
+    for candidate in order:
+        instance = get_provider(candidate)
+        if instance is None:
+            reasons.append(f"{candidate}: not available")
+            continue
+        if fail_version == "unknown":
+            fail_name, fail_version = instance.name, instance.meta.get("version", "unknown")
+        if not instance.is_configured:
+            reasons.append(f"{instance.name}: not configured")
+            continue
+        try:
+            items = await fetch_and_store_news(provider_name=instance.name, symbol=symbol, limit=limit)
+        except ProviderUnavailableError as exc:
+            reasons.append(f"{instance.name}: {exc}")
+            continue
+        if items:
+            return NewsResponse(
+                symbol=symbol,
+                items=[item.model_dump(mode="json") for item in items],
+                provenance=await get_news_provenance(instance.name),
+                count=len(items),
+            )
+        reasons.append(f"{instance.name}: no stories returned")
+        if empty_source is None:
+            empty_source = instance.name
+
+    message = "; ".join(reasons) or "No news sources are configured"
+    if empty_source is not None:
+        # A configured source answered but produced no rows — keep the
+        # empty-success contract so callers can render an empty feed.
         return NewsResponse(
             symbol=symbol,
             items=[],
-            provenance=_unavailable_provenance(provider_instance.name, provider_instance.meta["version"], "US equities news", message),
+            provenance=await get_news_provenance(empty_source),
             count=0,
-            status="unavailable",
+            status="available",
             message=message,
         )
-
-    try:
-        items = await fetch_and_store_news(provider_name=provider_instance.name, symbol=symbol, limit=limit)
-    except ProviderUnavailableError as exc:
-        message = str(exc)
-        if response is not None:
-            response.status_code = 503
-        return NewsResponse(
-            symbol=symbol,
-            items=[],
-            provenance=_unavailable_provenance(provider_instance.name, provider_instance.meta["version"], "US equities news", message),
-            count=0,
-            status="unavailable",
-            message=message,
-        )
+    if response is not None:
+        response.status_code = 503
     return NewsResponse(
         symbol=symbol,
-        items=[item.model_dump(mode="json") for item in items],
-        provenance=await get_news_provenance(provider_instance.name),
-        count=len(items),
+        items=[],
+        provenance=_unavailable_provenance(fail_name, fail_version, _NEWS_COVERAGE, message),
+        count=0,
+        status="unavailable",
+        message=message,
     )
+
+
+@router.get("/sources")
+async def news_sources() -> dict:
+    """List news sources and availability for the news panels' picker."""
+    sources = []
+    for name in _NEWS_CHAIN:
+        instance = get_provider(name)
+        meta = list_providers().get(name)
+        available = bool(instance and instance.is_configured)
+        sources.append(
+            {
+                "id": name,
+                "name": name,
+                "detail": _NEWS_SOURCE_DETAILS.get(name, ""),
+                "available": available,
+                "requires_api_key": bool(meta and meta.get("requires_api_key")),
+            }
+        )
+    return {"sources": sources, "default": "auto", "chain": list(_NEWS_CHAIN)}
 
 
 @router.get("/calendar", response_model=CalendarResponse)

@@ -313,6 +313,9 @@ def init_db():
         news_columns = {row[1] for row in cur.execute("PRAGMA table_info(news_items)")}
         if "data_time" not in news_columns:
             cur.execute("ALTER TABLE news_items ADD COLUMN data_time TEXT")
+        # Thumbnail previews (added with the Overview news panels).
+        if "thumbnail" not in news_columns:
+            cur.execute("ALTER TABLE news_items ADD COLUMN thumbnail TEXT")
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_news_items_published ON news_items(published_at)
@@ -930,14 +933,15 @@ def insert_news_item(item: dict) -> None:
         cur = conn.cursor()
         cur.execute(
             """INSERT OR REPLACE INTO news_items
-               (id, headline, url, source, published_at, fetched_at, categories,
+               (id, headline, url, source, thumbnail, published_at, fetched_at, categories,
                 related_symbols, sentiment_score, provider_version, data_time, coverage, delay_seconds, entitlement)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 item.get('id'),
                 item.get('headline'),
                 item.get('url'),
                 item.get('source'),
+                item.get('thumbnail'),
                 item.get('published_at'),
                 item.get('fetched_at'),
                 json.dumps(item.get('categories', [])),

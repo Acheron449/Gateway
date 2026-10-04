@@ -14,6 +14,7 @@ from app.providers.adanos_provider import AdanosSentimentProvider
 from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, ProviderMeta
 from app.providers.bloomberg_provider import BloombergProvider
+from app.providers.ccxt_provider import CCXTProvider
 from app.providers.finnhub_provider import FinnhubProvider
 from app.providers.forexfactory_provider import ForexFactoryProvider
 from app.providers.jblanked_provider import JBlankedProvider
@@ -27,6 +28,7 @@ from app.providers.yahoo_provider import YahooFinanceProvider
 
 _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
     "Yahoo Finance": YahooFinanceProvider,
+    "CCXT": CCXTProvider,
     "Finnhub": FinnhubProvider,
     "TradingView": TradingViewProvider,
     "AllTick": AllTickProvider,
@@ -231,6 +233,7 @@ def get_provider(
 def list_providers() -> dict[str, ProviderMeta]:
     return {
         "Yahoo Finance": YahooFinanceProvider().meta,
+        "CCXT": CCXTProvider().meta,
         "Finnhub": FinnhubProvider("").meta,
         "TradingView": TradingViewProvider().meta,
         "AllTick": AllTickProvider().meta,
@@ -255,6 +258,7 @@ _PROVIDERS = _PROVIDER_CLASSES
 
 __all__ = [
     "YahooFinanceProvider",
+    "CCXTProvider",
     "AllTickProvider",
     "BloombergProvider",
     "FinnhubProvider",

@@ -83,7 +83,10 @@ async def fetch_and_store_news(
     stored_items: list[NewsItem] = []
     for item in items:
         item.tags = _news_tags(item)
-        item.source = provider.name
+        # Keep the publisher name (Reuters, Barrons.com, …) when the provider
+        # supplied one; fall back to the provider name for consistency.
+        if not item.source:
+            item.source = provider.name
         item.provider_version = provider.meta["version"]
         item.fetched_at = datetime.fromisoformat(fetched_at)
         item.entitlement = "finnhub-free-tier" if provider.name == "Finnhub" else item.entitlement

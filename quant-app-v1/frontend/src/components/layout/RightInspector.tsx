@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 
 import { API_BASE } from "../../lib/constants";
+import { NewsPage } from "../../components/features/NewsPage";
 
 interface RightInspectorProps {
   activeView: string;
@@ -116,6 +117,8 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [news, setNews] = useState<InspectorNewsItem[]>([]);
   const [loading, setLoading] = useState(false);
+  // Full-page news overlay (the panel itself only previews what fits).
+  const [newsPageOpen, setNewsPageOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     const sym = selectedSymbol?.trim()?.toUpperCase();
@@ -282,7 +285,9 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
           <h3 className="section-label">Latest News</h3>
           <div className="inspector-news">
             {news.length > 0 ? (
-              news.slice(0, 5).map((item) => (
+              // Preview only — the section is height-constrained, so show the
+              // first 4 and open the scrollable NewsPage for the full feed.
+              news.slice(0, 4).map((item) => (
                 <a
                   key={item.id || item.headline}
                   className="inspector-news-item"
@@ -300,6 +305,11 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
               ))
             ) : (
               <p className="inspector-news-empty">No recent headlines for {selectedSymbol}</p>
+            )}
+            {news.length > 0 && (
+              <button type="button" className="news-view-all" onClick={() => setNewsPageOpen(true)}>
+                View all news →
+              </button>
             )}
           </div>
         </section>
@@ -363,6 +373,9 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
           <div className="spinner" style={{ width: 24, height: 24, border: "2px solid var(--border-secondary)", borderTopColor: "var(--accent-primary)", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
         </div>
       )}
+
+      {/* Big scrollable news page for the full feed beyond the 4-item preview */}
+      <NewsPage open={newsPageOpen} onClose={() => setNewsPageOpen(false)} symbol={selectedSymbol} />
     </div>
   );
 }

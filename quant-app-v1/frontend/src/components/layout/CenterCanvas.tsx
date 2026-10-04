@@ -5,7 +5,7 @@ import { PaperTrading } from "../../components/features/PaperTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
 import { AgenticLab } from "./AgenticLab";
-import { NewsFeed } from "../../components/features/NewsFeed";
+import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
 import { TradeJournal } from "./TradeJournal";
@@ -21,32 +21,9 @@ interface CenterCanvasProps {
 function getViewComponent(activeView: string, selectedSymbol: string) {
   switch (activeView) {
     case "overview":
-      return (
-        <div className="canvas-view">
-          <div className="view-header">
-            <h1>Overview</h1>
-            <p className="view-description">Market overview and quick access</p>
-          </div>
-          <div className="overview-grid">
-            <div className="overview-card">
-              <h3>Quick Actions</h3>
-              <div className="quick-actions">
-                <button className="action-button">New Strategy</button>
-                <button className="action-button">Run Backtest</button>
-                <button className="action-button">View Journal</button>
-              </div>
-            </div>
-            <div className="overview-card">
-              <h3>Market News</h3>
-              <NewsFeed />
-            </div>
-            <div className="overview-card">
-              <h3>Performance Summary</h3>
-              <p className="empty-state">Run a backtest to see performance</p>
-            </div>
-          </div>
-        </div>
-      );
+      // Reference-style overview: ticker strip, chart, movers, news,
+      // filings, risk, watchlist and heat map (see OverviewDashboard).
+      return <OverviewDashboard selectedSymbol={selectedSymbol} />;
     case "scanner":
       return (
         <div className="canvas-view">

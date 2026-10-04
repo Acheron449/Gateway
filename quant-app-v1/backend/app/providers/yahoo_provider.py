@@ -9,11 +9,18 @@ provider (and booting the API) never pays for the dependency's startup cost.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from app.models import NewsItem
 from app.providers.base import MarketDataProvider, ProviderMeta
+
+# Yahoo's public search endpoint doubles as its news feed (the same one
+# yfinance uses under the hood for ``Ticker.news``).  It needs no API key.
+_YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
+_YF_NEWS_VERSION = "yf-news-v1"
 
 
 def _yfinance():
@@ -21,6 +28,77 @@ def _yfinance():
     import yfinance as yf
 
     return yf
+
+
+def _fetch_yahoo_news_sync(query: str, limit: int) -> list[dict[str, Any]]:
+    """Fetch raw Yahoo news articles for a ticker/search query.
+
+    Uses yfinance's own data session (``YfData``) when available so cookies
+    and crumb handling match what yfinance does for ``Ticker.news``; falls
+    back to a plain GET because the search endpoint is public either way.
+    """
+    params = {"q": query, "newsCount": max(1, limit), "quotesCount": 0}
+    articles: list[Any] = []
+    try:
+        from yfinance.data import YfData
+
+        response = YfData().get(_YAHOO_SEARCH_URL, params=params)
+        payload = response.json() if response is not None else None
+        if isinstance(payload, dict):
+            articles = payload.get("news") or []
+    except Exception:
+        articles = []
+    if not articles:
+        # Fallback: the endpoint is public, a plain GET works without a crumb.
+        import requests
+
+        response = requests.get(
+            _YAHOO_SEARCH_URL,
+            params=params,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        articles = payload.get("news") or [] if isinstance(payload, dict) else []
+    return [a for a in articles if isinstance(a, dict)][:limit]
+
+
+def _article_to_news_item(article: dict[str, Any], related: list[str]) -> NewsItem | None:
+    """Map a raw Yahoo article dict onto the canonical NewsItem model."""
+    headline = str(article.get("title") or "").strip()
+    link = article.get("link")
+    if not headline or not link:
+        return None
+    natural_id = str(article.get("uuid") or link)
+    item_id = "yf-news-" + hashlib.sha256(natural_id.encode("utf-8")).hexdigest()[:24]
+    published = datetime.fromtimestamp(int(article.get("providerPublishTime") or 0), tz=timezone.utc)
+    if not article.get("providerPublishTime"):
+        published = datetime.now(timezone.utc)
+    # First thumbnail resolution is enough for the preview cards.
+    thumb = None
+    resolutions = ((article.get("thumbnail") or {}).get("resolutions")) or []
+    if isinstance(resolutions, list) and resolutions and isinstance(resolutions[0], dict):
+        thumb = resolutions[0].get("url")
+    return NewsItem(
+        id=item_id,
+        headline=headline,
+        url=str(link),
+        # Publisher name (Reuters, Barrons.com, …) — provenance of the
+        # Gateway fetch itself lives in the endpoint's provenance block.
+        source=str(article.get("publisher") or "Yahoo Finance"),
+        thumbnail=thumb,
+        published_at=published,
+        fetched_at=datetime.now(timezone.utc),
+        categories=[str(article.get("type") or "story")],
+        related_symbols=[s.upper() for s in related],
+        sentiment_score=None,
+        provider_version=_YF_NEWS_VERSION,
+        data_time=published,
+        coverage="Yahoo Finance news",
+        delay_seconds=0,
+        entitlement="public",
+    )
 
 
 def _to_epoch(value: Any) -> Optional[float]:
@@ -124,5 +202,39 @@ class YahooFinanceProvider(MarketDataProvider):
                 "change_pct": round((change / prev * 100.0) if prev > 0 else 0.0, 2),
                 "provider_version": "yf-v1",
             }
+
+        return await asyncio.to_thread(_fetch)
+
+    async def news(
+        self,
+        symbol: str | None = None,
+        limit: int = 5,
+    ) -> list[NewsItem]:
+        """Headlines from Yahoo Finance via the yfinance data layer.
+
+        Keyless by design: the general (symbol-less) call searches top
+        business headlines, and per-symbol calls narrow to one ticker so the
+        news service's fan-out dedupes across its symbol basket.
+        """
+        if limit <= 0:
+            return []
+        query = (symbol or "").strip().upper() or "finance markets"
+
+        def _fetch() -> list[NewsItem]:
+            try:
+                articles = _fetch_yahoo_news_sync(query, limit)
+            except Exception as exc:
+                # Surface as the canonical provider error so the news chain
+                # can move on to the next source.
+                from app.providers.base import ProviderUnavailableError
+
+                raise ProviderUnavailableError(f"Yahoo Finance news request failed: {exc}") from exc
+            related = [symbol.upper()] if symbol else []
+            items: list[NewsItem] = []
+            for article in articles:
+                record = _article_to_news_item(article, related)
+                if record is not None:
+                    items.append(record)
+            return items
 
         return await asyncio.to_thread(_fetch)

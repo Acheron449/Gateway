@@ -608,10 +608,9 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
 
         <div className="chat-scroll" ref={scrollRef}>
           {messages.length === 0 ? (
+            // Empty-state hero: the two guidance lines only — the old
+            // "gateway" watermark wordmark was removed as pure decoration.
             <div className="chat-hero">
-              <div className="chat-watermark" aria-hidden="true">
-                gateway
-              </div>
               <div className="chat-hero-copy">
                 <p>Ask about a ticker, a setup, or your portfolio.</p>
                 <p className="hint">
