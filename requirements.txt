@@ -27,9 +27,9 @@ skfolio==0.5.2               # Portfolio construction and risk-aware allocation 
 
 # --- Data Fetching & Networking ---
 httpx==0.28.1                 # Modern, async HTTP client (faster than 'requests' for APIs)
-websockets==10.0             # For handling live market data streams
+websockets>=13.0             # For handling live market data streams
 yfinance==0.2.65              # Easy access to Yahoo Finance historical data
-alpaca-trade-api==3.1.1       # (Optional) If you choose Alpaca for real-time data
+# alpaca-trade-api==3.1.1       # (Removed: requires websockets<11, conflicts with yfinance>=13)
 alpaca-py==0.37.0             # Alpaca API client
 fastapi-utils==0.8.0          # Utilities for FastAPI, including rate limiting and caching
 finnhub-python==2.4.29        # For fetching financial data from Finnhub

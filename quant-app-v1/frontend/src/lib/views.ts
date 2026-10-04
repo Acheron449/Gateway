@@ -25,7 +25,7 @@ export const VIEWS: ViewDef[] = [
   { id: "scanner", label: "Scanner", icon: "🔍", group: "workspace" },
   { id: "markets", label: "Markets", icon: "📈", group: "workspace" },
   { id: "calendar", label: "Calendar", icon: "📅", group: "workspace" },
-  { id: "harness", label: "AI Harness", icon: "🤖", group: "workspace" },
+  { id: "harness", label: "AI Chat", icon: "🤖", group: "workspace" },
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
   { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
   { id: "backtests", label: "Backtests", icon: "📊", group: "myWork" },

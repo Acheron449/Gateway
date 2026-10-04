@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { API_BASE } from "../../lib/constants";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
+import { LlmProviderSettings } from "./LlmProviderSettings";
 
 interface ProviderMeta {
   name: string;
@@ -439,9 +440,9 @@ export function ProviderSettings() {
   return (
     <div className="provider-settings">
       <div className="settings-header">
-        <h1>Data Providers</h1>
+        <h1>Providers &amp; API Keys</h1>
         <p className="settings-description">
-          Connect the market-data and news feeds that power Gateway's charts, scanner, and calendar.
+          Every user-entered key lives here: financial data feeds and LLM APIs, in separate groups below.
           Keys are encrypted at rest (Fernet) and never returned to the browser.
         </p>
       </div>
@@ -481,27 +482,43 @@ export function ProviderSettings() {
         </div>
       )}
 
-      <div className="providers-list">
-        {providers.map((provider, index) => (
-          <div key={provider.name}>
-            <ProviderCard
-              provider={provider}
-              selected={selectedProvider === provider.name}
-              onSelect={handleSelectProvider}
-              inputApiKey={inputApiKey}
-              showKey={showKey}
-              setInputApiKey={setInputApiKey}
-              setShowKey={setShowKey}
-              loading={loading}
-              testResult={testResult}
-              onSaveKey={handleSaveKey}
-              onTestKey={handleTestKey}
-              onDeleteKey={handleDeleteKey}
-            />
-            {index < providers.length - 1 && <div className="provider-divider between" role="separator" />}
+      <details className="api-group" open>
+        <summary className="api-group-summary">
+          <span className="api-group-icon" aria-hidden="true">📈</span>
+          <span className="api-group-text">
+            <strong>Financial APIs — market data &amp; news</strong>
+            <span>Finnhub · AllTick · JBlanked feeds that power charts, scanner, and calendar</span>
+          </span>
+          <span className={`api-group-count ${providers.some((p) => p.configured) ? "on" : ""}`}>
+            {providers.filter((p) => p.configured).length}/{providers.length} ready
+          </span>
+        </summary>
+        <div className="api-group-body">
+          <div className="providers-list">
+            {providers.map((provider, index) => (
+              <div key={provider.name}>
+                <ProviderCard
+                  provider={provider}
+                  selected={selectedProvider === provider.name}
+                  onSelect={handleSelectProvider}
+                  inputApiKey={inputApiKey}
+                  showKey={showKey}
+                  setInputApiKey={setInputApiKey}
+                  setShowKey={setShowKey}
+                  loading={loading}
+                  testResult={testResult}
+                  onSaveKey={handleSaveKey}
+                  onTestKey={handleTestKey}
+                  onDeleteKey={handleDeleteKey}
+                />
+                {index < providers.length - 1 && <div className="provider-divider between" role="separator" />}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      </details>
+
+      <LlmProviderSettings />
 
       <div className="settings-section">
         <h2>Encryption key management</h2>

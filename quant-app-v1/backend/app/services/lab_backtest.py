@@ -55,6 +55,43 @@ BASELINES: dict[str, dict[str, Any]] = {
     },
 }
 
+# RiskGuard-style rules (inspired by kweinmeister/agentic-trading): every
+# proposed decision passes a risk gate before it can touch the book.
+DEFAULT_RISK_RULES: dict[str, Any] = {
+    # Largest share of equity a position may deploy (100 = fully invested).
+    "max_position_pct": 100.0,
+    # Circuit breaker: halt trading once peak-to-trough drawdown reaches this
+    # (0 = disabled). Mirrors RiskGuard's portfolio-protection intent.
+    "max_drawdown_pct": 0.0,
+    # Reject short proposals when False.
+    "allow_short": True,
+}
+
+RISK_RULE_META = [
+    {"id": "max_position_pct", "label": "Max position size", "hint": "Cap on the share of equity a single position may deploy (100% = fully invested)", "min": 1, "max": 100, "step": 5},
+    {"id": "max_drawdown_pct", "label": "Drawdown circuit breaker", "hint": "Halt trading for the rest of the run once the peak-to-trough drop reaches this % (0 = off)", "min": 0, "max": 100, "step": 5},
+    {"id": "allow_short", "label": "Allow short selling", "hint": "When off, short proposals are rejected and logged by the risk guard", "min": None, "max": None, "step": None},
+]
+
+
+def normalize_rules(rules: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge caller-supplied risk rules over the defaults, clamped to sane ranges."""
+    out = dict(DEFAULT_RISK_RULES)
+    if isinstance(rules, dict):
+        try:
+            position = float(rules.get("max_position_pct", out["max_position_pct"]))
+            out["max_position_pct"] = min(100.0, max(1.0, position))
+        except (TypeError, ValueError):
+            pass
+        try:
+            drawdown = float(rules.get("max_drawdown_pct", out["max_drawdown_pct"]))
+            out["max_drawdown_pct"] = min(100.0, max(0.0, drawdown))
+        except (TypeError, ValueError):
+            pass
+        if "allow_short" in rules:
+            out["allow_short"] = bool(rules["allow_short"])
+    return out
+
 _PERIODS_PER_YEAR = {"1m": 12, "5m": 390 * 252 / 60 / 5, "15m": 390 * 252 / 60 / 15,
                      "30m": 390 * 252 / 60 / 30, "1h": 390 * 252 / 60, "1d": 252, "1wk": 52}
 
@@ -440,15 +477,24 @@ async def llm_targets(
 # Simulator + metrics
 # ---------------------------------------------------------------------------
 
-def _rebalance(cash: float, units: float, target_sign: int, price: float, fee: float, slippage: float) -> tuple[float, float]:
+def _rebalance(
+    cash: float,
+    units: float,
+    target_sign: int,
+    price: float,
+    fee: float,
+    slippage: float,
+    allocation: float = 1.0,
+) -> tuple[float, float]:
     if units != 0:
         fill = price * (1.0 - slippage * (1 if units > 0 else -1))
         cash += units * fill
         cash -= abs(units) * fill * fee
         units = 0.0
-    if target_sign != 0 and cash > 0:
+    if target_sign != 0 and cash > 0 and allocation > 0:
         fill = price * (1.0 + slippage * target_sign)
-        units = target_sign * cash / fill
+        notional = cash * min(allocation, 1.0)
+        units = target_sign * notional / fill
         cash -= units * fill
         cash -= abs(units) * fill * fee
     return cash, units
@@ -461,60 +507,126 @@ def simulate(
     capital: float = 10_000.0,
     fee_bps: float = 5.0,
     slippage_bps: float = 5.0,
+    rules: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run targets through a fully-invested 1x long/flat/short book."""
+    """Run targets through a 1x long/flat/short book behind a risk guard.
+
+    Every proposal passes the gate (position cap, short filter, drawdown
+    circuit breaker) before execution — rejected or halted decisions are
+    recorded as risk events, mirroring the RiskGuard approve/reject flow.
+    """
+    rules = normalize_rules(rules)
     fee = fee_bps / 10_000.0
     slippage = slippage_bps / 10_000.0
+    allocation = rules["max_position_pct"] / 100.0
     sign_of = {"long": 1, "flat": 0, "short": -1}
     current_sign = 0
     cash, units = capital, 0.0
     equity_curve: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
+    risk_events: list[dict[str, Any]] = []
     entry_equity = capital
+    entry_time: int | None = None
+    entry_price: float | None = None
     in_market_bars = 0
+    peak = capital
+    halted = False
+    prev_raw = "flat"
+
+    def _close_leg(price: float, bar_time: int) -> None:
+        nonlocal cash, units, current_sign, entry_equity, entry_time, entry_price
+        direction = "long" if current_sign > 0 else "short"
+        cash, units = _rebalance(cash, units, 0, price, fee, slippage)
+        equity_now = cash
+        trades.append({
+            "direction": direction,
+            "entry_equity": entry_equity,
+            "exit_equity": equity_now,
+            "pnl_pct": (equity_now / entry_equity - 1.0) * 100.0 if entry_equity else 0.0,
+            "entry_time": entry_time,
+            "entry_price": entry_price,
+            "exit_time": bar_time,
+            "exit_price": price,
+        })
+        current_sign = 0
+        entry_time = None
+        entry_price = None
+        entry_equity = equity_now
 
     for index, bar in enumerate(bars):
         price = float(bar["close"])
-        target = targets[index] if index < len(targets) else "flat"
-        desired = sign_of.get(target, 0)
-        if desired != current_sign:
-            cash, units = _rebalance(cash, units, desired, price, fee, slippage)
-            if current_sign != 0:
-                equity_now = cash + units * price
-                trades.append({
-                    "entry_equity": entry_equity,
-                    "exit_equity": equity_now,
-                    "pnl_pct": (equity_now / entry_equity - 1.0) * 100.0 if entry_equity else 0.0,
-                    "exit_time": bar["time"],
+        bar_time = int(bar["time"])
+        raw = targets[index] if index < len(targets) else "flat"
+        equity_now = cash + units * price
+
+        # Drawdown circuit breaker — evaluated on marked-to-market equity.
+        if not halted and rules["max_drawdown_pct"] > 0:
+            peak = max(peak, equity_now)
+            drawdown = (peak - equity_now) / peak * 100.0 if peak > 0 else 0.0
+            if drawdown >= rules["max_drawdown_pct"]:
+                halted = True
+                if current_sign != 0:
+                    _close_leg(price, bar_time)
+                risk_events.append({
+                    "index": index,
+                    "time": bar_time,
+                    "rule": "drawdown_halt",
+                    "proposed": raw,
+                    "approved": "flat",
+                    "reason": (
+                        f"Drawdown {drawdown:.1f}% reached the "
+                        f"{rules['max_drawdown_pct']:.0f}% limit — trading halted for the run"
+                    ),
                 })
-            if desired != 0:
+
+        effective = "flat" if halted else raw
+        # Short filter — reject proposals when shorts are disabled.
+        if effective == "short" and not rules["allow_short"]:
+            effective = "flat"
+            if raw != prev_raw:
+                risk_events.append({
+                    "index": index,
+                    "time": bar_time,
+                    "rule": "short_rejected",
+                    "proposed": raw,
+                    "approved": "flat",
+                    "reason": "Short proposal rejected — short selling is disabled by the risk guard",
+                })
+
+        desired_sign = sign_of.get(effective, 0)
+        if desired_sign != current_sign:
+            if current_sign != 0:
+                _close_leg(price, bar_time)
+            if desired_sign != 0:
+                cash, units = _rebalance(cash, units, desired_sign, price, fee, slippage, allocation)
+                current_sign = desired_sign
                 entry_equity = max(cash + units * price, 1e-9)
-            current_sign = desired
+                entry_time = bar_time
+                entry_price = price
+        prev_raw = raw
         if current_sign != 0:
             in_market_bars += 1
-        equity_curve.append({"time": bar["time"], "equity": cash + units * price})
+        marked = cash + units * price
+        peak = max(peak, marked)
+        equity_curve.append({"time": bar_time, "equity": marked})
 
     # Close any open position at the end so the last leg counts as a trade.
     if current_sign != 0 and bars:
         final_price = float(bars[-1]["close"])
-        cash, units = _rebalance(cash, units, 0, final_price, fee, slippage)
-        final_equity = cash
-        trades.append({
-            "entry_equity": entry_equity,
-            "exit_equity": final_equity,
-            "pnl_pct": (final_equity / entry_equity - 1.0) * 100.0 if entry_equity else 0.0,
-            "exit_time": bars[-1]["time"],
-        })
-        if equity_curve:
-            equity_curve[-1]["equity"] = final_equity
-    else:
-        final_equity = cash + units * float(bars[-1]["close"]) if bars else capital
+        _close_leg(final_price, int(bars[-1]["time"]))
+    final_equity = cash + units * float(bars[-1]["close"]) if bars else capital
+    if equity_curve:
+        equity_curve[-1]["equity"] = final_equity
 
     return {
         "equity_curve": equity_curve,
         "trades": trades,
         "final_equity": final_equity,
         "in_market_bars": in_market_bars,
+        "risk_events": risk_events,
+        "risk_halted": halted,
+        "allocation": allocation,
+        "rules": rules,
     }
 
 
@@ -595,6 +707,9 @@ def compute_metrics(
         "verdict": verdict,
         "verdict_tone": verdict_tone,
         "risk_note": risk,
+        "risk_overrides": len(simulation.get("risk_events") or []),
+        "risk_halted": bool(simulation.get("risk_halted")),
+        "risk_rules": simulation.get("rules") or dict(DEFAULT_RISK_RULES),
     }
     metrics["stats"] = [
         {"label": "Total return", "value": f"{total_return:+.2f}%", "hint": "Profit/loss on the starting equity"},
@@ -605,6 +720,22 @@ def compute_metrics(
         {"label": "Win rate", "value": f"{win_rate:.0f}%", "hint": f"{len(wins)} of {len(trades)} trades ended green" if trades else "No trades closed"},
         {"label": "Profit factor", "value": ("∞" if profit_factor == float("inf") else f"{profit_factor:.2f}") if trades else "—", "hint": "Gross wins ÷ gross losses"},
         {"label": "Trades", "value": str(len(trades)), "hint": f"Exposed to the market {exposure:.0f}% of bars"},
+        {
+            "label": "Risk guard",
+            "value": (
+                "HALTED" if metrics["risk_halted"]
+                else f"{metrics['risk_overrides']} override" + ("s" if metrics["risk_overrides"] != 1 else "")
+                if metrics["risk_overrides"]
+                else "clean"
+            ),
+            "hint": (
+                "Risk guard stopped the run at the drawdown limit"
+                if metrics["risk_halted"]
+                else "Risk guard modified proposals (position cap / short filter / circuit breaker)"
+                if metrics["risk_overrides"]
+                else "No decision was modified by the risk guard"
+            ),
+        },
     ]
     return metrics
 
@@ -617,6 +748,63 @@ def downsample(curve: list[dict[str, Any]], points: int = 60) -> list[dict[str, 
     if sampled[-1] != curve[-1]:
         sampled[-1] = curve[-1]
     return sampled
+
+
+def build_chart(
+    bars: list[dict[str, Any]],
+    trades: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
+    points: int = 120,
+) -> dict[str, Any]:
+    """Price + SMA overlay with trade and risk markers (reference: the
+    agentic-trading results figure — price action, SMAs, execution markers)."""
+    closes = [float(b["close"]) for b in bars]
+    sma10 = [_sma(closes, 10, i) for i in range(len(closes))]
+    sma30 = [_sma(closes, 30, i) for i in range(len(closes))]
+
+    stride = max(1, math.ceil(len(bars) / max(10, points)))
+    sampled_idx = list(range(0, len(bars), stride))
+    if sampled_idx and sampled_idx[-1] != len(bars) - 1:
+        sampled_idx.append(len(bars) - 1)
+    series = [
+        {
+            "t": int(bars[i]["time"]),
+            "c": round(closes[i], 4),
+            "s10": round(sma10[i], 4) if sma10[i] is not None else None,
+            "s30": round(sma30[i], 4) if sma30[i] is not None else None,
+        }
+        for i in sampled_idx
+    ]
+
+    markers: list[dict[str, Any]] = []
+    for trade in trades:
+        direction = trade.get("direction") or "long"
+        if trade.get("entry_time") is not None and trade.get("entry_price") is not None:
+            markers.append({
+                "t": int(trade["entry_time"]),
+                "price": round(float(trade["entry_price"]), 4),
+                "kind": "open_long" if direction == "long" else "open_short",
+                "label": f"Open {direction}",
+            })
+        if trade.get("exit_time") is not None and trade.get("exit_price") is not None:
+            pnl = trade.get("pnl_pct", 0.0)
+            markers.append({
+                "t": int(trade["exit_time"]),
+                "price": round(float(trade["exit_price"]), 4),
+                "kind": "close_long" if direction == "long" else "close_short",
+                "label": f"Close {direction} · {pnl:+.2f}%",
+            })
+    for event in risk_events:
+        index = int(event.get("index") or 0)
+        price = closes[index] if 0 <= index < len(closes) else None
+        markers.append({
+            "t": int(event.get("time") or (bars[index]["time"] if 0 <= index < len(bars) else 0)),
+            "price": round(price, 4) if price is not None else None,
+            "kind": "risk",
+            "label": f"Risk guard: {event.get('reason', '')}",
+        })
+    markers.sort(key=lambda marker: marker["t"])
+    return {"points": series, "markers": markers}
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +822,7 @@ async def run_backtest(
     fee_bps: float = 5.0,
     slippage_bps: float = 5.0,
     agent_id: Optional[str] = None,
+    risk: dict[str, Any] | None = None,
     on_progress: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
 ) -> dict[str, Any]:
     """Run one lab backtest and persist the resulting run with full stats."""
@@ -651,11 +840,20 @@ async def run_backtest(
         # Validate the endpoint before the long loop so errors are immediate.
         llm_svc.resolve_endpoint(provider)
         step = max(2, math.ceil((len(bars) - 30) / max(1, int(max_llm_calls))))
+        prompt_text = str(spec.get("prompt") or DEFAULT_PROMPT)
+        try:
+            from app.services import research_store as research
+
+            library = research.combined_context(symbol)
+            if library:
+                prompt_text = f"{prompt_text}\n\nUse this saved research as background:\n{library}"
+        except Exception:  # noqa: BLE001 - research context is optional enrichment
+            pass
         targets, decisions = await llm_targets(
             bars,
             provider=provider,
             model=model,
-            prompt=str(spec.get("prompt") or DEFAULT_PROMPT),
+            prompt=prompt_text,
             step=step,
             symbol=symbol,
             tf=tf,
@@ -672,8 +870,28 @@ async def run_backtest(
         targets = baseline_targets(bars, baseline)
         strategy_label = BASELINES[baseline]["label"]
 
-    simulation = simulate(bars, targets, capital=capital, fee_bps=fee_bps, slippage_bps=slippage_bps)
+    simulation = simulate(
+        bars,
+        targets,
+        capital=capital,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        rules=risk,
+    )
     metrics = compute_metrics(bars, simulation, capital=capital, tf=tf)
+
+    # Attach risk outcomes to the decisions that triggered them.
+    events_by_index = {event["index"]: event for event in simulation.get("risk_events", [])}
+    for decision in decisions:
+        event = events_by_index.get(decision.get("index"))
+        if event is not None:
+            decision["risk"] = {
+                "rule": event["rule"],
+                "proposed": event["proposed"],
+                "approved": event["approved"],
+                "reason": event["reason"],
+            }
+    chart = build_chart(bars, simulation["trades"], simulation.get("risk_events", []))
 
     run = {
         "id": uuid.uuid4().hex[:12],
@@ -694,6 +912,9 @@ async def run_backtest(
         "decisions": decisions[-40:],
         "trades": simulation["trades"][-30:],
         "equity_curve": downsample(simulation["equity_curve"]),
+        "chart": chart,
+        "risk_rules": simulation["rules"],
+        "risk_events": simulation.get("risk_events", [])[:20],
         "metrics": metrics,
     }
     _store_run(run)
