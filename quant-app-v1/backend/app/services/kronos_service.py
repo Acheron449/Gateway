@@ -62,6 +62,12 @@ def _predictor():
             raise KronosUnavailable("KRONOS_REPO_PATH must point to a Kronos repository checkout")
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
+    else:
+        # Default to the checkout vendored next to the backend so predictions
+        # work out of the box; KRONOS_REPO_PATH still overrides it.
+        vendored = Path(__file__).resolve().parents[2] / "vendor" / "Kronos"
+        if (vendored / "model").is_dir() and str(vendored) not in sys.path:
+            sys.path.insert(0, str(vendored))
     try:
         from model import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
     except ImportError as exc:

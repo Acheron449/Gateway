@@ -16,6 +16,13 @@ export interface ChartContainerProps {
   ticker: string;
 }
 
+/** Markets timeframe → pandas frequency string expected by /forecast/kronos. */
+const KRONOS_FREQ_BY_TF: Record<string, string> = {
+  "1h": "h",
+  "1d": "D",
+  "1wk": "W",
+};
+
 export function ChartContainer({ ticker }: ChartContainerProps) {
   const [timeframe, setTimeframe] = useState<HistoryTf>("1h");
   const [{ provider, indicators }] = useChartPrefs();
@@ -77,7 +84,11 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
         liveUpdate={liveUpdate}
         indicators={indicators}
       />
-      <KronosForecast bars={data} />
+      <KronosForecast
+        bars={data}
+        ticker={ticker}
+        frequency={KRONOS_FREQ_BY_TF[timeframe] ?? "D"}
+      />
       <PatternList activePatterns={patterns} onZoomToPattern={handleZoomToPattern} />
     </div>
   );

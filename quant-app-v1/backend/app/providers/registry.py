@@ -13,43 +13,26 @@ from app.config import get_settings
 from app.providers.adanos_provider import AdanosSentimentProvider
 from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, ProviderMeta
+from app.providers.bloomberg_provider import BloombergProvider
 from app.providers.finnhub_provider import FinnhubProvider
+from app.providers.forexfactory_provider import ForexFactoryProvider
+from app.providers.jblanked_provider import JBlankedProvider
 from app.providers.openbb_provider import OpenBBConfig, OpenBBProvider
 from app.providers.openbb_server_provider import OpenBBServerProvider
+from app.providers.alltick_provider import AllTickProvider
 from app.providers.openstock_provider import OpenStockSymbolProvider
+from app.providers.tradingview_provider import TradingViewProvider
 from app.providers.yahoo_provider import YahooFinanceProvider
-
-
-class TradingViewProvider(MarketDataProvider):
-    """Read-only placeholder for a provider that has no Gateway BYOK path."""
-
-    def __init__(self, api_key: str = "", paper_trading: bool = True) -> None:
-        self._api_key = api_key
-        self._paper_trading = paper_trading
-
-    @property
-    def name(self) -> str:
-        return "TradingView"
-
-    @property
-    def meta(self) -> ProviderMeta:
-        return {
-            "name": "TradingView",
-            "version": "tv-v1",
-            "endpoint": "https://data.tradingview.com",
-            "requires_api_key": True,
-            "rate_limit_per_min": None,
-        }
-
-    @property
-    def is_configured(self) -> bool:
-        return False
 
 
 _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
     "Yahoo Finance": YahooFinanceProvider,
     "Finnhub": FinnhubProvider,
     "TradingView": TradingViewProvider,
+    "AllTick": AllTickProvider,
+    "JBlanked": JBlankedProvider,
+    "ForexFactory": ForexFactoryProvider,
+    "Bloomberg": BloombergProvider,
     "OpenBB": OpenBBProvider,
     "OpenBB-Server": OpenBBServerProvider,
     "Alpaca": AlpacaProvider,
@@ -149,8 +132,15 @@ def _read_api_key(provider: str) -> Optional[str]:
     stored = _read_stored_api_key(provider)
     if stored:
         return stored
-    if _canonical_name(provider) == "Finnhub":
+    name = _canonical_name(provider)
+    if name == "Finnhub":
         value = os.getenv("FINNHUB_API_KEY", "").strip()
+        return value or None
+    if name == "AllTick":
+        value = os.getenv("ALLTICK_API_KEY", "").strip()
+        return value or None
+    if name == "JBlanked":
+        value = os.getenv("JBLANKED_API_KEY", "").strip()
         return value or None
     return None
 
@@ -164,8 +154,8 @@ def has_stored_key(provider: str) -> bool:
 
 def _store_api_key(provider: str, key: str) -> None:
     name = _canonical_name(provider)
-    if name is None or name != "Finnhub":
-        raise ValueError("Only Finnhub supports browser-managed API keys")
+    if name is None or name not in ("Finnhub", "AllTick", "JBlanked"):
+        raise ValueError("Only Finnhub, AllTick and JBlanked support browser-managed API keys")
     value = key.strip()
     if not value:
         raise ValueError("API key must not be empty")
@@ -222,6 +212,14 @@ def get_provider(
         key = api_key if api_key is not None else _read_api_key(name)
         return OpenStockSymbolProvider(api_key=key or "")
 
+    if name == "AllTick":
+        key = api_key if api_key is not None else _read_api_key(name)
+        return AllTickProvider(api_key=key or "")
+
+    if name == "JBlanked":
+        key = api_key if api_key is not None else _read_api_key(name)
+        return JBlankedProvider(api_key=key or "")
+
     if name == "Adanos":
         key = api_key if api_key is not None else _read_api_key(name)
         return AdanosSentimentProvider(api_key=key or "")
@@ -234,7 +232,11 @@ def list_providers() -> dict[str, ProviderMeta]:
     return {
         "Yahoo Finance": YahooFinanceProvider().meta,
         "Finnhub": FinnhubProvider("").meta,
-        "TradingView": TradingViewProvider("").meta,
+        "TradingView": TradingViewProvider().meta,
+        "AllTick": AllTickProvider().meta,
+        "JBlanked": JBlankedProvider().meta,
+        "ForexFactory": ForexFactoryProvider().meta,
+        "Bloomberg": BloombergProvider().meta,
         "OpenBB": OpenBBProvider().meta,
         "OpenBB-Server": OpenBBServerProvider().meta,
         "Alpaca": AlpacaProvider().meta,
@@ -253,7 +255,11 @@ _PROVIDERS = _PROVIDER_CLASSES
 
 __all__ = [
     "YahooFinanceProvider",
+    "AllTickProvider",
+    "BloombergProvider",
     "FinnhubProvider",
+    "ForexFactoryProvider",
+    "JBlankedProvider",
     "TradingViewProvider",
     "MarketDataProvider",
     "ProviderMeta",

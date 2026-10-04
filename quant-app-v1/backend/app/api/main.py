@@ -511,6 +511,9 @@ _HISTORY_PROVIDER_IDS: dict[str, str] = {
     "yahoo finance": "Yahoo Finance",
     "yahoo-finance": "Yahoo Finance",
     "alpaca": "Alpaca",
+    "tradingview": "TradingView",
+    "tv": "TradingView",
+    "alltick": "AllTick",
     "openbb": "OpenBB",
     "openbb-server": "OpenBB-Server",
     "openbb server": "OpenBB-Server",
@@ -525,10 +528,18 @@ def _canonical_history_provider(provider: str | None) -> str:
     canonical = _HISTORY_PROVIDER_IDS.get(wanted)
     if canonical:
         return canonical
-    for name in ("Yahoo Finance", "Alpaca", "OpenBB", "OpenBB-Server"):
+    for name in ("Yahoo Finance", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server"):
         if name.casefold() == wanted:
             return name
     return "Yahoo Finance"
+
+
+def _alltick_available() -> bool:
+    try:
+        instance = get_registry_provider("AllTick")
+        return bool(instance and instance.is_configured)
+    except Exception:
+        return False
 
 
 def _history_provider_catalogue() -> list[dict[str, Any]]:
@@ -541,6 +552,20 @@ def _history_provider_catalogue() -> list[dict[str, Any]]:
             "detail": "Free Yahoo Finance bars via yfinance · no API key",
             "available": True,
             "is_default": True,
+        },
+        {
+            "id": "tradingview",
+            "name": "TradingView",
+            "detail": "TradingView public datafeed · no API key",
+            "available": True,
+            "is_default": False,
+        },
+        {
+            "id": "alltick",
+            "name": "AllTick",
+            "detail": "AllTick K-lines · API key required",
+            "available": _alltick_available(),
+            "is_default": False,
         },
         {
             "id": "alpaca",
@@ -634,7 +659,7 @@ async def _fetch_history_alt_provider_sync(
             return None
         return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
 
-    if provider in ("OpenBB", "OpenBB-Server"):
+    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None

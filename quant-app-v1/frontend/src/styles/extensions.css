@@ -3632,3 +3632,231 @@ body.panel-resizing .resize-handle {
     width: 260px;
   }
 }
+
+/* ===== Sidebar nav as real links (open-in-new-tab) ===== */
+a.nav-button,
+a.rail-icon {
+  text-decoration: none;
+}
+
+/* ===== Kronos predictions panel (Markets tab) ===== */
+.kronos-panel {
+  margin-top: 10px;
+  border: 1px solid var(--border-primary, #30363d);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+  background: var(--bg-secondary, #161b22);
+}
+
+.kronos-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kronos-title strong {
+  font-size: 13px;
+  color: var(--text-primary, #e6edf3);
+}
+
+.kronos-sub {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8b949e);
+  font-variant-numeric: tabular-nums;
+}
+
+.kronos-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kronos-horizon {
+  display: flex;
+  gap: 4px;
+}
+
+.kronos-chip {
+  min-width: 30px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-primary, #30363d);
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.kronos-chip:hover {
+  color: var(--text-primary, #e6edf3);
+}
+
+.kronos-chip.active {
+  background: var(--bg-tertiary, #21262d);
+  color: var(--accent-primary, #58a6ff);
+  border-color: var(--accent-primary, #58a6ff);
+}
+
+.kronos-run {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-primary, #58a6ff);
+  background: var(--accent-primary, #58a6ff);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kronos-run:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.kronos-error {
+  margin: 8px 0 0;
+  color: #f0883e;
+  font-size: 12.5px;
+}
+
+.kronos-hint {
+  margin: 8px 0 0;
+  color: var(--text-tertiary, #8b949e);
+  font-size: 12.5px;
+}
+
+.kronos-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.kronos-stat {
+  border: 1px dashed var(--border-primary, #30363d);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.kronos-stat .k-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary, #8b949e);
+}
+
+.kronos-stat .k-value {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+  font-variant-numeric: tabular-nums;
+}
+
+.kronos-stat .k-value.k-up,
+.kronos-table td.k-up {
+  color: #3fb950;
+}
+
+.kronos-stat .k-value.k-down,
+.kronos-table td.k-down {
+  color: #f85149;
+}
+
+.k-delta {
+  font-size: 12.5px;
+}
+
+.kronos-spark {
+  display: block;
+  width: 100%;
+  height: 96px;
+  margin-top: 10px;
+}
+
+.kronos-table-wrap {
+  max-height: 190px;
+  overflow: auto;
+  margin-top: 10px;
+  border-top: 1px solid var(--border-primary, #30363d);
+}
+
+.kronos-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kronos-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-secondary, #161b22);
+  color: var(--text-tertiary, #8b949e);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: right;
+  padding: 6px 8px;
+}
+
+.kronos-table td {
+  padding: 5px 8px;
+  text-align: right;
+  border-top: 1px solid var(--border-primary, #30363d);
+  color: var(--text-secondary, #c9d1d9);
+}
+
+.kronos-table th:first-child,
+.kronos-table td:first-child {
+  text-align: left;
+}
+
+@media (max-width: 900px) {
+  .kronos-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Economic calendar sources ===== */
+.calendar-source-status {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+}
+
+.calendar-source-status li::before {
+  content: "● ";
+}
+
+.calendar-source-status li.ready {
+  color: #3fb950;
+}
+
+.calendar-source-status li.off {
+  color: var(--text-tertiary, #8b949e);
+}
+
+.empty-source-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8b949e);
+  word-break: break-word;
+}
+
+.calendar-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+}

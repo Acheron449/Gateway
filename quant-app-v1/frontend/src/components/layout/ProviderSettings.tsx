@@ -247,7 +247,7 @@ function ProviderCard({
               <p>This provider does not support browser-managed API keys.</p>
               <p className="hint">
                 {provider.name === "TradingView"
-                  ? "TradingView embeds require a paid subscription — Gateway renders charts natively instead."
+                  ? "TradingView needs no key — Gateway reads its public datafeed directly and renders the candles natively."
                   : "Credentials are managed server-side via environment variables."}
               </p>
             </div>

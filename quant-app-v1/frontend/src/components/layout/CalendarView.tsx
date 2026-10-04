@@ -30,6 +30,14 @@ interface CalendarResponse {
   message?: string;
 }
 
+interface CalendarSource {
+  id: string;
+  name: string;
+  detail: string;
+  available: boolean;
+  requires_api_key: boolean;
+}
+
 function formatDateTime(isoString: string): { date: string; time: string } {
   const date = new Date(isoString);
   return {
@@ -161,25 +169,54 @@ export function CalendarView() {
   const [provenance, setProvenance] = useState<CalendarResponse["provenance"] | null>(null);
   const [filterImportance, setFilterImportance] = useState<"all" | "high" | "medium" | "low">("all");
   const [filterCurrency, setFilterCurrency] = useState<string>("all");
+  const [source, setSource] = useState<string>("auto");
+  const [sources, setSources] = useState<CalendarSource[]>([]);
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/news/calendar/sources`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { sources?: CalendarSource[] } | null) => {
+        if (!cancelled && data?.sources) setSources(data.sources);
+      })
+      .catch(() => {
+        /* source list is optional; the calendar still loads */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setEmptyMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/news/calendar?limit=50`);
+      const params = new URLSearchParams({ limit: "50" });
+      if (source && source !== "auto") params.set("provider", source);
+      const response = await fetch(`${API_BASE}/news/calendar?${params.toString()}`);
       if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `HTTP ${response.status}`);
+        const bodyText = await response.text();
+        let message = bodyText || `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(bodyText) as { message?: string };
+          if (parsed.message) message = parsed.message;
+        } catch {
+          /* not JSON — keep the raw body */
+        }
+        throw new Error(message);
       }
       const data: CalendarResponse = await response.json();
       setEvents(data.events);
       setProvenance(data.provenance);
+      setEmptyMessage(data.message ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load calendar events");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [source]);
 
   useEffect(() => {
     fetchEvents();
@@ -193,6 +230,22 @@ export function CalendarView() {
 
   const currencies = Array.from(new Set(events.map((e) => e.currency))).sort();
 
+  const sourceSelect = (
+    <select
+      value={source}
+      onChange={(e) => setSource(e.target.value)}
+      className="filter-select"
+      aria-label="Calendar source"
+    >
+      <option value="auto">All sources (auto)</option>
+      {sources.map((s) => (
+        <option key={s.id} value={s.id} title={s.detail}>
+          {s.name}{s.available ? "" : s.requires_api_key ? " · key required" : " · may be blocked"}
+        </option>
+      ))}
+    </select>
+  );
+
   if (loading) {
     return <div className="calendar-view loading"><div className="calendar-loading">Loading calendar events...</div></div>;
   }
@@ -202,20 +255,39 @@ export function CalendarView() {
       <div className="calendar-view error">
         <div className="calendar-error">
           <p>Failed to load calendar: {error}</p>
-          <button onClick={fetchEvents} className="retry-button">Retry</button>
+          <div className="calendar-error-actions">
+            {sourceSelect}
+            <button onClick={fetchEvents} className="retry-button">Retry</button>
+          </div>
+          {sources.length > 0 && (
+            <ul className="calendar-source-status">
+              {sources.map((s) => (
+                <li key={s.id} className={s.available ? "ready" : "off"} title={s.detail}>
+                  {s.name}: {s.available ? "ready" : s.requires_api_key ? "API key required" : "blocked upstream"}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     );
   }
 
   if (filteredEvents.length === 0) {
-    return <div className="calendar-view empty"><p className="empty-state">No calendar events found</p></div>;
+    return (
+      <div className="calendar-view empty">
+        <div className="calendar-toolbar">{sourceSelect}</div>
+        <p className="empty-state">No calendar events found</p>
+        {emptyMessage && <p className="empty-source-note">{emptyMessage}</p>}
+      </div>
+    );
   }
 
   return (
     <div className="calendar-view">
       <div className="calendar-toolbar">
         <div className="toolbar-filters">
+          {sourceSelect}
           <select
             value={filterImportance}
             onChange={(e) => setFilterImportance(e.target.value as "all" | "high" | "medium" | "low")}

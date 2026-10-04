@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { VIEWS, type View } from "../../lib/views";
 
@@ -52,28 +52,28 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
             <div className="rail-group" key={group.id}>
               <div className="rail-divider" aria-hidden="true" />
               {views.map((view) => (
-                <button
+                <Link
                   key={view.id}
                   className={`rail-icon ${activeView === view.id ? "active" : ""} ${groupActive ? "in-group" : ""}`}
-                  onClick={() => goTo(view.id)}
+                  to={`/app/${view.id}`}
                   title={view.label}
                   aria-label={view.label}
                 >
                   <span aria-hidden="true">{view.icon}</span>
-                </button>
+                </Link>
               ))}
             </div>
           );
         })}
         <div className="rail-footer">
-          <button
+          <Link
             className="rail-icon"
-            onClick={() => navigate("/")}
+            to="/"
             title="About Gateway"
             aria-label="About Gateway"
           >
             <span aria-hidden="true">⚡</span>
-          </button>
+          </Link>
         </div>
       </nav>
     );
@@ -99,13 +99,15 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
               <ul className="nav-list" role="listbox" aria-label={group.label}>
                 {views.map((item) => (
                   <li key={item.id} role="option" aria-selected={activeView === item.id}>
-                    <button
+                    {/* Real anchor: plain click navigates in-app, ⌘/Ctrl/middle-click opens a new tab. */}
+                    <Link
                       className={`nav-button ${activeView === item.id ? "active" : ""}`}
-                      onClick={() => goTo(item.id)}
+                      to={`/app/${item.id}`}
+                      aria-current={activeView === item.id ? "page" : undefined}
                     >
                       <span className="nav-icon" aria-hidden="true">{item.icon}</span>
                       <span className="nav-label">{item.label}</span>
-                    </button>
+                    </Link>
                   </li>
                 ))}
               </ul>
