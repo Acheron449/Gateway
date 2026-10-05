@@ -1,9 +1,15 @@
 """Regression: StrategySpec content-addressed ID determinism (Phase 3)."""
 from __future__ import annotations
 import sys
-sys.path.insert(0, "/Users/ChristineC/Documents/GitHub/Gateway/quant-app-v1")
+import os
 from importlib.util import spec_from_file_location, module_from_spec
-spec = spec_from_file_location("strategy", "/Users/ChristineC/Documents/GitHub/Gateway/quant-app-v1/backend/app/models/strategy.py")
+
+# Get the directory of this test file and construct relative paths
+current_dir = os.path.dirname(os.path.abspath(__file__))
+backend_dir = os.path.dirname(os.path.dirname(current_dir))  # app/tests/.. -> app/.. -> backend
+strategy_path = os.path.join(backend_dir, "app/models/strategy.py")
+
+spec = spec_from_file_location("strategy", strategy_path)
 strategy = module_from_spec(spec)
 spec.loader.exec_module(strategy)
 # Rebuild forward refs in case of deferred annotations
