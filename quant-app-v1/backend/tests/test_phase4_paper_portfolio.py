@@ -4,7 +4,7 @@ import pytest
 from uuid import uuid4
 
 from app.models import Order, OrderSide, OrderStatus, OrderType
-from app.services.database import create_portfolio, get_portfolio, update_position
+from app.services.database import DB_PATH, create_portfolio, get_portfolio, update_position
 from app.services.paper_portfolio import PaperPortfolioService, PortfolioEvent, EventType
 from app.services.risk_engine import RiskEngine, RiskConfig, RiskCheckResult
 
@@ -20,10 +20,9 @@ def test_portfolio(portfolio_id: str) -> str:
     """Create a test portfolio and clean up after."""
     create_portfolio(portfolio_id, "test_user", 100000.0)
     yield portfolio_id
-    # Cleanup
+    # Cleanup — must target the same DB the app writes to (GATEWAY_DATA_DIR /
+    # app/data), not the pre-portability legacy path.
     import sqlite3
-    from pathlib import Path
-    DB_PATH = Path(__file__).resolve().parents[2] / "quant_app.db"
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM portfolio_events WHERE portfolio_id = ?", (portfolio_id,))
@@ -139,10 +138,8 @@ class TestPaperPortfolioEventSourcing:
         from app.services.database import append_portfolio_event
         from datetime import datetime, timezone
         
-        # Clear any existing events for this portfolio
+        # Clear any existing events for this portfolio (same DB the app uses)
         import sqlite3
-        from pathlib import Path
-        DB_PATH = Path(__file__).resolve().parents[2] / "quant_app.db"
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("DELETE FROM portfolio_events WHERE portfolio_id = ?", (test_portfolio,))
