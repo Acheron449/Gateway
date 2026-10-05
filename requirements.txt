@@ -5,6 +5,7 @@ python-multipart==0.0.20      # Required for handling form data and file uploads
 pydantic-settings==2.10.1     # Manages your .env variables and API keys securely
 Flask==3.1.1          # Basic web framework for serving static files and simple endpoints (updated from 3.0.3 - fixes CVE-2026-27205)
 bcrypt==4.2.0          # For password hashing and security (updated from 4.0.1)
+passlib==1.7.4         # Password hashing context used by app/api/v1/auth.py
 flask_session==0.4.0      # For managing user sessions in Flask
 python-jose[cryptography]==3.4.0  # JWT token handling
 slowapi==0.1.9               # Rate limiting for FastAPI

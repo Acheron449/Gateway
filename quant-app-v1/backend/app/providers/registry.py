@@ -18,6 +18,7 @@ from app.providers.ccxt_provider import CCXTProvider
 from app.providers.finnhub_provider import FinnhubProvider
 from app.providers.forexfactory_provider import ForexFactoryProvider
 from app.providers.jblanked_provider import JBlankedProvider
+from app.providers.lse_provider import LSEProvider
 from app.providers.openbb_provider import OpenBBConfig, OpenBBProvider
 from app.providers.openbb_server_provider import OpenBBServerProvider
 from app.providers.alltick_provider import AllTickProvider
@@ -40,6 +41,7 @@ _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
     "Alpaca": AlpacaProvider,
     "OpenStock": OpenStockSymbolProvider,
     "Adanos": AdanosSentimentProvider,
+    "London Strategic Edge": LSEProvider,
 }
 
 _SETTINGS_DIR = Path(__file__).resolve().parent.parent / "settings"
@@ -144,6 +146,9 @@ def _read_api_key(provider: str) -> Optional[str]:
     if name == "JBlanked":
         value = os.getenv("JBLANKED_API_KEY", "").strip()
         return value or None
+    if name == "London Strategic Edge":
+        value = os.getenv("LSE_API_KEY", "").strip()
+        return value or None
     return None
 
 
@@ -156,8 +161,11 @@ def has_stored_key(provider: str) -> bool:
 
 def _store_api_key(provider: str, key: str) -> None:
     name = _canonical_name(provider)
-    if name is None or name not in ("Finnhub", "AllTick", "JBlanked"):
-        raise ValueError("Only Finnhub, AllTick and JBlanked support browser-managed API keys")
+    if name is None or name not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge"):
+        raise ValueError(
+            "Only Finnhub, AllTick, JBlanked and London Strategic Edge support "
+            "browser-managed API keys"
+        )
     value = key.strip()
     if not value:
         raise ValueError("API key must not be empty")
@@ -226,6 +234,10 @@ def get_provider(
         key = api_key if api_key is not None else _read_api_key(name)
         return AdanosSentimentProvider(api_key=key or "")
 
+    if name == "London Strategic Edge":
+        key = api_key if api_key is not None else _read_api_key(name)
+        return LSEProvider(api_key=key or "")
+
     provider_class = _PROVIDER_CLASSES[name]
     return provider_class(api_key=api_key or "")
 
@@ -245,6 +257,7 @@ def list_providers() -> dict[str, ProviderMeta]:
         "Alpaca": AlpacaProvider().meta,
         "OpenStock": OpenStockSymbolProvider("").meta,
         "Adanos": AdanosSentimentProvider("").meta,
+        "London Strategic Edge": LSEProvider("").meta,
     }
 
 
@@ -259,6 +272,7 @@ _PROVIDERS = _PROVIDER_CLASSES
 __all__ = [
     "YahooFinanceProvider",
     "CCXTProvider",
+    "LSEProvider",
     "AllTickProvider",
     "BloombergProvider",
     "FinnhubProvider",

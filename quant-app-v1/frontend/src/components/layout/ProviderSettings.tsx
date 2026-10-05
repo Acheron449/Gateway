@@ -684,7 +684,7 @@ export function ProviderSettings() {
           <span className="api-group-icon" aria-hidden="true">📈</span>
           <span className="api-group-text">
             <strong>Financial APIs — market data &amp; news</strong>
-            <span>Finnhub · AllTick · JBlanked feeds that power charts, scanner, and calendar</span>
+            <span>Finnhub · AllTick · JBlanked · London Strategic Edge feeds that power charts, scanner, and calendar</span>
           </span>
           <span className={`api-group-count ${providers.some((p) => p.configured) ? "on" : ""}`}>
             {providers.filter((p) => p.configured).length}/{providers.length} ready

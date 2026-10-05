@@ -548,6 +548,10 @@ _HISTORY_PROVIDER_IDS: dict[str, str] = {
     "openbb": "OpenBB",
     "openbb-server": "OpenBB-Server",
     "openbb server": "OpenBB-Server",
+    "lse": "London Strategic Edge",
+    "london strategic edge": "London Strategic Edge",
+    "londonstrategicedge": "London Strategic Edge",
+    "london-strategic-edge": "London Strategic Edge",
 }
 
 
@@ -559,7 +563,7 @@ def _canonical_history_provider(provider: str | None) -> str:
     canonical = _HISTORY_PROVIDER_IDS.get(wanted)
     if canonical:
         return canonical
-    for name in ("Yahoo Finance", "CCXT", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server"):
+    for name in ("Yahoo Finance", "CCXT", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server", "London Strategic Edge"):
         if name.casefold() == wanted:
             return name
     return "Yahoo Finance"
@@ -577,6 +581,15 @@ def _ccxt_available() -> bool:
     """True when the ccxt backup provider is importable in this environment."""
     try:
         instance = get_registry_provider("CCXT")
+        return bool(instance and instance.is_configured)
+    except Exception:
+        return False
+
+
+def _lse_available() -> bool:
+    """True when a London Strategic Edge key is configured (stored or env)."""
+    try:
+        instance = get_registry_provider("London Strategic Edge")
         return bool(instance and instance.is_configured)
     except Exception:
         return False
@@ -637,6 +650,13 @@ def _history_provider_catalogue() -> list[dict[str, Any]]:
             "name": "Alpaca",
             "detail": "Alpaca market-data bars · API keys required",
             "available": bool(_alpaca_credentials()),
+            "is_default": False,
+        },
+        {
+            "id": "lse",
+            "name": "London Strategic Edge",
+            "detail": "London Strategic Edge vault candles (stocks to 2003, FX 2009, crypto 2017) · free API key",
+            "available": _lse_available(),
             "is_default": False,
         },
         {
@@ -724,7 +744,7 @@ async def _fetch_history_alt_provider_sync(
             return None
         return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
 
-    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick", "CCXT"):
+    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick", "CCXT", "London Strategic Edge"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None
