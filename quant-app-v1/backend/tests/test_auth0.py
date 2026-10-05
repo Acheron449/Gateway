@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -76,7 +77,15 @@ def _claims(**overrides) -> dict:
 
 
 def _sign(claims: dict, private_key, kid: str = "gw-test-key") -> str:
-    return jose_jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
+    # Serialize to PKCS#8 PEM: python-jose 3.4.x (the version requirements.txt
+    # pins, i.e. what CI installs) cannot construct a signing key from a raw
+    # cryptography key object — only 3.5.0+ accepts those.
+    pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return jose_jwt.encode(claims, pem, algorithm="RS256", headers={"kid": kid})
 
 
 def _reset_cache() -> None:
