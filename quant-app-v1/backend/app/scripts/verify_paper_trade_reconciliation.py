@@ -177,11 +177,49 @@ def normalize(records: List[dict], cmap: ColumnMap, source_label: str) -> Dict[s
     """Parse raw records into Trade objects keyed by order_id.
     Raises on missing required fields; duplicate order_ids are flagged and the
     first occurrence wins (duplicates are reported separately)."""
-    trades: Dict[str, field=""
-    trades: ...?
-</c
-</c
-
-</c
-</c
-</c
+    trades: Dict[str, Trade] = {}
+    duplicates = 0
+    for index, record in enumerate(records, start=1):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"{source_label} record #{index}: expected an object, "
+                f"got {type(record).__name__}"
+            )
+        missing = [
+            label
+            for label, key in (
+                ("order_id", cmap.order_id),
+                ("symbol", cmap.symbol),
+                ("side", cmap.side),
+                ("qty", cmap.qty),
+                ("price", cmap.price),
+                ("timestamp", cmap.timestamp),
+            )
+            if key not in record or record[key] in (None, "")
+        ]
+        if missing:
+            raise ValueError(
+                f"{source_label} record #{index}: missing required field(s): "
+                f"{', '.join(missing)}"
+            )
+        order_id = str(record[cmap.order_id]).strip()
+        if order_id in trades:
+            duplicates += 1
+            continue  # first occurrence wins
+        trades[order_id] = Trade(
+            order_id=order_id,
+            symbol=str(record[cmap.symbol]).strip().upper(),
+            side=str(record[cmap.side]).strip().lower(),
+            qty=to_decimal(record[cmap.qty], cmap.qty, order_id),
+            price=to_decimal(record[cmap.price], cmap.price, order_id),
+            timestamp=str(record[cmap.timestamp]).strip(),
+            raw=record,
+        )
+    if duplicates:
+        # Reported separately so reconciliation stats stay per-unique-order.
+        print(
+            f"WARN {source_label}: {duplicates} duplicate order_id(s) ignored "
+            f"(first occurrence wins)",
+            file=sys.stderr,
+        )
+    return trades
