@@ -39,6 +39,8 @@ from app.api.v1.risk import router as risk_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.stocks import router as stocks_router
 from app.api.v1.strategies import router as strategies_router
+from app.api.v1.ai_trading import router as ai_trading_router
+from app.api.v1.vault import router as vault_router
 from app.api.v1.filings import router as filings_router
 from app.api.v1.watchlists import router as watchlists_router
 from app.api.v1.layouts import router as layouts_router
@@ -331,7 +333,24 @@ async def lifespan(app: FastAPI):
             "Alpaca credentials and FINNHUB_API_KEY are not set; /ws/trading has no market-data feed."
         )
 
+    # Resume the AI trader if it was left enabled (AI Trading section).
+    try:
+        from app.services import ai_trading as _ai_trading
+
+        if _ai_trading.get_config().get("enabled"):
+            _ai_trading.start()
+            logger.info("AI trading loop resumed from saved config")
+    except Exception as exc:
+        logger.warning("AI trading autostart skipped: {}", exc)
+
     yield
+
+    try:
+        from app.services import ai_trading as _ai_trading
+
+        _ai_trading.shutdown()
+    except Exception:
+        pass
 
     stream_obj = _lifespan_holder.pop("alpaca_stream", None)
     if stream_obj is not None:
@@ -392,6 +411,8 @@ app.include_router(journal_router)  # Trade Journal
 app.include_router(risk_router)  # Risk Dashboard
 app.include_router(divergence_router)  # Divergence Scorecards
 app.include_router(settings_router)  # Settings
+app.include_router(vault_router, dependencies=[Depends(get_current_user_optional)])  # Encrypted secrets vault
+app.include_router(ai_trading_router, dependencies=[Depends(get_current_user_optional)])  # AI auto-trading section
 app.include_router(llm_router)  # AI model providers, chat harness, context feeder
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
 app.include_router(openbb_router)  # OpenBB Data Integration
@@ -794,7 +815,9 @@ async def get_market_history(
 
 
 _quotes_cache: dict[str, Any] = {"at": 0.0, "rows": []}
-_QUOTES_TTL_SECONDS = 45.0
+# Short default so the user-selected data provider is polled frequently and
+# quotes stay accurate; GATEWAY_QUOTES_TTL tunes it per deployment.
+_QUOTES_TTL_SECONDS = float(os.getenv("GATEWAY_QUOTES_TTL", "10"))
 
 
 def _fetch_quotes_yfinance_sync(symbols: list[str]) -> list[dict[str, Any]]:

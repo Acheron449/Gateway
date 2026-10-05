@@ -5,6 +5,7 @@ import { API_BASE, WS_BASE } from "../../lib/constants";
 import { useHistory } from "../../hooks/useHistory";
 import { useSocket } from "../../hooks/useSocket";
 import { useChartPrefs } from "../../lib/chartPrefs";
+import { useRefreshMs } from "../../lib/refresh";
 import { MainChart } from "../charts/MainChart";
 import { IndicatorsButton } from "../charts/IndicatorPanel";
 import { ProviderSelect } from "../charts/ProviderSelect";
@@ -268,6 +269,152 @@ async function fetchPortfolio(): Promise<Portfolio> {
   return res.json();
 }
 
+// --- Live (broker) desk helpers -------------------------------------------
+
+async function readLiveError(res: Response): Promise<string> {
+  try {
+    const payload = await res.json();
+    if (typeof payload?.detail === "string") return payload.detail;
+  } catch {
+    /* fall through */
+  }
+  return `Live account unavailable (${res.status})`;
+}
+
+interface LiveAccount {
+  account_number?: string;
+  status?: string;
+  cash?: number;
+  equity?: number;
+  buying_power?: number;
+}
+
+interface LivePositionRow {
+  symbol: string;
+  qty: number;
+  avg_entry_price: number;
+  market_value: number;
+  unrealized_pl: number;
+}
+
+interface LiveOrderRow {
+  id: string;
+  symbol: string;
+  side: string;
+  order_type: string;
+  qty: number;
+  filled_qty: number;
+  filled_avg_price: number | null;
+  limit_price: number | null;
+  stop_price: number | null;
+  status: string;
+  created_at: string;
+}
+
+interface LiveActivityRow {
+  id: string;
+  symbol?: string;
+  side?: string;
+  qty?: string | number;
+  price?: string | number;
+  transaction_time?: string;
+  type?: string;
+}
+
+const LIVE_TERMINAL_STATUSES = new Set(["filled", "canceled", "expired", "rejected", "replaced", "done_for_day"]);
+
+/** Normalize the broker account/positions/orders into the desk's Portfolio shape. */
+async function fetchLivePortfolio(): Promise<Portfolio> {
+  const [acctRes, posRes, ordRes, actRes] = await Promise.all([
+    fetch(`${API_BASE}/live/account`),
+    fetch(`${API_BASE}/live/positions`),
+    fetch(`${API_BASE}/live/orders?status=open&limit=100`),
+    fetch(`${API_BASE}/live/activities?activity_type=FILL&page_size=25`),
+  ]);
+  if (!acctRes.ok) throw new Error(await readLiveError(acctRes));
+
+  const account = (await acctRes.json()) as LiveAccount;
+  const positions = posRes.ok ? ((await posRes.json()) as LivePositionRow[]) : [];
+  const orders = ordRes.ok ? ((await ordRes.json()) as LiveOrderRow[]) : [];
+  const activities = actRes.ok ? ((await actRes.json()) as LiveActivityRow[]) : [];
+
+  return {
+    portfolio_id: `live:${account.account_number ?? "account"}`,
+    cash: account.cash ?? 0,
+    equity: account.equity ?? 0,
+    buying_power: account.buying_power ?? 0,
+    positions: positions.map((p) => ({
+      instrument_id: p.symbol,
+      quantity: Number(p.qty),
+      avg_cost: Number(p.avg_entry_price),
+      market_value: Number(p.market_value),
+      unrealized_pnl: Number(p.unrealized_pl),
+      realized_pnl: 0,
+    })),
+    open_orders: orders
+      .filter((o) => !LIVE_TERMINAL_STATUSES.has(o.status))
+      .map((o) => ({
+        id: o.id,
+        instrument_id: o.symbol,
+        side: o.side,
+        type: o.order_type,
+        qty: Number(o.qty),
+        limit_price: o.limit_price,
+        stop_price: o.stop_price,
+        status: o.status,
+        filled_qty: Number(o.filled_qty),
+        avg_fill_price: o.filled_avg_price,
+        created_at: o.created_at,
+      })),
+    recent_fills: activities
+      .filter((a) => a.symbol)
+      .map((a) => ({
+        id: a.id,
+        order_id: a.id,
+        instrument_id: a.symbol ?? "",
+        side: String(a.side ?? "buy").toLowerCase(),
+        qty: Number(a.qty ?? 0),
+        price: Number(a.price ?? 0),
+        commission: 0,
+        timestamp: a.transaction_time ?? new Date().toISOString(),
+        liquidity: null,
+      })),
+  };
+}
+
+/** Place a real order through the broker (Live Trading section). */
+async function submitLiveOrder(
+  order: OrderRequest,
+): Promise<{ order_id: string; status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/live/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      symbol: order.instrument,
+      qty: order.quantity,
+      side: order.side,
+      order_type: order.order_type,
+      time_in_force: "day",
+      limit_price: order.limit_price ?? undefined,
+      stop_price: order.stop_price ?? undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(await readLiveError(res));
+  const payload = (await res.json()) as { id: string; status: string };
+  return {
+    order_id: payload.id,
+    status: payload.status,
+    message: `Live order ${payload.status}`,
+  };
+}
+
+async function cancelLiveOrder(orderId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/live/orders/${encodeURIComponent(orderId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await readLiveError(res));
+}
+
 async function submitOrder(order: OrderRequest): Promise<{ order_id: string; status: string; message: string }> {
   const res = await fetch(`${API_BASE}/portfolio/orders`, {
     method: "POST",
@@ -300,14 +447,27 @@ async function simulateFill(orderId: string): Promise<{ filled: boolean; price?:
  * Broker-style paper trading desk: left section rail, watchlist, quote list,
  * candle chart, and a right-hand trade ticket with live statistics.
  */
-export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
+export function PaperTrading({
+  selectedSymbol,
+  mode = "paper",
+}: {
+  selectedSymbol?: string;
+  /** "paper" = simulated desk (default); "live" = real broker account (Alpaca). */
+  mode?: "paper" | "live";
+}) {
   const queryClient = useQueryClient();
+  const isLive = mode === "live";
+  // User-selected poll rate (Settings → Data refresh): quotes, statistics and
+  // chart candles all refetch this often so the selected provider stays fresh.
+  const refreshMs = useRefreshMs();
 
   const [section, setSection] = useState<DeskSection>("trade");
   const [groupId, setGroupId] = useState("all");
   const [symbol, setSymbol] = useState((selectedSymbol ?? "AAPL").toUpperCase());
   const [ticketTab, setTicketTab] = useState<DeskTicketTab>("overview");
   const [tfIndex, setTfIndex] = useState(3); // 1D default
+  // Bumped by the desk "Now" button → MainChart recenters on the latest candle.
+  const [nowSignal, setNowSignal] = useState(0);
   const [sortKey, setSortKey] = useState<"name" | "change">("name");
 
   const [orderForm, setOrderForm] = useState({
@@ -425,9 +585,11 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const tf = TF_CHIPS.find((_, i) => i === tfIndex) ?? DEFAULT_TF;
 
   const { data: portfolio, isLoading, error: loadError, refetch } = useQuery({
-    queryKey: ["portfolio"],
-    queryFn: fetchPortfolio,
-    refetchInterval: live ? false : 5000,
+    queryKey: ["portfolio", mode],
+    queryFn: isLive ? fetchLivePortfolio : fetchPortfolio,
+    // Live: poll at the user's refresh rate. Paper: the authenticated
+    // WebSocket streams updates (and auto-fills) while connected.
+    refetchInterval: isLive ? refreshMs : live ? false : 5000,
   });
 
   // Batch quotes for the active watchlist (server caches per symbol).
@@ -441,8 +603,8 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
       const payload = (await res.json()) as { quotes?: QuoteRow[] };
       return payload.quotes ?? [];
     },
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    refetchInterval: refreshMs,
+    staleTime: Math.floor(refreshMs / 2),
   });
 
   // Intraday bars power the Live Statistics block (5m/1h changes + ranges).
@@ -453,8 +615,8 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
       if (!res.ok) throw new Error(`${res.status}`);
       return (await res.json()) as { time: number; open: number; high: number; low: number; close: number }[];
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: refreshMs,
+    staleTime: Math.floor(refreshMs / 2),
   });
 
   const { data: newsItems = [] } = useQuery({
@@ -494,6 +656,7 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     tf.tf,
     tf.limit ?? 500,
     chartProvider,
+    refreshMs,
   );
   const liveUpdate = useSocket(symbol);
 
@@ -564,9 +727,10 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     };
   }, []);
 
-  // Authenticated live stream: server pushes portfolio state each second and
-  // auto-fills accepted orders while connected.
+  // Authenticated live stream (paper desk only): server pushes portfolio
+  // state each second and auto-fills accepted orders while connected.
   useEffect(() => {
+    if (isLive) return undefined;
     const token = localStorage.getItem("gateway_auth_token");
     if (!token) return undefined;
 
@@ -587,7 +751,7 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
         try {
           const msg = JSON.parse(event.data as string) as { type?: string; data?: Portfolio };
           if (msg.type === "portfolio_update" && msg.data) {
-            queryClient.setQueryData(["portfolio"], msg.data);
+            queryClient.setQueryData(["portfolio", "paper"], msg.data);
           }
         } catch {
           /* ignore malformed frames */
@@ -608,11 +772,17 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
       wsRef.current = null;
       setLive(false);
     };
-  }, [queryClient]);
+  }, [queryClient, isLive]);
 
   const positions = useMemo(() => portfolio?.positions ?? [], [portfolio]);
   const openOrders = useMemo(() => portfolio?.open_orders ?? [], [portfolio]);
   const recentFills = useMemo(() => portfolio?.recent_fills ?? [], [portfolio]);
+
+  // Open position for the instrument currently shown in the trade ticket.
+  const activePosition = useMemo(
+    () => positions.find((p) => p.instrument_id === symbol) ?? null,
+    [positions, symbol],
+  );
 
   const rows = useMemo(() => {
     const mapped = group.symbols.map((sym) => {
@@ -650,7 +820,7 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
 
   const estimatedCost = useMemo(() => {
     if (lastPrice === null) return null;
-    const px = orderForm.side === "buy" ? two!.buy : two!.sell;
+    const px = orderForm.side === "buy" ? (two?.buy ?? lastPrice) : (two?.sell ?? lastPrice);
     return px * orderForm.quantity;
   }, [lastPrice, two, orderForm.side, orderForm.quantity]);
 
@@ -660,20 +830,79 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     setNotice(null);
     setSubmitting(true);
     try {
-      const result = await submitOrder({
+      const request: OrderRequest = {
         instrument: symbol.trim().toUpperCase(),
         side: orderForm.side,
         order_type: orderForm.order_type,
         quantity: Number(orderForm.quantity),
         limit_price: orderForm.order_type === "limit" ? Number(orderForm.limit_price) : undefined,
         stop_price: orderForm.order_type === "stop" ? Number(orderForm.stop_price) : undefined,
-      });
-      setNotice(`${result.message} — order ${result.order_id.slice(0, 8)}`);
+      };
+      const result = isLive ? await submitLiveOrder(request) : await submitOrder(request);
+
+      // Paper desk: market orders (and marketable limits/stops) fill straight
+      // away so the Buy/Sell ticket actually opens the position instead of
+      // resting as an unfilled order. Live orders fill at the broker.
+      let fillNote = "";
+      if (!isLive) {
+        try {
+          const fill = await simulateFill(result.order_id);
+          if (fill.filled) {
+            fillNote = ` · filled @ ${money(fill.price)}`;
+            setSection("positions");
+          }
+        } catch {
+          /* no quote or market closed — the order stays working */
+        }
+      }
+
+      setNotice(`${result.message} — order ${result.order_id.slice(0, 8)}${fillNote}`);
       void refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Order failed");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleCancelOrder = async (orderId: string) => {
+    setFillBusyId(orderId);
+    setError(null);
+    setNotice(null);
+    try {
+      await cancelLiveOrder(orderId);
+      setNotice(`Order ${orderId.slice(0, 8)} canceled`);
+      void refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cancel failed");
+    } finally {
+      setFillBusyId(null);
+    }
+  };
+
+  /** Broker-level kill switch: blocks new live orders until reset. */
+  const handleKillSwitch = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      const statusRes = await fetch(`${API_BASE}/live/kill-switch/status`);
+      const status = statusRes.ok ? ((await statusRes.json()) as { active?: boolean }) : {};
+      if (status.active) {
+        const res = await fetch(`${API_BASE}/live/kill-switch/deactivate`, { method: "POST" });
+        if (!res.ok) throw new Error(await readLiveError(res));
+        setNotice("Kill switch deactivated — live orders allowed again.");
+      } else {
+        if (!window.confirm("Activate the kill switch? New live orders will be blocked until you reset it.")) return;
+        const res = await fetch(`${API_BASE}/live/kill-switch/activate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "Activated from the live trading desk" }),
+        });
+        if (!res.ok) throw new Error(await readLiveError(res));
+        setNotice("Kill switch ACTIVATED — new live orders are blocked.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Kill switch failed");
     }
   };
 
@@ -693,13 +922,14 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   };
 
   if (isLoading) {
-    return <div className="paper-loading">Loading paper portfolio…</div>;
+    return <div className="paper-loading">{isLive ? "Loading live account…" : "Loading paper portfolio…"}</div>;
   }
 
   if (loadError) {
     return (
       <div className="paper-error" role="alert">
-        Paper portfolio unavailable: {loadError instanceof Error ? loadError.message : "unknown error"}
+        {isLive ? "Live account unavailable" : "Paper portfolio unavailable"}:{" "}
+        {loadError instanceof Error ? loadError.message : "unknown error"}
         <button className="btn-secondary" onClick={() => void refetch()}>
           Retry
         </button>
@@ -721,12 +951,15 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
       )}
 
       {/* Account status — directly under the page header/description */}
-      <div className="desk-status">
+      <div className={`desk-status ${isLive ? "live" : ""}`}>
         <div className="desk-status-metrics">
           <span><b>Equity</b> ${money(portfolio?.equity)}</span>
           <span><b>Cash</b> ${money(portfolio?.cash)}</span>
           <span><b>Buying power</b> ${money(portfolio?.buying_power)}</span>
           <span><b>Positions</b> {positions.length}</span>
+          {isLive && portfolio?.portfolio_id ? (
+            <span className="desk-account-id"><b>Account</b> {portfolio.portfolio_id.replace("live:", "")}</span>
+          ) : null}
         </div>
       </div>
 
@@ -745,11 +978,20 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
             </button>
           ))}
           <div className="desk-rail-foot">
-            <span className={`paper-live ${live ? "on" : ""}`}>{live ? "Live" : "Poll"}</span>
+            <span className={`paper-live ${live ? "on" : ""}`}>
+              {isLive ? "Broker" : live ? "Live" : "Poll"}
+            </span>
             <span className={`paper-session ${marketOpen ? "open" : "closed"}`}>
               {marketOpen === null ? "…" : marketOpen ? "Open" : "Closed"}
             </span>
-            <span className="mode-badge paper">Paper</span>
+            <span className={`mode-badge ${isLive ? "live" : "paper"}`}>
+              {isLive ? "LIVE" : "Paper"}
+            </span>
+            {isLive && (
+              <button className="desk-kill-switch" onClick={() => void handleKillSwitch()} title="Broker kill switch — block new live orders">
+                🛑 Kill switch
+              </button>
+            )}
           </div>
         </nav>
 
@@ -905,6 +1147,13 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                     </span>
                   )}
                   <div className="desk-chart-tools">
+                    <button
+                      className="tf-button chart-now-btn"
+                      onClick={() => setNowSignal((n) => n + 1)}
+                      title="Jump back to the most recent candle"
+                    >
+                      ⏱ Now
+                    </button>
                     <ProviderSelect />
                     <IndicatorsButton />
                   </div>
@@ -916,6 +1165,7 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                     loading={chartLoading}
                     liveUpdate={liveUpdate}
                     indicators={chartIndicators}
+                    nowSignal={nowSignal}
                   />
                 </div>
                 <div className="desk-tf-row" role="group" aria-label="Chart timeframe">
@@ -982,13 +1232,23 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                         <td>{o.limit_price ? money(o.limit_price) : o.stop_price ? money(o.stop_price) : "—"}</td>
                         <td>{o.status}</td>
                         <td>
-                          <button
-                            className="btn-secondary paper-fill-btn"
-                            onClick={() => void handleSimulateFill(o.id)}
-                            disabled={fillBusyId === o.id}
-                          >
-                            {fillBusyId === o.id ? "…" : "Simulate fill"}
-                          </button>
+                          {isLive ? (
+                            <button
+                              className="btn-secondary paper-fill-btn"
+                              onClick={() => void handleCancelOrder(o.id)}
+                              disabled={fillBusyId === o.id}
+                            >
+                              {fillBusyId === o.id ? "…" : "Cancel"}
+                            </button>
+                          ) : (
+                            <button
+                              className="btn-secondary paper-fill-btn"
+                              onClick={() => void handleSimulateFill(o.id)}
+                              disabled={fillBusyId === o.id}
+                            >
+                              {fillBusyId === o.id ? "…" : "Simulate fill"}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1067,7 +1327,9 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                 </div>
               </div>
               <p className="paper-empty">
-                Simulated cash only — orders fill against live quotes with a {"\u201c"}paper{"\u201d"} spread and commission.
+                {isLive
+                  ? "Real funds in your linked broker account — orders route to the exchange. Positions and fills refresh from the broker feed."
+                  : "Simulated cash only — orders fill against live quotes with a \u201cpaper\u201d spread and commission."}
               </p>
             </section>
           )}
@@ -1118,6 +1380,27 @@ export function PaperTrading({ selectedSymbol }: { selectedSymbol?: string }) {
               <span>Buy</span>
               <b>{two ? fmtPrice(two.buy) : "—"}</b>
             </button>
+          </div>
+
+          {/* Live position for the selected instrument (opens with the ticket) */}
+          <div className={`desk-position ${activePosition ? "has" : ""}`}>
+            {activePosition ? (
+              <>
+                <span className="desk-position-label">Your position</span>
+                <span className="desk-position-qty">
+                  {activePosition.quantity} × {symbol}
+                </span>
+                <span className="desk-position-meta">
+                  avg {money(activePosition.avg_cost)} · MV {money(activePosition.market_value)}
+                </span>
+                <span className={`desk-position-pnl ${activePosition.unrealized_pnl >= 0 ? "up" : "down"}`}>
+                  {activePosition.unrealized_pnl >= 0 ? "+" : ""}
+                  {money(activePosition.unrealized_pnl)}
+                </span>
+              </>
+            ) : (
+              <span className="desk-position-empty">No open position in {symbol}</span>
+            )}
           </div>
 
           <div className="desk-bites">

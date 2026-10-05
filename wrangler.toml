@@ -1,0 +1,25 @@
+# Cloudflare Workers configuration for the Gateway frontend.
+#
+# This file is what the repo's Workers Builds pipeline executes:
+#   - production trigger (main branch):        npx wrangler deploy
+#   - non-production trigger (any other br.):  npx wrangler versions upload
+#
+# Without this file wrangler fails with:
+#   "Missing entry-point to Worker script or to assets directory"
+# — the cause of every failed build in the Cloudflare dashboard.
+#
+# The Worker is assets-only: it serves the built Vite bundle with SPA
+# fallback, replacing the empty `gateway` script created on 2026-09-20.
+
+name = "gateway"
+compatibility_date = "2025-01-01"
+
+[assets]
+directory = "quant-app-v1/frontend/dist"
+not_found_handling = "single-page-application"
+
+# The build command lives on the Cloudflare trigger (Workers Builds settings):
+#   cd quant-app-v1/frontend && npm ci && npm run build
+#
+# The FastAPI backend runs separately (container/PaaS). Point the frontend at
+# it with VITE_API_BASE at build time — see docs/deployment.md.

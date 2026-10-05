@@ -19,6 +19,7 @@ interface JournalEntry {
   exit_context?: string;
   tags: string[];
   status: "open" | "closed";
+  source?: "paper" | "actual" | "manual";
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +39,12 @@ interface JournalStats {
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 const SIDE_LABELS = { buy: "Buy", sell: "Sell" };
+
+const SOURCE_LABELS: Record<string, string> = {
+  paper: "Paper",
+  actual: "Actual",
+  manual: "Manual",
+};
 
 function ymd(date: Date): string {
   const y = date.getFullYear();
@@ -73,6 +80,13 @@ export function TradeJournal() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"calendar" | "table">("calendar");
   const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "paper" | "actual" | "manual">("all");
+  const [compare, setCompare] = useState<{
+    paper?: { total_pnl: number; total_trades: number; win_rate: number };
+    actual?: { total_pnl: number; total_trades: number; win_rate: number };
+  }>({});
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
@@ -97,6 +111,7 @@ export function TradeJournal() {
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.append("status", statusFilter);
+      if (sourceFilter !== "all") params.append("source", sourceFilter);
       const res = await fetch(`${API_BASE}/journal?${params.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       const response = await res.json();
@@ -107,7 +122,7 @@ export function TradeJournal() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, sourceFilter]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -119,13 +134,53 @@ export function TradeJournal() {
     }
   }, []);
 
+  // Paper vs actual performance comparison (fetched in parallel).
+  const fetchCompare = useCallback(async () => {
+    try {
+      const [paperRes, actualRes] = await Promise.all([
+        fetch(`${API_BASE}/journal/stats?source=paper`),
+        fetch(`${API_BASE}/journal/stats?source=actual`),
+      ]);
+      const next: { paper?: JournalStats; actual?: JournalStats } = {};
+      if (paperRes.ok) next.paper = await paperRes.json();
+      if (actualRes.ok) next.actual = await actualRes.json();
+      setCompare(next);
+    } catch {
+      /* comparison is decoration */
+    }
+  }, []);
+
   useEffect(() => {
     fetchEntries();
   }, [fetchEntries]);
 
   useEffect(() => {
     fetchStats();
-  }, [fetchStats]);
+    fetchCompare();
+  }, [fetchStats, fetchCompare]);
+
+  // Pull broker fills into the journal as "actual" trades.
+  const handleSyncLive = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/journal/sync-live`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        imported?: number;
+        skipped?: number;
+      };
+      if (!res.ok) throw new Error(body.detail ?? "Sync failed");
+      setSyncMsg(`Imported ${body.imported ?? 0} new fills (${body.skipped ?? 0} already logged)`);
+      await fetchEntries();
+      fetchCompare();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync actual trades");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleCreateEntry = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -274,6 +329,27 @@ export function TradeJournal() {
             <option value="open">Open</option>
             <option value="closed">Closed</option>
           </select>
+          <select
+            value={sourceFilter}
+            onChange={(e) =>
+              setSourceFilter(e.target.value as "all" | "paper" | "actual" | "manual")
+            }
+            className="filter-select"
+            aria-label="Filter by trade source (actual vs paper)"
+          >
+            <option value="all">Actual + Paper</option>
+            <option value="actual">Actual trades</option>
+            <option value="paper">Paper trades</option>
+            <option value="manual">Manual entries</option>
+          </select>
+          <button
+            className="btn-secondary"
+            onClick={() => void handleSyncLive()}
+            disabled={syncing}
+            title="Import broker fills so actual trades can be compared with paper trades"
+          >
+            {syncing ? "Syncing…" : "⤓ Sync actual trades"}
+          </button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>
             + New trade
           </button>
@@ -284,6 +360,13 @@ export function TradeJournal() {
         <div className="journal-error" role="alert">
           {error}
           <button onClick={() => setError(null)}>Dismiss</button>
+        </div>
+      )}
+
+      {syncMsg && (
+        <div className="journal-error" role="status" style={{ borderColor: "var(--border-secondary, #444c56)" }}>
+          {syncMsg}
+          <button onClick={() => setSyncMsg(null)}>Dismiss</button>
         </div>
       )}
 
@@ -309,6 +392,30 @@ export function TradeJournal() {
           <div className="stat-card">
             <span className="stat-value">{stats.profit_factor.toFixed(2)}</span>
             <span className="stat-label">Profit factor</span>
+          </div>
+          <div
+            className="stat-card"
+            title="Closed PnL from real broker fills (synced)"
+            style={{ borderLeft: "3px solid #3fb950" }}
+          >
+            <span className={`stat-value ${
+              (compare.actual?.total_pnl ?? 0) >= 0 ? "positive" : "negative"
+            }`}>
+              {(compare.actual?.total_pnl ?? 0) >= 0 ? "+" : ""}
+              {(compare.actual?.total_pnl ?? 0).toFixed(2)}
+            </span>
+            <span className="stat-label">Actual PnL · {compare.actual?.total_trades ?? 0} trades</span>
+          </div>
+          <div
+            className="stat-card"
+            title="Closed PnL from simulated paper fills"
+            style={{ borderLeft: "3px solid #58a6ff" }}
+          >
+            <span className={`stat-value ${(compare.paper?.total_pnl ?? 0) >= 0 ? "positive" : "negative"}`}>
+              {(compare.paper?.total_pnl ?? 0) >= 0 ? "+" : ""}
+              {(compare.paper?.total_pnl ?? 0).toFixed(2)}
+            </span>
+            <span className="stat-label">Paper PnL · {compare.paper?.total_trades ?? 0} trades</span>
           </div>
         </div>
       )}
@@ -416,6 +523,9 @@ export function TradeJournal() {
                           <span className="day-trade-symbol">{entry.symbol}</span>
                           <span className={`side-badge ${entry.side}`}>{SIDE_LABELS[entry.side]}</span>
                           <span className={`status-badge ${entry.status}`}>{entry.status === "open" ? "Open" : "Closed"}</span>
+                          {entry.source && entry.source !== "manual" && (
+                            <span className={`tag source-${entry.source}`}>{SOURCE_LABELS[entry.source] ?? entry.source}</span>
+                          )}
                         </div>
                         <div className="day-trade-meta">
                           {entry.quantity} @ {entry.entry_price.toFixed(2)}
@@ -445,6 +555,7 @@ export function TradeJournal() {
                 <th>Exit</th>
                 <th>PnL</th>
                 <th>Status</th>
+                <th>Source</th>
                 <th>Tags</th>
               </tr>
             </thead>
@@ -465,6 +576,11 @@ export function TradeJournal() {
                     <td>
                       <span className={`status-badge ${entry.status}`}>{entry.status === "open" ? "Open" : "Closed"}</span>
                     </td>
+                    <td>
+                      <span className={`tag source-${entry.source ?? "manual"}`}>
+                        {SOURCE_LABELS[entry.source ?? "manual"] ?? entry.source ?? "Manual"}
+                      </span>
+                    </td>
                     <td className="tags-cell">
                       {entry.tags.map((t) => (
                         <span key={t} className="tag">
@@ -477,7 +593,7 @@ export function TradeJournal() {
               })}
               {filteredEntries.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="empty-state">
+                  <td colSpan={10} className="empty-state">
                     No trades found
                   </td>
                 </tr>
@@ -616,6 +732,12 @@ export function TradeJournal() {
                   <span>{detailEntry.exit_time ? new Date(detailEntry.exit_time).toLocaleString() : "—"}</span>
                 </div>
                 <div className="summary-row"><span>Tags</span><span>{detailEntry.tags.join(", ") || "—"}</span></div>
+                <div className="summary-row">
+                  <span>Source</span>
+                  <span className={`tag source-${detailEntry.source ?? "manual"}`}>
+                    {SOURCE_LABELS[detailEntry.source ?? "manual"] ?? detailEntry.source ?? "Manual"}
+                  </span>
+                </div>
               </div>
 
               <div className="review-detail">

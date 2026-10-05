@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { ChartContainer } from "../../components/ChartContainer";
 import { AssetSelector } from "../../components/features/AssetSelector";
 import { PaperTrading } from "../../components/features/PaperTrading";
+import { AiTrading } from "../../components/features/AiTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
 import { AgenticLab } from "./AgenticLab";
@@ -99,6 +100,32 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
             <p className="view-description">Simulated portfolio and order management</p>
           </div>
           <PaperTrading selectedSymbol={selectedSymbol} />
+        </div>
+      );
+    case "live-trading":
+      return (
+        <div className="canvas-view canvas-view-wide">
+          <div className="view-header">
+            <h1>Live Trading</h1>
+            <p className="view-description">
+              Real-money orders through your broker — the same desk as paper trading,
+              with account, positions, orders and fills fed by the live account
+              (UI patterned after professional terminals such as nautilus_trader).
+            </p>
+          </div>
+          <PaperTrading selectedSymbol={selectedSymbol} mode="live" />
+        </div>
+      );
+    case "ai-trading":
+      return (
+        <div className="canvas-view canvas-view-wide">
+          <div className="view-header">
+            <h1>AI Trading</h1>
+            <p className="view-description">
+              Let the AI allocate funds and trade using lessons from past trades, data and backtests
+            </p>
+          </div>
+          <AiTrading selectedSymbol={selectedSymbol} />
         </div>
       );
     case "journal":

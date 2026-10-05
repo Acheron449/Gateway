@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useHistory, HISTORY_TFS, type HistoryTf } from "../hooks/useHistory";
 import { useSocket } from "../hooks/useSocket";
 import { useChartPrefs } from "../lib/chartPrefs";
+import { useRefreshMs } from "../lib/refresh";
 import type { PatternSignal } from "../types/market";
 
 import { MainChart } from "./charts/MainChart";
@@ -25,8 +26,12 @@ const KRONOS_FREQ_BY_TF: Record<string, string> = {
 
 export function ChartContainer({ ticker }: ChartContainerProps) {
   const [timeframe, setTimeframe] = useState<HistoryTf>("1h");
+  // Bumped by the "Now" button → MainChart recenters on the latest candle.
+  const [nowSignal, setNowSignal] = useState(0);
   const [{ provider, indicators }] = useChartPrefs();
-  const { data, loading, error } = useHistory(ticker, timeframe, 500, provider);
+  // User-selected refresh rate (Settings → Data refresh) keeps the chart polled.
+  const refreshMs = useRefreshMs();
+  const { data, loading, error } = useHistory(ticker, timeframe, 500, provider, refreshMs);
   const liveUpdate = useSocket(ticker);
   const [patterns, setPatterns] = useState<PatternSignal[]>([]);
 
@@ -72,6 +77,13 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
             </button>
           ))}
         </div>
+        <button
+          className="tf-button chart-now-btn"
+          onClick={() => setNowSignal((n) => n + 1)}
+          title="Jump back to the most recent candle"
+        >
+          ⏱ Now
+        </button>
         <ProviderSelect />
         <IndicatorsButton />
         <IndicatorOverlay rsi={rsi} />
@@ -83,6 +95,7 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
         loading={loading}
         liveUpdate={liveUpdate}
         indicators={indicators}
+        nowSignal={nowSignal}
       />
       <KronosForecast
         bars={data}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_BASE } from "../../lib/constants";
+import { REFRESH_OPTIONS, setRefreshMs, useRefreshMs } from "../../lib/refresh";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 import { LlmProviderSettings } from "./LlmProviderSettings";
@@ -31,6 +32,180 @@ interface TestResult {
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("gateway_auth_token");
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+interface VaultSecretMeta {
+  name: string;
+  note: string;
+  length: number;
+  updated_at?: string;
+}
+
+/** Encrypted secrets vault — arbitrary API keys stored Fernet-encrypted. */
+function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) {
+  const { openAuth } = useAuthUI();
+  const [secrets, setSecrets] = useState<VaultSecretMeta[]>([]);
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState("");
+  const [revealed, setRevealed] = useState<{ name: string; value: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/vault`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(await readResponseError(res));
+      const data: unknown = await res.json();
+      setSecrets(Array.isArray(data) ? (data as VaultSecretMeta[]) : []);
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to load the secrets vault"));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) void load();
+  }, [isAuthenticated, load]);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !value.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(name.trim())}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ value, note }),
+      });
+      if (!res.ok) throw new Error(await readResponseError(res));
+      setValue("");
+      setNote("");
+      setName("");
+      await load();
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to store the secret"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReveal = async (secretName: string) => {
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(secretName)}/reveal`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await readResponseError(res));
+      const data = (await res.json()) as { value?: string };
+      setRevealed({ name: secretName, value: data.value ?? "" });
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to decrypt the secret"));
+    }
+  };
+
+  const handleDelete = async (secretName: string) => {
+    if (!window.confirm(`Delete secret "${secretName}"?`)) return;
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(secretName)}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await readResponseError(res));
+      if (revealed?.name === secretName) setRevealed(null);
+      await load();
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to delete the secret"));
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <h2>Secrets vault — encrypted at rest</h2>
+      <p className="settings-description">
+        Store any API token (Supabase, Cloudflare, exchanges…) here. Values are Fernet-encrypted
+        before they touch disk and are only decrypted for signed-in requests.
+      </p>
+
+      {!isAuthenticated ? (
+        <div className="auth-gate-card">
+          <div className="auth-gate-copy">
+            <h2>Sign in to use the vault</h2>
+            <p>Encrypted secret storage requires an account.</p>
+          </div>
+          <div className="auth-gate-actions">
+            <button className="btn-primary" onClick={() => openAuth("login")}>Sign in</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <form className="vault-form" onSubmit={handleSave}>
+            <input
+              type="text"
+              placeholder="Name (e.g. cloudflare-api-token)"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Secret value"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              required
+            />
+            <input
+              type="text"
+              placeholder="Note (optional)"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <button type="submit" className="btn-primary" disabled={busy}>
+              {busy ? "Encrypting…" : "🔒 Store secret"}
+            </button>
+          </form>
+
+          {error && <div className="settings-error" role="alert">{error}</div>}
+
+          {secrets.length === 0 ? (
+            <p className="settings-description">No secrets stored yet.</p>
+          ) : (
+            <table className="provider-table vault-table">
+              <thead>
+                <tr><th>Name</th><th>Note</th><th>Length</th><th>Updated</th><th /></tr>
+              </thead>
+              <tbody>
+                {secrets.map((secret) => (
+                  <tr key={secret.name}>
+                    <td>{secret.name}</td>
+                    <td>{secret.note || "—"}</td>
+                    <td>{secret.length} chars</td>
+                    <td>{secret.updated_at ? new Date(secret.updated_at).toLocaleString() : "—"}</td>
+                    <td>
+                      <button className="btn-secondary" onClick={() => void handleReveal(secret.name)}>
+                        Reveal
+                      </button>{" "}
+                      <button className="btn-secondary" onClick={() => void handleDelete(secret.name)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {revealed && (
+            <div className="settings-error" role="status" style={{ borderColor: "var(--border-secondary)" }}>
+              <code>{revealed.name}: {revealed.value}</code>
+              <button className="btn-secondary" onClick={() => setRevealed(null)}>Hide</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -262,6 +437,7 @@ function ProviderCard({
 export function ProviderSettings() {
   const { isAuthenticated } = useAuth();
   const { openAuth } = useAuthUI();
+  const refreshMs = useRefreshMs();
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [inputApiKey, setInputApiKey] = useState("");
@@ -447,6 +623,27 @@ export function ProviderSettings() {
         </p>
       </div>
 
+      <div className="settings-section">
+        <h2>Data refresh — how often providers are polled</h2>
+        <p className="settings-description">
+          Controls how frequently quotes, live statistics and chart candles refetch from the
+          market-data provider you selected (server-side quote caches default to 10s via{" "}
+          <code>GATEWAY_QUOTES_TTL</code>).
+        </p>
+        <div className="refresh-options" role="group" aria-label="Data refresh rate">
+          {REFRESH_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              className={`tf-button ${refreshMs === option.value ? "active" : ""}`}
+              onClick={() => setRefreshMs(option.value)}
+              aria-pressed={refreshMs === option.value}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {!isAuthenticated && (
         <div className="auth-gate-card">
           <div className="auth-gate-icon" aria-hidden="true">🔒</div>
@@ -519,6 +716,8 @@ export function ProviderSettings() {
       </details>
 
       <LlmProviderSettings />
+
+      <SecretsVaultSection isAuthenticated={isAuthenticated} />
 
       <div className="settings-section">
         <h2>Encryption key management</h2>

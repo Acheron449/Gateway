@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.database import get_connection, init_db
+from app.services import journal_log
 
 
 router = APIRouter(prefix="/journal", tags=["journal"])
@@ -24,6 +25,7 @@ class JournalEntryCreate(BaseModel):
     hypothesis: str = Field(min_length=1)
     entry_context: str = ""
     tags: List[str] = Field(default_factory=list)
+    source: str = Field(default="manual", pattern="^(paper|actual|manual)$")
 
 
 class JournalEntryUpdate(BaseModel):
@@ -53,6 +55,8 @@ class JournalEntryResponse(BaseModel):
     lessons: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     status: str
+    source: str = "manual"
+    fill_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -72,42 +76,7 @@ class JournalStatsResponse(BaseModel):
 # --- Database Helpers ---
 
 def _get_journal_table():
-    init_db()
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS journal_entries (
-                id TEXT PRIMARY KEY,
-                symbol TEXT NOT NULL,
-                side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
-                quantity REAL NOT NULL,
-                entry_price REAL NOT NULL,
-                entry_time TEXT NOT NULL,
-                hypothesis TEXT NOT NULL,
-                entry_context TEXT DEFAULT '',
-                exit_price REAL,
-                exit_time TEXT,
-                exit_context TEXT,
-                pnl REAL,
-                pnl_pct REAL,
-                rating INTEGER CHECK(rating BETWEEN 1 AND 5),
-                lessons TEXT,
-                tags TEXT DEFAULT '[]',
-                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_journal_symbol ON journal_entries(symbol)
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_journal_status ON journal_entries(status)
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_journal_created ON journal_entries(created_at)
-        """)
-        conn.commit()
+    journal_log.ensure_journal_tables()
 
 
 def _row_to_entry(row) -> dict:
@@ -129,6 +98,8 @@ def _row_to_entry(row) -> dict:
         "lessons": row["lessons"],
         "tags": json.loads(row["tags"]),
         "status": row["status"],
+        "source": row["source"] if "source" in row.keys() else "manual",
+        "fill_id": row["fill_id"] if "fill_id" in row.keys() else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -148,11 +119,11 @@ async def create_journal_entry(request: JournalEntryCreate) -> JournalEntryRespo
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO journal_entries 
-               (id, symbol, side, quantity, entry_price, entry_time, hypothesis, entry_context, tags, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+               (id, symbol, side, quantity, entry_price, entry_time, hypothesis, entry_context, tags, status, source, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
             (entry_id, request.symbol.upper(), request.side.lower(), request.quantity,
              request.entry_price, now, request.hypothesis, request.entry_context,
-             json.dumps(request.tags), now, now),
+             json.dumps(request.tags), request.source, now, now),
         )
         conn.commit()
     
@@ -167,6 +138,7 @@ async def create_journal_entry(request: JournalEntryCreate) -> JournalEntryRespo
         entry_context=request.entry_context,
         tags=request.tags,
         status="open",
+        source=request.source,
         created_at=now,
         updated_at=now,
     )
@@ -175,6 +147,7 @@ async def create_journal_entry(request: JournalEntryCreate) -> JournalEntryRespo
 @router.get("", response_model=Dict[str, Any])
 async def list_journal_entries(
     status: Optional[str] = Query(None, pattern="^(open|closed|all)$"),
+    source: Optional[str] = Query(None, pattern="^(paper|actual|manual|all)$"),
     symbol: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -191,6 +164,9 @@ async def list_journal_entries(
     if status and status != "all":
         query += " AND status = ?"
         params.append(status)
+    if source and source != "all":
+        query += " AND source = ?"
+        params.append(source)
     if symbol:
         query += " AND symbol = ?"
         params.append(symbol.upper())
@@ -208,7 +184,6 @@ async def list_journal_entries(
     params.extend([limit, offset])
     
     with get_connection() as conn:
-        conn.row_factory = conn.execute(query, params).fetchone().__class__
         rows = conn.execute(query, params).fetchall()
     
     entries = [_row_to_entry(row) for row in rows]
@@ -217,31 +192,41 @@ async def list_journal_entries(
 
 
 @router.get("/stats", response_model=JournalStatsResponse)
-async def get_journal_stats() -> JournalStatsResponse:
-    """Get aggregated journal statistics."""
+async def get_journal_stats(
+    source: Optional[str] = Query(None, pattern="^(paper|actual|manual|all)$"),
+) -> JournalStatsResponse:
+    """Get aggregated journal statistics (optionally scoped by source)."""
     _get_journal_table()
+    
+    where = ""
+    params: tuple = ()
+    if source and source != "all":
+        where = " WHERE source = ?"
+        params = (source,)
     
     with get_connection() as conn:
         # Total trades
-        total = conn.execute("SELECT COUNT(*) as cnt FROM journal_entries").fetchone()["cnt"]
+        total = conn.execute(f"SELECT COUNT(*) as cnt FROM journal_entries{where}", params).fetchone()["cnt"]
         
         # Closed trades
-        closed = conn.execute("SELECT COUNT(*) as cnt FROM journal_entries WHERE status = 'closed'").fetchone()["cnt"]
+        closed_where = where + (" AND" if where else " WHERE") + " status = 'closed'"
+        closed = conn.execute(f"SELECT COUNT(*) as cnt FROM journal_entries{closed_where}", params).fetchone()["cnt"]
         
         # Win/loss
-        winning = conn.execute("SELECT COUNT(*) as cnt FROM journal_entries WHERE status = 'closed' AND pnl > 0").fetchone()["cnt"]
-        losing = conn.execute("SELECT COUNT(*) as cnt FROM journal_entries WHERE status = 'closed' AND pnl <= 0").fetchone()["cnt"]
+        winning = conn.execute(f"SELECT COUNT(*) as cnt FROM journal_entries{closed_where} AND pnl > 0", params).fetchone()["cnt"]
+        losing = conn.execute(f"SELECT COUNT(*) as cnt FROM journal_entries{closed_where} AND pnl <= 0", params).fetchone()["cnt"]
         
         # PnL stats
-        total_pnl = conn.execute("SELECT COALESCE(SUM(pnl), 0) as sum FROM journal_entries WHERE status = 'closed'").fetchone()["sum"]
-        avg_win = conn.execute("SELECT COALESCE(AVG(pnl), 0) as avg FROM journal_entries WHERE status = 'closed' AND pnl > 0").fetchone()["avg"]
-        avg_loss = conn.execute("SELECT COALESCE(AVG(pnl), 0) as avg FROM journal_entries WHERE status = 'closed' AND pnl <= 0").fetchone()["avg"]
+        total_pnl = conn.execute(f"SELECT COALESCE(SUM(pnl), 0) as sum FROM journal_entries{closed_where}", params).fetchone()["sum"]
+        avg_win = conn.execute(f"SELECT COALESCE(AVG(pnl), 0) as avg FROM journal_entries{closed_where} AND pnl > 0", params).fetchone()["avg"]
+        avg_loss = conn.execute(f"SELECT COALESCE(AVG(pnl), 0) as avg FROM journal_entries{closed_where} AND pnl <= 0", params).fetchone()["avg"]
         
         # Hold time
-        hold_time = conn.execute("""
-            SELECT AVG(julianday(exit_time) - julianday(entry_time)) * 24 * 60 as avg_minutes
-            FROM journal_entries WHERE status = 'closed' AND exit_time IS NOT NULL
-        """).fetchone()["avg_minutes"] or 0
+        hold_time = conn.execute(
+            f"""SELECT AVG(julianday(exit_time) - julianday(entry_time)) * 24 * 60 as avg_minutes
+                FROM journal_entries{closed_where} AND exit_time IS NOT NULL""",
+            params,
+        ).fetchone()["avg_minutes"] or 0
         
         win_rate = (winning / closed * 100) if closed > 0 else 0
         # Cap to a JSON-safe finite number: Infinity breaks JSON.parse in browsers.
@@ -271,7 +256,6 @@ async def get_journal_entry(entry_id: str) -> JournalEntryResponse:
     _get_journal_table()
     
     with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone().__class__
         row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
     
     if not row:
@@ -350,7 +334,6 @@ async def update_journal_entry(entry_id: str, request: JournalEntryUpdate) -> Jo
     
     # Return updated
     with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone().__class__
         row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
     
     return JournalEntryResponse(**_row_to_entry(row))
@@ -373,3 +356,57 @@ async def delete_journal_entry(entry_id: str):
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Journal entry not found")
         conn.commit()
+
+
+@router.post("/sync-live", response_model=Dict[str, Any])
+async def sync_live_trades(limit: int = Query(100, ge=1, le=500)) -> Dict[str, Any]:
+    """Pull broker FILL activities into the journal as ``source='actual'``.
+
+    Lets users compare their real trades against paper trades side by side.
+    Already-imported fills are skipped (dedupe by broker activity id).
+    """
+    _get_journal_table()
+
+    from app.api.v1.live import get_provider  # lazy: 503 when unconfigured
+
+    provider = get_provider()
+    activities = await provider.get_activities("FILL", None, None, "desc", limit)
+
+    imported = 0
+    skipped = 0
+    for act in activities:
+        if not isinstance(act, dict):
+            continue
+        symbol = str(act.get("symbol") or "").strip()
+        try:
+            qty = float(act.get("qty") or 0)
+            price = float(act.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not symbol or qty <= 0 or price <= 0:
+            continue
+        activity_id = str(act.get("id") or "").strip()
+        if not activity_id:
+            continue
+        result = journal_log.log_fill(
+            fill_id=activity_id,
+            symbol=symbol,
+            side=str(act.get("side") or "buy"),
+            qty=qty,
+            price=price,
+            timestamp=act.get("transaction_time") or act.get("date") or None,
+            source="actual",
+            note=f"Auto-logged broker fill: {str(act.get('side') or '').lower()} {qty:g} {symbol} @ {price:g}",
+            context="Imported from broker activity feed",
+        )
+        if result:
+            imported += 1
+        else:
+            skipped += 1
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "total": len(activities),
+        "source": "actual",
+    }

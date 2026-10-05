@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { API_BASE } from "../../lib/constants";
 import type { HistoryCandle } from "../../types/market";
@@ -10,6 +10,16 @@ interface ForecastRow {
   low: number;
   close: number;
   volume?: number;
+}
+
+interface KronosInstallStatus {
+  installed: boolean;
+  repo_path: string;
+  repo_present: boolean;
+  models: { tokenizer: boolean; model: boolean };
+  installing: boolean;
+  exit_code: number | null;
+  log_tail: string;
 }
 
 const HORIZONS = [5, 10, 20] as const;
@@ -58,6 +68,9 @@ export function KronosForecast({
   const [rows, setRows] = useState<ForecastRow[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [install, setInstall] = useState<KronosInstallStatus | null>(null);
+  const [installBusy, setInstallBusy] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
   const requestSeq = useRef(0);
   const autoStartedFor = useRef<string | null>(null);
   const sparkRef = useRef<HTMLCanvasElement | null>(null);
@@ -96,6 +109,51 @@ export function KronosForecast({
     setRows([]);
     setMessage(null);
   }, [runKey]);
+
+  const fetchInstallStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/forecast/kronos/install/status`);
+      if (!res.ok) return;
+      setInstall((await res.json()) as KronosInstallStatus);
+    } catch {
+      /* status is decoration */
+    }
+  }, []);
+
+  // One-click installer: track whether Kronos is present, poll while running.
+  useEffect(() => {
+    void fetchInstallStatus();
+  }, [fetchInstallStatus]);
+
+  useEffect(() => {
+    if (!install?.installing) return undefined;
+    const id = window.setInterval(() => void fetchInstallStatus(), 3000);
+    return () => window.clearInterval(id);
+  }, [install?.installing, fetchInstallStatus]);
+
+  // When the install finishes, retry the forecast that failed with a 503.
+  useEffect(() => {
+    if (install?.installed && message) {
+      setMessage(null);
+      void runForecast(horizon);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [install?.installed]);
+
+  const handleInstall = async () => {
+    setInstallBusy(true);
+    setInstallError(null);
+    try {
+      const res = await fetch(`${API_BASE}/forecast/kronos/install`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { detail?: string } & KronosInstallStatus;
+      if (!res.ok) throw new Error(body.detail ?? "Install failed to start");
+      setInstall(body);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : "Install failed to start");
+    } finally {
+      setInstallBusy(false);
+    }
+  };
 
   // Auto-run once per symbol/timeframe once enough candles have loaded.
   useEffect(() => {
@@ -248,6 +306,41 @@ export function KronosForecast({
         <p className="kronos-error" role="alert">
           {message}
         </p>
+      ) : null}
+
+      {install && !install.installed ? (
+        <div className="kronos-install" role="status">
+          <div className="kronos-install-head">
+            <strong>⚙ Kronos isn’t installed yet</strong>
+            <button
+              type="button"
+              className="kronos-run"
+              onClick={() => void handleInstall()}
+              disabled={installBusy || install.installing}
+            >
+              {install.installing
+                ? "Installing…"
+                : installBusy
+                  ? "Starting…"
+                  : "⚡ Install Kronos (one click)"}
+            </button>
+          </div>
+          <p className="kronos-hint">
+            One click clones the repository, installs its Python requirements into this app’s
+            interpreter, and downloads the model weights to <code>{install.repo_path}</code>.
+          </p>
+          {install.log_tail ? (
+            <pre className="kronos-install-log">
+              {install.log_tail.split("\n").slice(-12).join("\n")}
+            </pre>
+          ) : null}
+          {install.exit_code !== null && install.exit_code !== 0 ? (
+            <p className="kronos-error">
+              Install exited with code {install.exit_code} — check the log above.
+            </p>
+          ) : null}
+          {installError ? <p className="kronos-error">{installError}</p> : null}
+        </div>
       ) : null}
 
       {!message && rows.length === 0 && !loading ? (

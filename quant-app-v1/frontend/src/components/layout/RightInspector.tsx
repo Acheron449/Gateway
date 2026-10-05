@@ -74,6 +74,14 @@ interface InspectorNewsItem {
   related_symbols?: string[];
 }
 
+interface PaperPosition {
+  instrument_id: string;
+  quantity: number;
+  avg_cost: number;
+  market_value: number;
+  unrealized_pnl: number;
+}
+
 const EMPTY_STATE_MESSAGES: Record<string, string> = {
   overview: "Select a view to see contextual information",
   scanner: "Select a symbol from the scanner to inspect",
@@ -116,6 +124,7 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [news, setNews] = useState<InspectorNewsItem[]>([]);
+  const [position, setPosition] = useState<PaperPosition | null>(null);
   const [loading, setLoading] = useState(false);
   // Full-page news overlay (the panel itself only previews what fits).
   const [newsPageOpen, setNewsPageOpen] = useState(false);
@@ -178,6 +187,37 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Open paper position for the selected symbol (paper desk view only).
+  useEffect(() => {
+    if (activeView !== "paper-trading") {
+      setPosition(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const token = localStorage.getItem("gateway_auth_token");
+        const res = await fetch(`${API_BASE}/portfolio`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { positions?: PaperPosition[] };
+        const found = (data.positions ?? []).find(
+          (p) => p.instrument_id === selectedSymbol,
+        );
+        if (!cancelled) setPosition(found ?? null);
+      } catch {
+        /* inspector decoration */
+      }
+    };
+    void load();
+    const id = window.setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [activeView, selectedSymbol]);
 
   if (collapsed) {
     const change = quote?.change_pct;
@@ -352,17 +392,40 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
 
         {activeView === "paper-trading" && (
           <section className="inspector-section order-preview">
-            <h3 className="section-label">Paper Order Preview</h3>
+            <h3 className="section-label">Open Position</h3>
             <div className="order-preview-content">
-              <div className="preview-row">
-                <span>{selectedSymbol}</span>
-                <span className="side-badge buy">Buy</span>
-                <span>10</span>
-              </div>
-              <p className="preview-note">
-                Estimated notional {formatPrice(currentPrice * 10)} — risk checks run server-side when the
-                order is submitted from the paper desk.
-              </p>
+              {position ? (
+                <>
+                  <div className="preview-row">
+                    <span>{selectedSymbol}</span>
+                    <span className={`side-badge ${position.quantity >= 0 ? "buy" : "sell"}`}>
+                      {position.quantity >= 0 ? "Long" : "Short"}
+                    </span>
+                    <span>{Math.abs(position.quantity)}</span>
+                  </div>
+                  <p className="preview-note">
+                    Avg cost {formatPrice(position.avg_cost)} · market value{" "}
+                    {formatPrice(position.market_value)} · unrealized PnL{" "}
+                    <span className={position.unrealized_pnl >= 0 ? "positive" : "negative"}>
+                      {position.unrealized_pnl >= 0 ? "+" : ""}
+                      {formatPrice(position.unrealized_pnl)}
+                    </span>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="preview-row">
+                    <span>{selectedSymbol}</span>
+                    <span className="side-badge buy">Buy</span>
+                    <span>10</span>
+                  </div>
+                  <p className="preview-note">
+                    No open position in {selectedSymbol}. Estimated notional{" "}
+                    {formatPrice(currentPrice * 10)} — risk checks run server-side when the order is
+                    submitted from the paper desk.
+                  </p>
+                </>
+              )}
             </div>
           </section>
         )}

@@ -5083,3 +5083,271 @@ a.rail-icon {
   .ov-chart-card, .ov-heat-card { grid-column: span 1; }
   .ov-risk { grid-template-columns: 1fr; }
 }
+
+/* ===========================================================================
+   Phase — Now button, positions, journal sources, installer, live/AI desks
+   =========================================================================== */
+
+/* --- "Jump to latest candle" button (markets + paper chart toolbars) ----- */
+.chart-now-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary, #161b22);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chart-now-btn:hover {
+  border-color: var(--accent-primary, #58a6ff);
+  color: var(--accent-primary, #58a6ff);
+}
+
+/* --- Position strip in the trade ticket --------------------------------- */
+.desk-position {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--bg-secondary, #161b22);
+  font-size: 12px;
+}
+.desk-position.has {
+  border-left: 3px solid var(--accent-success, #3fb950);
+}
+.desk-position-label {
+  width: 100%;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b949e);
+}
+.desk-position-qty {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.desk-position-meta {
+  color: var(--text-muted, #8b949e);
+}
+.desk-position-pnl.up { color: var(--accent-success, #3fb950); font-weight: 700; }
+.desk-position-pnl.down { color: var(--accent-danger, #f85149); font-weight: 700; }
+.desk-position-empty {
+  color: var(--text-muted, #8b949e);
+  font-style: italic;
+}
+
+/* --- Journal source badges (paper vs actual) ---------------------------- */
+.tag.source-paper {
+  background: rgb(88 166 255 / 0.15);
+  border: 1px solid rgb(88 166 255 / 0.4);
+  color: #79c0ff;
+}
+.tag.source-actual {
+  background: rgb(63 185 80 / 0.15);
+  border: 1px solid rgb(63 185 80 / 0.4);
+  color: #7ee787;
+}
+.tag.source-manual {
+  background: rgb(139 148 158 / 0.15);
+  border: 1px solid rgb(139 148 158 / 0.4);
+  color: var(--text-muted, #8b949e);
+}
+
+/* --- Kronos one-click installer ----------------------------------------- */
+.kronos-install {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-secondary, #444c56);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-secondary, #161b22);
+}
+.kronos-install-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.kronos-install-log {
+  max-height: 160px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  background: #0d1117;
+  border: 1px solid var(--border-primary, #30363d);
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* --- Live desk ------------------------------------------------------------ */
+.mode-badge.live {
+  background: rgb(248 81 73 / 0.15);
+  color: #ff7b72;
+  border: 1px solid rgb(248 81 73 / 0.45);
+}
+.desk-status.live {
+  border-left: 3px solid #f85149;
+}
+.desk-account-id {
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+}
+.desk-kill-switch {
+  margin-top: 6px;
+  padding: 5px 6px;
+  border: 1px solid rgb(248 81 73 / 0.5);
+  border-radius: var(--radius-sm, 6px);
+  background: rgb(248 81 73 / 0.12);
+  color: #ff7b72;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.desk-kill-switch:hover {
+  background: rgb(248 81 73 / 0.25);
+}
+
+/* --- AI Trading section ---------------------------------------------------- */
+.ai-trading {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ai-controls {
+  display: grid;
+  grid-template-columns: minmax(320px, 2fr) minmax(260px, 1fr);
+  gap: 14px;
+}
+@media (max-width: 980px) {
+  .ai-controls { grid-template-columns: 1fr; }
+}
+.ai-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ai-card-head h3 { margin: 0; font-size: 14px; }
+.ai-log-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted, #8b949e);
+  margin-left: 8px;
+}
+.ai-run-badge {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgb(139 148 158 / 0.15);
+  color: var(--text-muted, #8b949e);
+  border: 1px solid var(--border-secondary, #444c56);
+}
+.ai-run-badge.on {
+  background: rgb(63 185 80 / 0.15);
+  color: #7ee787;
+  border-color: rgb(63 185 80 / 0.45);
+}
+.ai-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+}
+.ai-memory-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.ai-memory-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.ai-live-warning {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgb(248 81 73 / 0.45);
+  border-radius: var(--radius-sm, 6px);
+  background: rgb(248 81 73 / 0.1);
+  color: #ff9b93;
+  font-size: 12px;
+}
+.ai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.ai-edge {
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+}
+.ai-edge .up { color: var(--accent-success, #3fb950); }
+.ai-edge .down { color: var(--accent-danger, #f85149); }
+.ai-log-reason {
+  max-width: 460px;
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+}
+.ai-log-route {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-secondary, #444c56);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
+
+/* --- Settings: data refresh + secrets vault ------------------------------ */
+.refresh-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.vault-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.vault-form input {
+  padding: 8px 10px;
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.vault-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.vault-table th,
+.vault-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-primary);
+  text-align: left;
+}
+.vault-table th {
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}

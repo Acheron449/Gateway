@@ -79,7 +79,9 @@ def _alpaca_credentials() -> tuple[str, str] | None:
 # --- Last-price source for paper trading (fill simulator + order ticket) ---
 
 _price_cache: dict[str, tuple[float, float]] = {}  # symbol -> (price, cached_at)
-_PRICE_TTL_SECONDS = 30.0
+# Aggressive default: fills and risk checks want the freshest quote possible.
+# GATEWAY_PRICE_TTL tunes it per deployment (seconds).
+_PRICE_TTL_SECONDS = float(os.getenv("GATEWAY_PRICE_TTL", "10"))
 _DEFAULT_HALF_SPREAD_BPS = float(os.getenv("PAPER_HALF_SPREAD_BPS", "5"))
 
 

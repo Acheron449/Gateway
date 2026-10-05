@@ -288,6 +288,27 @@ class PaperPortfolioService:
         self._emit(EventType.FILL, fill_event_data)
         self.apply_event(PortfolioEvent(EventType.FILL, fill_event_data, _now_utc()))
 
+        # Auto-log the fill in the trade journal (deduped by fill id) so the
+        # Journal view can compare paper vs. actual performance.
+        try:
+            from app.services.journal_log import log_fill
+
+            log_fill(
+                fill_id=fill.id,
+                symbol=instrument_id,
+                side=side.value,
+                qty=qty,
+                price=price,
+                timestamp=timestamp,
+                source="paper",
+                note=f"Auto-logged paper {side.value} {qty:g} {instrument_id} @ {price:g}",
+                context=f"Order {order_id} · commission {commission:g}",
+                tags=["paper"],
+            )
+        except Exception:
+            # Journaling must never block execution.
+            pass
+
         return fill
 
     def reconstruct_portfolio(self, as_of_timestamp: str | None = None) -> Portfolio | None:

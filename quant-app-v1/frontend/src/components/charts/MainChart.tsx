@@ -23,6 +23,11 @@ export interface MainChartProps {
   eventMarkers?: ChartMarker[];
   /** Active indicator ids chosen in the indicator panel (overlay + subpanes). */
   indicators?: readonly string[];
+  /**
+   * Bump this counter to jump the viewport back to the most recent candle
+   * (the chart's "Now" button). Any value change recenters on the latest bar.
+   */
+  nowSignal?: number;
 }
 
 const UP_COLOR = "#3fb950";
@@ -121,6 +126,7 @@ export function MainChart({
   liveUpdate,
   eventMarkers = [],
   indicators = [],
+  nowSignal = 0,
 }: MainChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -521,6 +527,15 @@ export function MainChart({
     computedRef.current = computed;
     scheduleDraw();
   }, [computed]);
+
+  // "Now" button: reset the viewport so the latest candle sits at the right edge.
+  useEffect(() => {
+    if (nowSignal === 0) return;
+    viewRef.current = null;
+    crossRef.current = null;
+    scheduleDraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nowSignal]);
 
   useEffect(() => {
     viewRef.current = null;
