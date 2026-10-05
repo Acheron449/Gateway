@@ -18,8 +18,15 @@ for cls_name in ("EntryRule","ExitRule","SizingRule","InvalidationRule","Assumpt
     cls = getattr(strategy, cls_name)
     if hasattr(cls, "model_rebuild"):
         cls.model_rebuild(force=True)
-StrategySpec, Timeframe, EntryRule, ExitRule, SizingRule, InvalidationRule, Assumptions = (strategy.StrategySpec, strategy.Timeframe, strategy.EntryRule, strategy.ExitRule, strategy.SizingRule, strategy.InvalidationRule, strategy.Assumptions)
-
+StrategySpec, Timeframe, EntryRule, ExitRule, SizingRule, InvalidationRule, Assumptions = (
+    strategy.StrategySpec, 
+    strategy.Timeframe, 
+    strategy.EntryRule, 
+    strategy.ExitRule, 
+    strategy.SizingRule, 
+    strategy.InvalidationRule, 
+    strategy.Assumptions
+)
 def test_content_id_determinism():
     s1 = StrategySpec(
         asset_universe=["AAPL","MSFT"], timeframe=Timeframe.D1,

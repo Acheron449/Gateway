@@ -92,7 +92,7 @@ async def store_provider_key(
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
     if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    if meta["name"] not in ("Finnhub", "AllTick", "JBlanked"):
+    if meta["name"] not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge"):
         raise HTTPException(status_code=400, detail="This provider does not support browser-managed API keys")
 
     try:
@@ -222,7 +222,7 @@ async def test_provider_key(
     if auth_rejected or not working:
         # Key-level failure: rejected outright, or nothing usable responded.
         if auth_rejected:
-            message = "Finnhub rejected the key (HTTP 401/402). Double-check the saved API key."
+            message = f"{meta['name']} rejected the key (HTTP 401/402). Double-check the saved API key."
         else:
             first_failed = by_name[failed[0]]
             message = f"Provider test failed: {first_failed['detail']}"
