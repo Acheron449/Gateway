@@ -1,0 +1,11 @@
+export { PasskeyRegisterError, PasskeyChallengeError, PasskeyGetTokenError } from '@auth0/auth0-auth-js';
+export interface PasskeyErrorResponse {
+    error: string;
+    error_description: string;
+    message?: string;
+}
+export declare class PasskeyError extends Error {
+    readonly code: string;
+    readonly cause?: PasskeyErrorResponse;
+    constructor(code: string, message: string, cause?: PasskeyErrorResponse);
+}

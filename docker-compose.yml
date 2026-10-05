@@ -19,6 +19,12 @@ services:
       # interpolation (no nesting) for compose v1 and v2 compatibility; fails
       # fast with a clear message if unset — never defaults to a secret.
       JWT_SECRET_KEY: "${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env next to docker-compose.yml}"
+      # Auth0 (optional): RS256 verification of Auth0 access tokens, enabled
+      # when AUTH0_DOMAIN is non-empty. Both modes can run side by side —
+      # JWT_SECRET_KEY keeps password login working. AUTH0_AUDIENCE should
+      # match the Auth0 API identifier the frontend requests.
+      AUTH0_DOMAIN: "${AUTH0_DOMAIN:-}"
+      AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:-}"
     env_file:
       - .env.docker
     secrets:
@@ -47,6 +53,12 @@ services:
     build:
       context: ./quant-app-v1/frontend
       dockerfile: Dockerfile
+      args:
+        # Baked into the SPA at build time — must match the backend's
+        # AUTH0_* values above.
+        VITE_AUTH0_DOMAIN: "${AUTH0_DOMAIN:-}"
+        VITE_AUTH0_CLIENT_ID: "${AUTH0_CLIENT_ID:-}"
+        VITE_AUTH0_AUDIENCE: "${AUTH0_AUDIENCE:-}"
     container_name: quant-app-frontend
     ports:
       - "3000:3000"

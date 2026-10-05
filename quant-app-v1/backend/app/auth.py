@@ -1,32 +1,77 @@
-"""JWT Authentication middleware for FastAPI."""
+"""JWT Authentication middleware for FastAPI.
+
+Two token flavours share one dependency chain, dispatched by the (unverified)
+``iss`` claim:
+
+* **Local HS256** tokens signed with ``JWT_SECRET_KEY`` — issued by
+  ``POST /auth/register`` and ``POST /auth/login``.
+* **Auth0 RS256** access tokens from the tenant configured via
+  ``AUTH0_DOMAIN`` (plus optional ``AUTH0_AUDIENCE``), verified against the
+  tenant's JWKS over https — never against a caller-supplied key.
+
+Config is failure-closed: the process refuses to start when no verification
+mode is configured at all (neither ``JWT_SECRET_KEY`` nor ``AUTH0_DOMAIN``).
+"""
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from typing import Annotated
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from loguru import logger
 from pydantic import BaseModel
 
-# JWT Configuration — failure-closed: no default secret
+# JWT Configuration — failure-closed: no default secret. Auth0-only
+# deployments may skip JWT_SECRET_KEY as long as AUTH0_DOMAIN is set.
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not SECRET_KEY:
+AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
+AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "").strip() or None
+if not SECRET_KEY and not AUTH0_DOMAIN:
     raise RuntimeError(
-        "JWT_SECRET_KEY must be set in the environment — refusing to start with a default secret"
+        "JWT_SECRET_KEY must be set in the environment — refusing to start with a default secret "
+        "(or set AUTH0_DOMAIN for an Auth0-only deployment)"
     )
+
 ALGORITHM = "HS256"
+AUTH0_ALGORITHM = "RS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
+# Auth0 JWKS cache: warmed at startup, refreshed at most once per TTL, with an
+# immediate re-fetch when an unknown `kid` shows up (signing-key rotation).
+_JWKS_TTL_SECONDS = 600.0
+_jwks_lock = threading.Lock()
+_jwks_cache: dict = {"keys": [], "fetched_at": 0.0}
+
 security = HTTPBearer(auto_error=False)
+
+
+def local_auth_enabled() -> bool:
+    """True when local password login can issue tokens (JWT_SECRET_KEY set)."""
+    return bool(SECRET_KEY)
+
+
+def auth0_enabled() -> bool:
+    """True when an Auth0 tenant is configured for RS256 verification."""
+    return bool(AUTH0_DOMAIN)
+
+
+def _auth0_issuer() -> str:
+    return f"https://{AUTH0_DOMAIN}/"
 
 
 class TokenData(BaseModel):
     user_id: str
     email: str
     exp: datetime
+    name: str | None = None
 
 
 class User(BaseModel):
@@ -36,7 +81,11 @@ class User(BaseModel):
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    """Create a JWT access token."""
+    """Create a local HS256 JWT access token."""
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "Local password auth is disabled (JWT_SECRET_KEY unset) — tokens are issued by Auth0"
+        )
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -48,7 +97,33 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 
 
 def decode_token(token: str) -> TokenData | None:
-    """Decode and validate a JWT token."""
+    """Decode and validate a JWT — local HS256 or Auth0 RS256.
+
+    Dispatch is by the *unverified* ``iss`` claim: only tokens whose issuer
+    matches the configured Auth0 tenant take the Auth0 path, everything else
+    the local path. A forged issuer still fails RS256 verification, and a
+    forged local token fails the HMAC check, so neither can cross over.
+    """
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except Exception as exc:  # malformed token — fail closed
+        logger.debug("Token rejected before dispatch: {}", exc)
+        return None
+    if not isinstance(claims, dict):
+        return None
+    issuer = claims.get("iss")
+    if (
+        AUTH0_DOMAIN
+        and isinstance(issuer, str)
+        and issuer.rstrip("/") == f"https://{AUTH0_DOMAIN}"
+    ):
+        return _decode_auth0_token(token)
+    return _decode_local_token(token)
+
+
+def _decode_local_token(token: str) -> TokenData | None:
+    if not SECRET_KEY:
+        return None
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
@@ -57,9 +132,124 @@ def decode_token(token: str) -> TokenData | None:
         if user_id is None or email is None:
             return None
         exp = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-        return TokenData(user_id=user_id, email=email, exp=exp)
-    except JWTError:
+        return TokenData(user_id=user_id, email=email, exp=exp, name=payload.get("name"))
+    except (JWTError, TypeError, ValueError, OSError):
         return None
+
+
+def _download_jwks() -> list[dict]:
+    """Fetch the tenant JWKS over https (test seam for the cache layer)."""
+    url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
+    response = httpx.get(url, timeout=5.0, follow_redirects=True)
+    response.raise_for_status()
+    payload = response.json()
+    keys = payload.get("keys") if isinstance(payload, dict) else None
+    return [key for key in (keys or []) if isinstance(key, dict)]
+
+
+def _fetch_jwks(force: bool = False) -> list[dict]:
+    """Return JWKS keys, cached for _JWKS_TTL_SECONDS.
+
+    A failed refresh serves stale keys when any are cached (a transient JWKS
+    outage should not lock every signed-in user out) and fails closed when
+    nothing is cached.
+    """
+    with _jwks_lock:
+        cached = list(_jwks_cache["keys"])
+        age = time.monotonic() - float(_jwks_cache["fetched_at"])
+        if not force and cached and age < _JWKS_TTL_SECONDS:
+            return cached
+        try:
+            keys = _download_jwks()
+        except Exception as exc:
+            if cached:
+                logger.warning("Auth0 JWKS refresh failed; serving cached keys: {}", exc)
+                return cached
+            logger.warning("Auth0 JWKS fetch failed: {}", exc)
+            return []
+        if keys:
+            _jwks_cache["keys"] = keys
+            _jwks_cache["fetched_at"] = time.monotonic()
+        return keys
+
+
+def _select_signing_key(keys: list[dict], kid: str | None) -> dict | None:
+    usable = [
+        key
+        for key in keys
+        if key.get("kty") == "RSA" and key.get("alg", AUTH0_ALGORITHM) == AUTH0_ALGORITHM
+    ]
+    if kid is None:
+        return usable[0] if len(usable) == 1 else None
+    for key in usable:
+        if key.get("kid") == kid:
+            return key
+    return None
+
+
+def _auth0_signing_key(token: str) -> dict | None:
+    try:
+        headers = jwt.get_unverified_headers(token)
+    except Exception:
+        return None
+    kid = headers.get("kid") if isinstance(headers, dict) else None
+    key = _select_signing_key(_fetch_jwks(), kid)
+    if key is None:
+        # Unknown kid almost always means Auth0 rotated its signing keys.
+        key = _select_signing_key(_fetch_jwks(force=True), kid)
+    return key
+
+
+def _decode_auth0_token(token: str) -> TokenData | None:
+    signing_key = _auth0_signing_key(token)
+    if signing_key is None:
+        logger.debug("Auth0 token rejected: no matching JWKS key")
+        return None
+    options: dict = {"require": ["exp", "iss", "sub"]}
+    audience = AUTH0_AUDIENCE
+    if not audience:
+        # python-jose refuses tokens carrying `aud` when no audience is passed.
+        # Without AUTH0_AUDIENCE configured we skip only the audience check —
+        # RS256 signature, issuer and expiry are still enforced.
+        options["verify_aud"] = False
+        audience = None
+    try:
+        payload = jwt.decode(
+            token,
+            signing_key,
+            algorithms=[AUTH0_ALGORITHM],
+            audience=audience,
+            issuer=_auth0_issuer(),
+            options=options,
+        )
+    except JWTError as exc:
+        logger.debug("Auth0 token rejected: {}", exc)
+        return None
+    except Exception as exc:  # network/parse trouble — fail closed to 401
+        logger.warning("Auth0 token verification failed: {}", exc)
+        return None
+
+    sub = payload.get("sub")
+    if not sub:
+        return None
+    # Prefer verified email claims, fall back so the UI always has an id.
+    email = payload.get("email") or payload.get("preferred_username") or str(sub)
+    try:
+        exp = datetime.fromtimestamp(float(payload.get("exp")), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+    return TokenData(user_id=str(sub), email=str(email), exp=exp, name=payload.get("name"))
+
+
+async def warm_auth0_jwks() -> None:
+    """Pre-fetch the Auth0 JWKS at startup so the first sign-in isn't latency-bound."""
+    if not AUTH0_DOMAIN:
+        return
+    try:
+        keys = await asyncio.to_thread(_fetch_jwks, True)
+        logger.info("Auth0 JWKS loaded: {} signing key(s) for {}", len(keys), AUTH0_DOMAIN)
+    except Exception as exc:
+        logger.warning("Auth0 JWKS warmup failed: {}", exc)
 
 
 async def get_current_user(
@@ -85,7 +275,7 @@ async def get_current_user(
             detail="Token expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return User(id=token_data.user_id, email=token_data.email)
+    return User(id=token_data.user_id, email=token_data.email, name=token_data.name)
 
 
 async def get_current_user_optional(
@@ -97,7 +287,7 @@ async def get_current_user_optional(
     token_data = decode_token(credentials.credentials)
     if token_data is None or token_data.exp < datetime.now(timezone.utc):
         return None
-    return User(id=token_data.user_id, email=token_data.email)
+    return User(id=token_data.user_id, email=token_data.email, name=token_data.name)
 
 
 # Dependency for protected routes

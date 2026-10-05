@@ -1,0 +1,33 @@
+import { TokenEndpointOptions, TokenEndpointResponse } from './global';
+/**
+ * @ignore
+ * Internal options for the revokeToken API call.
+ * Kept in api.ts (not global.ts) so it is not part of the public type surface.
+ */
+interface RevokeTokenOptions {
+    baseUrl: string;
+    /** Maps directly to the OAuth `client_id` parameter. */
+    client_id: string;
+    /** Tokens to revoke. Empty for the worker path — the worker holds its own store. */
+    refreshTokens: string[];
+    audience?: string;
+    timeout?: number;
+    auth0Client?: any;
+    useFormData?: boolean;
+    onRefreshTokenRevoked?: (refreshToken: string) => Promise<void> | void;
+}
+export declare function oauthToken({ baseUrl, timeout, audience, scope, auth0Client, useFormData, useMrrt, dpop, preserveRefreshToken, ...options }: TokenEndpointOptions, worker?: Worker, skipTokenStorage?: boolean): Promise<TokenEndpointResponse>;
+/**
+ * Revokes refresh tokens using the /oauth/revoke endpoint.
+ *
+ * Mirrors the oauthToken pattern: the worker/non-worker dispatch lives here,
+ * keeping Auth0Client free of transport concerns.
+ *
+ * - Worker path: sends a single message; the worker holds its own RT store and
+ *   loops internally. refreshTokens is empty (worker ignores it).
+ * - Non-worker path: loops over refreshTokens and issues one request per token.
+ *
+ * @throws {GenericError} If any revoke request fails
+ */
+export declare function revokeToken({ baseUrl, timeout, auth0Client, useFormData, refreshTokens, audience, client_id, onRefreshTokenRevoked }: RevokeTokenOptions, worker?: Worker): Promise<void>;
+export {};

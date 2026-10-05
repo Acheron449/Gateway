@@ -70,6 +70,7 @@ python -m pytest quant-app-v1/backend/tests/
     - **ChartContainer:** Orchestrates data flow between history fetching and live socket updates.
     - **News Terminal:** Displays sentiment analysis from the backend.
     - **PatternList:** Visualizes algorithmic trading patterns detected in real-time.
+- **Authentication:** Local email/password (HS256 JWT) and optional Auth0 sign-in (RS256 via tenant JWKS) — setup in [docs/auth0.md](docs/auth0.md).
 
 ## File Structure Overview
 - `src/hooks/useHistory.ts`: Handles REST calls for historical data.
