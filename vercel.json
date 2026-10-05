@@ -1,0 +1,12 @@
+{
+  "framework": "vite",
+  "installCommand": "cd quant-app-v1/frontend && npm ci",
+  "buildCommand": "cd quant-app-v1/frontend && npm run build",
+  "outputDirectory": "quant-app-v1/frontend/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

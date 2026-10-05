@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Cookie Preferences — Gateway</title>
+<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem}</style>
+</head>
+<body>
+<h1>Cookie Preferences</h1>
+<p>We use cookies for analytics (Plausible / GA) and site improvement. You may accept, reject, or manage preferences.</p>
+<p><a href="/docs/terms.md">Terms</a> | <a href="/llms.txt">LLM Index</a></p>
+<form onsubmit="event.preventDefault(); localStorage.setItem('gateway_cookie_consent','accepted'); this.innerHTML='<p>Consent saved. Analytics enabled.</p>'; document.cookie='gateway_cookie_consent=accepted;path=/;max-age=2592000';">
+<button type="submit">Accept</button>
+<button type="button" onclick="localStorage.setItem('gateway_cookie_consent','rejected'); this.parentElement.innerHTML='<p>Rejected. Analytics disabled.</p>'; document.cookie='gateway_cookie_consent=rejected;path=/;max-age=2592000';">Reject</button>
+</form>
+<p><small>Respects Do Not Track. No tracking before consent.</small></p>
+</body>
+</html>

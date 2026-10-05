@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Blueprint, jsonify, render_template, request, session
 
 from ..common import (
     get_user_by_email,
@@ -43,6 +41,9 @@ def api_account():
         return jsonify({'logged_in': False}), 401
     user = get_user_by_email(session.get('user_email') or '') or {}
     meta = get_user_meta(user_id)
+    # Mask API keys in response (never return decrypted keys)
+    api_inputs = meta.get('api_inputs', {})
+    masked_api_inputs = {k: '***' if v else '' for k, v in api_inputs.items()}
     account = {
         'logged_in': True,
         'user': {
@@ -54,7 +55,7 @@ def api_account():
         'credits': meta.get('credits', 1000),
         'usage_remaining': meta.get('usage_remaining', 1000),
         'payment': meta.get('payment', {}),
-        'api_inputs': meta.get('api_inputs', {}),
+        'api_inputs': masked_api_inputs,
     }
     return jsonify(account)
 
@@ -119,15 +120,15 @@ def api_account_api_inputs():
     payload = request.get_json(silent=True) or {}
     meta = get_user_meta(user_id)
     api_inputs = meta.get('api_inputs', {}) or {}
-    api.inputs.update({
-        'alpaca_key': payload.get('alpaca_key', api.inputs.get('alpaca_key')),
-        'alpaca_secret': payload.get('alpaca_secret', api.inputs.get('alpaca_secret')),
-        'finnhub_key': payload.get('finnhub_key', api.inputs.get('finnhub_key')),
-        'openai_key': payload.get('openai_key', api.inputs.get('openai_key')),
-    })
-    meta['api_inputs'] = api.inputs
+    # Update with new values (encryption happens in set_user_meta)
+    for key in ('alpaca_key', 'alpaca_secret', 'finnhub_key', 'openai_key'):
+        if payload.get(key) is not None:
+            api_inputs[key] = payload.get(key)
+    meta['api_inputs'] = api_inputs
     set_user_meta(user_id, meta)
-    return jsonify({'success': True, 'api_inputs': api.inputs})
+    # Return masked values
+    masked = {k: '***' if v else '' for k, v in api_inputs.items()}
+    return jsonify({'success': True, 'api_inputs': masked})
 
 
 @dashboard_bp.route('/api/account/topup', methods=['POST'])

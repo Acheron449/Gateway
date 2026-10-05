@@ -11,7 +11,9 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 @router.get("/{ticker}")
 async def get_analysis(ticker: str) -> dict:
-    df = await market_data.fetch_ohlcv(ticker)
+    ohlcv_result = await market_data.fetch_ohlcv(ticker)
+    df = ohlcv_result.dataframe
+    provenance = ohlcv_result.provenance
     df_indicators = technicals.calculate_all_indicators(df)
     pivots = recognition.find_pivots(df_indicators)
     patterns = [signal.to_dict() for signal in recognition.detect_head_and_shoulders(pivots)]
@@ -25,4 +27,5 @@ async def get_analysis(ticker: str) -> dict:
         "signals": patterns,
         "overall_confidence": final["confidence"],
         "direction": final["direction"],
+        "provenance": provenance,
     }

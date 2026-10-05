@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /secrets/
+Disallow: /admin/
+Disallow: /quant-app-v1/backend/app/auth/
+Sitemap: https://gateway.example/sitemap.xml

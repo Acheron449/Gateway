@@ -11,6 +11,8 @@ interface AnalysisPayload {
   direction?: string;
   overall_confidence?: number;
   signals?: unknown[];
+  price?: number;
+  rsi?: number;
 }
 
 export function NewsTerminal({ ticker }: NewsTerminalProps) {
@@ -40,7 +42,16 @@ export function NewsTerminal({ ticker }: NewsTerminalProps) {
           `confidence ${String(j.overall_confidence ?? "n/a")}`,
           `patterns ${Array.isArray(j.signals) ? j.signals.length : 0} (from REST snapshot)`,
         ];
-        setLines(msgs);
+
+        const newsLines: string[] = [
+          `[DATA] Price: $${j.price?.toFixed(2) ?? "0.00"}`,
+          `[DATA] RSI: ${j.rsi?.toFixed(2) ?? "0.00"}`,
+          `[SIGNAL] Direction: ${String(j.direction ?? "n/a").toUpperCase()}`,
+          `[SIGNAL] Confidence: ${(j.overall_confidence ?? 0) * 100}`,
+          `[SIG] Patterns: ${Array.isArray(j.signals) ? j.signals.length : 0} detected`,
+        ];
+
+        setLines(msgs.concat(newsLines));
         setError(null);
       })
       .catch((e: unknown) => {
@@ -56,25 +67,40 @@ export function NewsTerminal({ ticker }: NewsTerminalProps) {
     <section
       style={{
         flex: "1",
-        minHeight: "120px",
+        minHeight: "150px",
         padding: "0.65rem",
         borderRadius: "8px",
         border: "1px solid #30363d",
         background: "#0d1117",
         fontFamily: "ui-monospace, monospace",
-        fontSize: "0.8rem",
-        color: "#7ee787",
+        fontSize: "0.75rem",
+        color: "#3fb950",
         overflowY: "auto",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.25rem",
       }}
     >
-      <div style={{ marginBottom: "0.35rem", color: "#8b949e", fontFamily: "sans-serif" }}>
-        Terminal · {ticker.toUpperCase() || "—"}
+      <div style={{ 
+        marginBottom: "0.5rem", 
+        paddingBottom: "0.25rem",
+        borderBottom: "1px solid #21262d",
+        color: "#8b949e", 
+        fontFamily: "sans-serif",
+        fontSize: "0.7rem",
+        textTransform: "uppercase",
+        letterSpacing: "0.05em"
+      }}>
+        Real-time Intelligence Terminal · {ticker.toUpperCase()}
       </div>
       {error ? (
-        <div style={{ color: "#ff7b72" }}>{error}</div>
+        <div style={{ color: "#f85149" }}>[ERROR] {error}</div>
       ) : (
-        lines.map((ln) => (
-          <div key={ln}>{ln}</div>
+        lines.map((ln, i) => (
+          <div key={i} style={{ display: 'flex', gap: '0.5rem' }}>
+            <span style={{ color: '#8b949e' }}>{'>'}</span>
+            <span>{ln}</span>
+          </div>
         ))
       )}
     </section>

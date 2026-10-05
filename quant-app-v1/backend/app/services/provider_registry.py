@@ -1,0 +1,47 @@
+"""Compatibility exports for provider registry consumers."""
+
+from app.providers.base import MarketDataProvider, Provider, ProviderConfig, ProviderMeta, ProviderUnavailableError
+from app.providers.registry import (
+    FinnhubProvider,
+    TradingViewProvider,
+    _PROVIDER_CLASSES,
+    _PROVIDERS,
+    _decrypt_key,
+    _encrypt_key,
+    _load_settings,
+    _make_fernet_key,
+    _read_api_key,
+    _read_stored_api_key,
+    _save_settings,
+    _store_api_key,
+    _delete_api_key,
+    get_provider,
+    has_stored_key,
+    list_providers,
+    register_provider,
+)
+
+__all__ = [
+    "MarketDataProvider",
+    "Provider",
+    "ProviderConfig",
+    "ProviderMeta",
+    "ProviderUnavailableError",
+    "FinnhubProvider",
+    "TradingViewProvider",
+    "_PROVIDER_CLASSES",
+    "_PROVIDERS",
+    "_load_settings",
+    "_save_settings",
+    "_read_api_key",
+    "_read_stored_api_key",
+    "_store_api_key",
+    "_delete_api_key",
+    "_make_fernet_key",
+    "_encrypt_key",
+    "_decrypt_key",
+    "has_stored_key",
+    "get_provider",
+    "list_providers",
+    "register_provider",
+]

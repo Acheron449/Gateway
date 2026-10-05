@@ -6,10 +6,30 @@ export interface ScannerProps {
   onPickSymbol?: (symbol: string) => void;
 }
 
-/** Minimal symbol search wired to REST /stocks/search. */
+interface CatalogueInstrument {
+  symbol: string;
+  name?: string;
+  exchange?: string;
+  instrument_type?: string;
+  description?: string;
+  provenance?: {
+    source?: string;
+    provider_version?: string;
+    data_time?: string;
+  };
+}
+
+interface CatalogueSearchPayload {
+  query?: string;
+  matches?: string[];
+  instruments?: CatalogueInstrument[];
+}
+
+/** Symbol search backed by the versioned Gateway instrument catalogue. */
 export function Scanner({ onPickSymbol }: ScannerProps) {
   const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState<string[]>([]);
+  const [matches, setMatches] = useState<CatalogueInstrument[]>([]);
+  const [provenance, setProvenance] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,20 +38,29 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
     const q = query.trim().toUpperCase();
     if (q.length < 1) {
       setMatches([]);
+      setProvenance(null);
       return;
     }
     setBusy(true);
     setError(null);
 
     try {
-      const url = `${API_BASE}/stocks/search?query=${encodeURIComponent(q)}`;
+      const url = `${API_BASE}/catalogue/search?query=${encodeURIComponent(q)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(await res.text());
-      const body = (await res.json()) as { matches?: string[] };
-      setMatches(Array.isArray(body.matches) ? body.matches : []);
+      const body = (await res.json()) as CatalogueSearchPayload;
+      const instruments = Array.isArray(body.instruments) ? body.instruments : [];
+      setMatches(instruments);
+      const first = instruments[0];
+      setProvenance(
+        first?.provenance?.source && first?.provenance?.provider_version
+          ? `${first.provenance.source} · ${first.provenance.provider_version}`
+          : null,
+      );
     } catch {
-      setError("Search failed");
+      setError("Catalogue search failed");
       setMatches([]);
+      setProvenance(null);
     } finally {
       setBusy(false);
     }
@@ -50,7 +79,7 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value.toUpperCase())}
-          placeholder="Filter tickers…"
+          placeholder="Search catalogue…"
           style={{
             flex: "1",
             padding: "0.4rem 0.5rem",
@@ -59,7 +88,7 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
             background: "#0d1117",
             color: "#e6edf3",
           }}
-          aria-label="Scanner query"
+          aria-label="Catalogue query"
         />
         <button
           type="submit"
@@ -78,6 +107,11 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
       {error && (
         <p style={{ color: "#f85149", fontSize: "0.825rem", margin: "0.35rem 0 0" }}>{error}</p>
       )}
+      {provenance && (
+        <p style={{ fontSize: "0.7rem", color: "#8b949e", margin: "0.45rem 0 0" }}>
+          Source: {provenance}
+        </p>
+      )}
       {matches.length > 0 && (
         <ul
           style={{
@@ -89,11 +123,12 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
             gap: "0.35rem",
           }}
         >
-          {matches.map((sym) => (
-            <li key={sym}>
+          {matches.map((inst) => (
+            <li key={inst.symbol}>
               <button
                 type="button"
-                onClick={() => onPickSymbol?.(sym)}
+                onClick={() => onPickSymbol?.(inst.symbol ?? "")}
+                title={inst.name ?? inst.symbol}
                 style={{
                   padding: "0.25rem 0.55rem",
                   borderRadius: "999px",
@@ -103,7 +138,7 @@ export function Scanner({ onPickSymbol }: ScannerProps) {
                   fontWeight: 600,
                 }}
               >
-                {sym}
+                {inst.symbol}
               </button>
             </li>
           ))}

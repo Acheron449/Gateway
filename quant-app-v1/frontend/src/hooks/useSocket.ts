@@ -44,19 +44,20 @@ export function useSocket(ticker: string): LiveTradingUpdate | null {
         if (msg.symbol?.toUpperCase() !== sym) return;
 
         const priceData = priceToTickCandle(msg.price, 60);
-        const pattern = Boolean(msg.pattern_detected);
+        const patternDetected = Boolean(msg.pattern_detected);
+        const patternLabel = msg.pattern_label || "";
         const patternTime =
           typeof msg.pattern_time === "number" ? msg.pattern_time : priceData.time;
 
         setLiveUpdate({
           priceData,
           rsi: typeof msg.rsi === "number" ? msg.rsi : 0,
-          pattern_detected: pattern,
+          pattern_detected: patternDetected,
           time: patternTime,
-          pattern_label: msg.pattern_label,
+          pattern_label: patternLabel,
         });
-      } catch {
-        /* ignore malformed payloads */
+      } catch (error) {
+        console.error("WebSocket error:", error);
       }
     };
 

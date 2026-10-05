@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Gateway — Main</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js" integrity="sha384-stKllnUqA9AD0gsKCuUtf5XlqAW7PwIgDagoNsTWkjkBmJ/GZ/uHTgEBxdLV2VSK" crossorigin="anonymous"></script>
 </head>
 <body data-page="main">
   <header class="topbar">
@@ -25,10 +25,10 @@
       {% if user and (user.email or user.name) %}
         <a href="/dashboard" id="userBadgeName" class="user-info">Hi, {{ user.name or user.email }}</a>
         <a href="/main" class="btn-ghost">Go to App</a>
-        <button class="btn-ghost" id="logoutBtnTop">Log Out</button>
+        <a href="/main" class="btn-ghost">Logout</a>
       {% else %}
-        <button type="button" class="btn-ghost auth-toggle" data-mode="login">Log In</button>
-        <button type="button" class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
+        <button class="btn-ghost auth-toggle" data-mode="login">Log In</button>
+        <button class="btn-primary auth-toggle" data-mode="signup">Sign Up</button>
       {% endif %}
     </div>
   </header>
@@ -77,7 +77,7 @@
       <div class="strategy-creator">
         <h3>Strategy Creator</h3>
         <p class="muted">Use natural language to create or tweak a strategy. Press Generate to populate the strategy parameters.</p>
-        <textarea id="strategyPrompt" placeholder="Describe your trading strategy, e.g. 'Buy on 1H bullish engulfing with RSI &lt; 30, TP 1.5x, SL 0.5x'" rows="3"></textarea>
+        <textarea id="strategyPrompt" placeholder="Describe your trading strategy, e.g. 'Buy on 1H bullish engulfing with RSI < 30, TP 1.5x, SL 0.5x'" rows="3"></textarea>
         <div class="strategy-actions">
           <button id="generateStrategyBtn" class="btn-primary">Generate Strategy</button>
           <button id="applyToChartBtn" class="btn-ghost">Apply to Chart</button>
@@ -92,7 +92,7 @@
         <div class="order-controls">
           <label>Size <input id="orderSize" value="1000"></label>
           <label>Type
-            <select id="orderType"><option>Market</option><option>Limit</option></select>
+            <select id="orderType"><option>Market</option><option>Limit</option><option>Stop</option></select>
           </label>
           <button class="btn-primary">Place Order</button>
         </div>

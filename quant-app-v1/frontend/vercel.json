@@ -1,0 +1,14 @@
+{
+  "framework": "other",
+  "buildCommand": "npm run build",               // runs in the frontend dir
+  "outputDirectory": "dist",                     // where Vite puts the built SPA
+  "functions": {
+    "api/.netlify/functions/*": "python -m uvicorn app.main:app --port $PORT"
+  },
+  "environmentVariables": {
+    "GATEWAY_EXECUTION_MODE": { "value": "paper", "segments": ["default"] },
+    "ENABLE_OPENBB_DATA":   { "value": "false",  "segments": ["default"] },
+    "ENABLE_OPENBB_SERVER": { "value": "false",  "segments": ["default"] },
+    // any other env vars your FastAPI reads from .env / os.getenv
+  }
+}

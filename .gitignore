@@ -1,0 +1,42 @@
+# Downloaded ML model artifacts are deployed locally, never committed.
+quant-app-v1/backend/models/
+.github/prompts
+.playwright-mcp
+ROADMAP_IMPLEMENTATION.prompt.md
+ROADMAP.md
+docs/phase-0-plan.md
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local runtime state
+quant-app-v1/quant_app.db
+
+# Frontend build output
+quant-app-v1/frontend/dist/
+
+# IDE and editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.crt
+# Backend container writable state (SQLite database, encrypted provider keys)
+quant-app-v1/backend/app/data/
+quant-app-v1/backend/app/settings/
+quant-app-v1/backend/vendor/

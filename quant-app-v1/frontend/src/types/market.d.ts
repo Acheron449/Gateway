@@ -5,6 +5,16 @@ export interface HistoryCandle {
   high: number;
   low: number;
   close: number;
+  /** Optional share/bar volume — rendered as a histogram under price */
+  volume?: number;
+}
+
+/** GET /quotes row (ticker strip) */
+export interface QuoteRow {
+  symbol: string;
+  price: number;
+  change: number;
+  change_pct: number;
 }
 
 /** Server → client on /ws/trading */

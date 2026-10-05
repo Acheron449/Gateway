@@ -1,26 +1,84 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
-import re
 import secrets
 import smtplib
 import sqlite3
 import time
-import urllib.request
 from datetime import datetime
 from email.message import EmailMessage
-from html import unescape
 from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt
+from cryptography.fernet import Fernet
 from flask import request
 
 BASE_DIR = Path(__file__).resolve().parent
 USERS_DB = BASE_DIR / "users.db"
 _RATE_LIMITS: dict[str, list[float]] = {}
+
+# Encryption for API keys at rest
+_FERNET_KEY_ENV = "QUANT_API_ENCRYPTION_KEY"
+
+
+def _get_fernet() -> Fernet | None:
+    """Get Fernet instance from environment key."""
+    key_b64 = os.getenv(_FERNET_KEY_ENV)
+    if not key_b64:
+        return None
+    try:
+        key = base64.urlsafe_b64decode(key_b64)
+        return Fernet(key)
+    except Exception:
+        return None
+
+
+def encrypt_api_key(plain: str) -> str | None:
+    """Encrypt an API key for storage. Returns None if encryption not configured."""
+    f = _get_fernet()
+    if not f:
+        return None
+    return f.encrypt(plain.encode()).decode()
+
+
+def decrypt_api_key(cipher: str) -> str | None:
+    """Decrypt an API key from storage. Returns None if decryption fails."""
+    f = _get_fernet()
+    if not f:
+        return None
+    try:
+        return f.decrypt(cipher.encode()).decode()
+    except Exception:
+        return None
+
+
+def encrypt_dict_values(data: dict, keys_to_encrypt: set[str]) -> dict:
+    """Encrypt specified keys in a dictionary."""
+    result = data.copy()
+    for key in keys_to_encrypt:
+        if key in result and result[key]:
+            encrypted = encrypt_api_key(result[key])
+            if encrypted:
+                result[key] = encrypted
+    return result
+
+
+def decrypt_dict_values(data: dict, keys_to_decrypt: set[str]) -> dict:
+    """Decrypt specified keys in a dictionary."""
+    result = data.copy()
+    for key in keys_to_decrypt:
+        if key in result and result[key]:
+            decrypted = decrypt_api_key(result[key])
+            if decrypted:
+                result[key] = decrypted
+    return result
+
+
+API_KEY_FIELDS = {"alpaca_key", "alpaca_secret", "finnhub_key", "openai_key"}
 
 
 def get_db_conn():
@@ -184,6 +242,10 @@ def get_user_meta(user_id: int) -> dict:
         payload.setdefault('usage_remaining', 1000)
         payload.setdefault('payment', {})
         payload.setdefault('api_inputs', {})
+        # Decrypt API keys for use
+        api_inputs = payload.get('api_inputs', {})
+        if api_inputs:
+            payload['api_inputs'] = decrypt_dict_values(api_inputs, API_KEY_FIELDS)
         return payload
     except Exception:
         return {'credits': 1000, 'usage_remaining': 1000, 'payment': {}, 'api_inputs': {}}
@@ -198,6 +260,10 @@ def set_user_meta(user_id: int, meta: dict) -> None:
     normalized.setdefault('usage_remaining', 1000)
     normalized.setdefault('payment', {})
     normalized.setdefault('api_inputs', {})
+    # Encrypt API keys before storage
+    api_inputs = normalized.get('api_inputs', {})
+    if api_inputs:
+        normalized['api_inputs'] = encrypt_dict_values(api_inputs, API_KEY_FIELDS)
     cur.execute('INSERT OR REPLACE INTO user_meta (user_id, meta_json) VALUES (?, ?)', (user_id, json.dumps(normalized)))
     conn.commit()
     conn.close()
@@ -251,81 +317,6 @@ def authenticate_user(email: str, password: str) -> bool:
 
 
 def fetch_forex_factory_news(limit: int = 5):
-    candidate_urls = [
-        'https://www.forexfactory.com/calendar.php?day=today',
-        'https://www.forexfactory.com/',
-        'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
-    ]
-    now_iso = datetime.utcnow().isoformat() + 'Z'
-
-    for url in candidate_urls:
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                html = resp.read().decode('utf-8', errors='ignore')
-            if not html or 'Just a moment' in html or 'cloudflare' in html.lower():
-                continue
-            title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-            title = unescape((title_match.group(1) if title_match else 'Forex Factory').strip())
-            snippets = re.findall(r'>([^<>]{30,220})<', html)
-            clean = []
-            seen = set()
-            for snippet in snippets:
-                text = re.sub(r'\s+', ' ', unescape(snippet)).strip()
-                if len(text) < 40 or len(text) > 220:
-                    continue
-                key = text.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                clean.append(text)
-            if clean:
-                items = []
-                for idx, text in enumerate(clean[:limit], start=1):
-                    title_prefix = title if idx == 1 else 'Forex Factory update'
-                    items.append({
-                        'title': f'{title_prefix} ({idx})',
-                        'headline': text,
-                        'summary': text,
-                        'source': 'Forex Factory',
-                        'url': url,
-                        'published_at': now_iso,
-                    })
-                return items[:limit]
-        except Exception:
-            continue
-
-    fallback = [
-        {
-            'title': 'Forex Factory News API thread',
-            'headline': 'Free News API (Machine Learning, Live Trading, and Backtesting)',
-            'summary': 'The referenced Forex Factory thread discusses using event data, macro calendars, and machine-learning pipelines for trading and backtesting.',
-            'source': 'Forex Factory',
-            'url': 'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
-            'published_at': now_iso,
-        },
-        {
-            'title': 'Economic calendar signal data',
-            'headline': 'Forex Factory provides access to central-bank and macro event timing for news-driven trade planning.',
-            'summary': 'The calendar helps traders align execution around events and macro catalysts while still preserving a backtested risk framework.',
-            'source': 'Forex Factory',
-            'url': 'https://www.forexfactory.com/calendar.php',
-            'published_at': now_iso,
-        },
-        {
-            'title': 'Event-driven strategy research',
-            'headline': 'Machine learning and live trading workflows often combine economic event feeds with model-based filtering and signal scoring.',
-            'summary': 'This approach supports research automation, historical replay, and event-aware signal generation for multi-asset strategies.',
-            'source': 'Forex Factory',
-            'url': 'https://www.forexfactory.com/thread/1247273-free-news-api-machine-learning-live-trading-and',
-            'published_at': now_iso,
-        },
-    ]
-    return fallback[:limit]
+    """Return no records; Gateway does not scrape or synthesize news."""
+    del limit
+    return []
