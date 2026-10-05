@@ -10,6 +10,7 @@ because TestClient is broken with this starlette/httpx pairing):
 from __future__ import annotations
 
 import os
+import tempfile
 import threading
 import time
 
@@ -17,7 +18,7 @@ import httpx
 import uvicorn
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
-os.environ.setdefault("GATEWAY_DATA_DIR", "/tmp/gateway-verify-data")
+os.environ.setdefault("GATEWAY_DATA_DIR", tempfile.mkdtemp(prefix="gateway-verify-data-"))
 from cryptography.fernet import Fernet  # noqa: E402
 os.environ.setdefault("GATEWAY_PROVIDER_KEY", Fernet.generate_key().decode())
 
