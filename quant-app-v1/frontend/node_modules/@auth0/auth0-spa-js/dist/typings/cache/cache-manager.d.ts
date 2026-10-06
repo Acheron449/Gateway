@@ -1,0 +1,78 @@
+import { CacheKeyManifest } from './key-manifest';
+import { CacheEntry, ICache, CacheKey, DecodedToken, IdTokenEntry } from './shared';
+export declare class CacheManager {
+    private cache;
+    private keyManifest?;
+    private nowProvider;
+    constructor(cache: ICache, keyManifest?: CacheKeyManifest | undefined, nowProvider?: () => number | Promise<number>);
+    setIdToken(clientId: string, idToken: string, decodedToken: DecodedToken): Promise<void>;
+    getIdToken(cacheKey: CacheKey): Promise<IdTokenEntry | undefined>;
+    get(cacheKey: CacheKey, expiryAdjustmentSeconds?: number, useMrrt?: boolean, cacheMode?: string): Promise<Partial<CacheEntry> | undefined>;
+    private modifiedCachedEntry;
+    set(entry: CacheEntry): Promise<void>;
+    remove(client_id: string, audience?: string, scope?: string): Promise<void>;
+    stripRefreshToken(refreshToken: string): Promise<void>;
+    clear(clientId?: string): Promise<void>;
+    private wrapCacheEntry;
+    private getCacheKeys;
+    /**
+     * Returns the cache key to be used to store the id token
+     * @param clientId The client id used to link to the id token
+     * @returns The constructed cache key, as a string, to store the id token
+     */
+    private getIdTokenCacheKey;
+    /**
+     * Finds the corresponding key in the cache based on the provided cache key.
+     * The keys inside the cache are in the format {prefix}::{clientId}::{audience}::{scope}.
+     * The first key in the cache that satisfies the following conditions is returned
+     *  - `prefix` is strict equal to Auth0's internally configured `keyPrefix`
+     *  - `clientId` is strict equal to the `cacheKey.clientId`
+     *  - `audience` is strict equal to the `cacheKey.audience`
+     *  - `scope` contains at least all the `cacheKey.scope` values
+     *  *
+     * @param keyToMatch The provided cache key
+     * @param allKeys A list of existing cache keys
+     */
+    private matchExistingCacheKey;
+    /**
+     * Returns the first entry that contains a refresh_token that satisfies the following conditions
+     * The keys inside the cache are in the format {prefix}::{clientId}::{audience}::{scope}.
+     * - `prefix` is strict equal to Auth0's internally configured `keyPrefix`
+     * - `clientId` is strict equal to the `cacheKey.clientId`
+     * @param keyToMatch The provided cache key
+     * @param allKeys A list of existing cache keys
+     */
+    private getEntryWithRefreshToken;
+    /**
+     * Returns all distinct refresh tokens stored for a given audience and client.
+     *
+     * Multiple cache entries may exist for the same audience when different scope
+     * combinations were obtained via separate authorization flows, each potentially
+     * carrying a different refresh token. A Set is used to deduplicate tokens that
+     * are shared across entries (e.g. MRRT).
+     *
+     * @param audience The audience to look up
+     * @param clientId The client id to scope the lookup
+     */
+    getRefreshTokensByAudience(audience: string, clientId: string): Promise<string[]>;
+    /**
+     * Updates the refresh token in cache entries after a rotation.
+     *
+     * When a refresh token is rotated, multiple cache entries (for different audiences/scopes)
+     * may share the same refresh token. This method propagates the new refresh token to all
+     * matching entries.
+     *
+     * With MRRT enabled, concurrent `getTokenSilently()` calls for different audiences all
+     * read the same RT and exchange it in parallel. Each exchange returns a different rotated
+     * RT, which would leave the client with a diverged set of forked tokens per audience.
+     * Passing `useMrrt = true` unconditionally overwrites every entry that has *any*
+     * refresh token, so the last concurrent call to complete always wins and the client
+     * converges to a single shared RT.
+     *
+     * @param oldRefreshToken The refresh token that was used and is now invalid
+     * @param newRefreshToken The new refresh token received from the server
+     * @param clientId The client ID whose entries should be updated
+     * @param useMrrt When true, update all entries regardless of their current RT value
+     */
+    updateEntry(oldRefreshToken: string, newRefreshToken: string, clientId: string, useMrrt?: boolean): Promise<void>;
+}

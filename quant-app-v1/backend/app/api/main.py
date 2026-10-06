@@ -50,7 +50,7 @@ from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
-from app.auth import get_current_user_optional, OptionalUser
+from app.auth import get_current_user_optional, OptionalUser, warm_auth0_jwks
 
 
 def _yf():
@@ -111,6 +111,10 @@ RSI_PERIOD = 14
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auth0 mode: fetch the tenant JWKS up front so the first sign-in is not
+    # latency-bound (no-op when AUTH0_DOMAIN is unset).
+    await warm_auth0_jwks()
+
     ws_symbol = (os.getenv("QUANT_WS_SYMBOL", "AAPL") or "AAPL").upper()
     creds = _alpaca_credentials()
 

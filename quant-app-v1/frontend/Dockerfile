@@ -14,6 +14,16 @@ RUN npm install --prefer-offline --force
 COPY src ./src
 COPY tsconfig.json tailwind.config.js vite.config.ts index.html ./
 
+# Auth0 SPA config — Vite bakes VITE_* vars at build time, so they must be
+# build args (compose passes them through from the host .env). Empty values
+# keep the image working with local password auth only.
+ARG VITE_AUTH0_DOMAIN
+ARG VITE_AUTH0_CLIENT_ID
+ARG VITE_AUTH0_AUDIENCE
+ENV VITE_AUTH0_DOMAIN=${VITE_AUTH0_DOMAIN} \
+    VITE_AUTH0_CLIENT_ID=${VITE_AUTH0_CLIENT_ID} \
+    VITE_AUTH0_AUDIENCE=${VITE_AUTH0_AUDIENCE}
+
 # Build
 RUN npm run build
 

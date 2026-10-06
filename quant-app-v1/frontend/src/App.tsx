@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
+import { Auth0Provider } from "@auth0/auth0-react";
 
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { CenterCanvas } from "./components/layout/CenterCanvas";
@@ -11,6 +12,8 @@ import { ResizeHandle } from "./components/layout/ResizeHandle";
 import { AuthModal } from "./components/auth/AuthModal";
 import { AuthUIProvider, useAuthUI } from "./context/AuthUIContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { Auth0Bridge } from "./context/Auth0Bridge";
+import { auth0Config, auth0Enabled } from "./lib/auth0";
 import { isView } from "./lib/views";
 import "./styles/app.css";
 import "./styles/extensions.css";
@@ -184,7 +187,7 @@ function AppRoutes() {
   );
 }
 
-export default function App() {
+function GatewayApp() {
   return (
     <BrowserRouter>
       <AuthProvider>
@@ -192,7 +195,32 @@ export default function App() {
           <AppRoutes />
           <AuthModal />
         </AuthUIProvider>
+        {/* Syncs the Auth0 SDK session into AuthContext. Rendered whenever
+            Auth0Provider is mounted; both are gated on auth0Enabled so the
+            hook never runs outside its provider. */}
+        {auth0Enabled && <Auth0Bridge />}
       </AuthProvider>
     </BrowserRouter>
+  );
+}
+
+export default function App() {
+  if (!auth0Enabled) {
+    return <GatewayApp />;
+  }
+  return (
+    <Auth0Provider
+      domain={auth0Config.domain}
+      clientId={auth0Config.clientId}
+      authorizationParams={{
+        redirect_uri: window.location.origin,
+        audience: auth0Config.audience,
+        scope: "openid profile email offline_access",
+      }}
+      cacheLocation="localstorage"
+      useRefreshTokens
+    >
+      <GatewayApp />
+    </Auth0Provider>
   );
 }

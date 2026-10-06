@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
 import { API_BASE } from "../lib/constants";
+import { auth0Enabled } from "../lib/auth0";
 
 interface User {
   id: string;
@@ -16,6 +17,15 @@ interface AuthContextType {
   logout: () => void;
   refresh: () => Promise<void>;
   isAuthenticated: boolean;
+  /** True when VITE_AUTH0_* is configured (Auth0 sign-in available). */
+  auth0Enabled: boolean;
+  /** Adopt an Auth0-issued access token as the app session (used by Auth0Bridge).
+   *  Validates the token against /auth/me and throws if the API rejects it. */
+  adoptSession: (token: string) => Promise<void>;
+  /** Drop the local session without touching an external (Auth0) session. */
+  clearSession: () => void;
+  /** Called by Auth0Bridge so logout() can also end the Auth0 session. */
+  registerExternalLogout: (fn: (() => void) | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -98,11 +108,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const logout = useCallback(() => {
+  const externalLogoutRef = useRef<(() => void) | null>(null);
+
+  const clearSession = useCallback(() => {
     setToken(null);
     setUser(null);
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+  }, []);
+
+  const logout = useCallback(() => {
+    clearSession();
+    try {
+      // Auth0 bridge registers this; must never block local sign-out.
+      externalLogoutRef.current?.();
+    } catch {
+      /* external logout failed — local session is already gone */
+    }
+  }, [clearSession]);
+
+  const adoptSession = useCallback(async (newToken: string) => {
+    // Validate against the API first: a frontend/backend Auth0 mismatch
+    // (missing AUTH0_DOMAIN, wrong audience) must fail loudly, not leave a
+    // half-signed-in UI where every data call 401s.
+    const me = await apiGetMe(newToken);
+    if (!me) {
+      throw new Error(
+        "The API rejected the Auth0 token — check AUTH0_DOMAIN / AUTH0_AUDIENCE on the backend",
+      );
+    }
+    setToken(newToken);
+    setUser(me);
+    localStorage.setItem(TOKEN_KEY, newToken);
+    localStorage.setItem(USER_KEY, JSON.stringify(me));
+  }, []);
+
+  const registerExternalLogout = useCallback((fn: (() => void) | null) => {
+    externalLogoutRef.current = fn;
   }, []);
 
   const refresh = useCallback(async () => {
@@ -127,6 +169,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         logout,
         refresh,
         isAuthenticated: !!token && !!user,
+        auth0Enabled,
+        adoptSession,
+        clearSession,
+        registerExternalLogout,
       }}
     >
       {children}
