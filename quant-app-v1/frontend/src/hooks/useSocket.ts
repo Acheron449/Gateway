@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { WS_BASE } from "../lib/constants";
+import { openTradingSocket } from "../lib/tradingSocket";
 import type { HistoryCandle, TradingWsPayload } from "../types/market";
 
 /** Live candle “tick”: server sends last trade price; approximate OHLC to that close. */
@@ -35,12 +35,14 @@ export function useSocket(ticker: string): LiveTradingUpdate | null {
       return;
     }
 
-    const url = `${WS_BASE}/ws/trading`;
-    const socket = new WebSocket(url);
-
-    socket.onmessage = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data as string) as TradingWsPayload;
+    // Authenticated + subscribed + auto-reconnecting: the server rejects
+    // anonymous handshakes, only broadcasts to explicit subscriptions, and
+    // Vercel closes sockets at the function max duration.
+    const dispose = openTradingSocket({
+      subscribe: { symbol: sym, tf: "1m" },
+      onMessage: (raw) => {
+        const msg = raw as unknown as TradingWsPayload;
+        if (typeof msg.price !== "number") return; // acks/control frames
         if (msg.symbol?.toUpperCase() !== sym) return;
 
         const priceData = priceToTickCandle(msg.price, 60);
@@ -56,12 +58,10 @@ export function useSocket(ticker: string): LiveTradingUpdate | null {
           time: patternTime,
           pattern_label: patternLabel,
         });
-      } catch (error) {
-        console.error("WebSocket error:", error);
-      }
-    };
+      },
+    });
 
-    return () => socket.close();
+    return dispose;
   }, [ticker]);
 
   return liveUpdate;

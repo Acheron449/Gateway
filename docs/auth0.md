@@ -1,5 +1,11 @@
 # Auth0 authentication
 
+> **Superseded by Supabase Auth.** The deployed app signs in with Supabase
+> Auth (see [deployment.md](deployment.md) → *Sign-in with Supabase Auth*);
+> the Auth0 wiring below remains in the codebase but stays dormant because
+> no `VITE_AUTH0_*` values are configured, so the Auth0 button never mounts.
+> The backend still verifies Auth0 RS256 tokens when `AUTH0_DOMAIN` is set.
+
 Gateway supports two sign-in modes at the same time; either or both can be
 active:
 

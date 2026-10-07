@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -56,19 +57,46 @@ def _canonical_name(selected: str) -> str | None:
     return None
 
 
+def _fallback_settings_dir() -> Path:
+    """Writable location for provider keys when the bundled dir is unusable.
+
+    Vercel deployments exclude ``app/settings/`` (.vercelignore) and run on a
+    read-only function filesystem, so ``mkdir`` on the bundled path raises
+    ``OSError: [Errno 30] Read-only file system`` and used to take down every
+    provider-backed route. Fall back to the configured data dir (or the system
+    temp dir) — the same ephemeral-storage tradeoff the SQLite data dir
+    already makes there — so reads degrade to "no stored keys" instead of 500.
+    """
+    data_dir = os.getenv("GATEWAY_DATA_DIR", "").strip()
+    base = Path(data_dir) if data_dir else Path(tempfile.gettempdir())
+    return base / "provider_settings"
+
+
 def _ensure_settings_dir() -> None:
+    global _SETTINGS_DIR, _SETTINGS_FILE
+    try:
+        _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        return
+    except OSError:
+        pass
+    # Bundled location missing and/or read-only: relocate to a writable one.
+    _SETTINGS_DIR = _fallback_settings_dir()
+    _SETTINGS_FILE = _SETTINGS_DIR / "provider_keys.json"
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_settings() -> dict[str, str]:
-    _ensure_settings_dir()
-    if not _SETTINGS_FILE.exists():
-        return {}
     try:
+        _ensure_settings_dir()
+        if not _SETTINGS_FILE.exists():
+            return {}
         with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError, TypeError):
+        # Reads must never raise: an unwritable/unreadable settings store
+        # means "no stored keys", so providers report themselves as
+        # unconfigured and routes answer 503 instead of crashing with 500.
         return {}
 
 

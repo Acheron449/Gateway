@@ -16,6 +16,7 @@ mode is configured at all (neither ``JWT_SECRET_KEY`` nor ``AUTH0_DOMAIN``).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import threading
 import time
@@ -118,6 +119,9 @@ def decode_token(token: str) -> TokenData | None:
         and issuer.rstrip("/") == f"https://{AUTH0_DOMAIN}"
     ):
         return _decode_auth0_token(token)
+    if _supabase_conf() is not None and _looks_like_supabase(issuer):
+        # Supabase Auth access token — verify by introspection at GoTrue.
+        return _decode_supabase_token(token, claims)
     return _decode_local_token(token)
 
 
@@ -135,6 +139,124 @@ def _decode_local_token(token: str) -> TokenData | None:
         return TokenData(user_id=user_id, email=email, exp=exp, name=payload.get("name"))
     except (JWTError, TypeError, ValueError, OSError):
         return None
+
+
+# --- Supabase Auth ---------------------------------------------------------
+# Third token flavour: access tokens issued by Supabase Auth (GoTrue) for the
+# project in SUPABASE_URL. Instead of holding the project JWT secret, the
+# backend verifies by introspection — GET /auth/v1/user only answers 200 for
+# tokens GoTrue itself accepts (signature, expiry, bans), so the secret stays
+# dashboard-only. Verified results are cached briefly so a hot endpoint pays
+# one outbound call per token rather than one per request; failures are
+# cached even more briefly so junk bearer tokens cannot turn into a stream of
+# outbound calls.
+
+_SB_INTROSPECT_TTL = 60.0
+_SB_NEGATIVE_TTL = 10.0
+_SB_CACHE_MAX = 512
+_sb_cache: dict[str, tuple[float, TokenData | None]] = {}
+_sb_lock = threading.Lock()
+
+
+def _supabase_conf() -> tuple[str, str] | None:
+    """(project url, publishable key) when Supabase Auth is configured."""
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    key = (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    if not url or not key:
+        return None
+    return url, key
+
+
+def _looks_like_supabase(issuer: object) -> bool:
+    """True for Supabase token issuers (legacy 'supabase' or project URL).
+
+    Local HS256 tokens carry no `iss`, so they never reach the outbound
+    introspection call — only tokens claiming to come from Supabase do.
+    """
+    if not isinstance(issuer, str) or not issuer:
+        return False
+    return issuer == "supabase" or ".supabase.co" in issuer
+
+
+def _introspect_supabase(token: str) -> dict | None:
+    conf = _supabase_conf()
+    if conf is None:
+        return None
+    url, key = conf
+    try:
+        response = httpx.get(
+            f"{url}/auth/v1/user",
+            headers={"apikey": key, "Authorization": f"Bearer {token}"},
+            timeout=3.0,
+        )
+    except Exception as exc:  # network trouble — fail closed
+        logger.warning("Supabase token introspection failed: {}", exc)
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _provision_supabase_user(data: TokenData) -> None:
+    """Create the gateway profile row for a Supabase user on first sight.
+
+    Best-effort: a failed profile write must not reject an otherwise valid
+    sign-in, but it is logged loudly because preference writes need the row.
+    """
+    try:
+        from app.services.database import ensure_user
+
+        ensure_user(user_id=data.user_id, email=data.email, name=data.name)
+    except Exception as exc:
+        logger.warning(
+            "Could not provision gateway_users row for Supabase user {}: {}",
+            data.user_id,
+            exc,
+        )
+
+
+def _decode_supabase_token(token: str, claims: dict) -> TokenData | None:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    with _sb_lock:
+        cached = _sb_cache.get(digest)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+    payload = _introspect_supabase(token)
+    data: TokenData | None = None
+    if payload:
+        sub = payload.get("sub") or payload.get("id")
+        if sub:
+            # GoTrue validated exp when it answered 200; prefer the claim's
+            # value so the per-request expiry check keeps working offline of
+            # GoTrue, falling back to the introspected payload.
+            exp_raw = claims.get("exp") or payload.get("exp")
+            try:
+                exp = datetime.fromtimestamp(float(exp_raw), tz=timezone.utc)
+            except (TypeError, ValueError, OSError):
+                exp = datetime.now(timezone.utc) + timedelta(seconds=3600)
+            metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
+            email = payload.get("email") or claims.get("email") or f"{sub}@supabase.local"
+            name = metadata.get("name") or payload.get("name") or claims.get("name")
+            data = TokenData(user_id=str(sub), email=str(email), exp=exp, name=name)
+
+    ttl = _SB_INTROSPECT_TTL if data is not None else _SB_NEGATIVE_TTL
+    with _sb_lock:
+        _sb_cache[digest] = (now + ttl, data)
+        if len(_sb_cache) > _SB_CACHE_MAX:
+            for key in [k for k, (expiry, _) in _sb_cache.items() if expiry <= now]:
+                _sb_cache.pop(key, None)
+            while len(_sb_cache) > _SB_CACHE_MAX:
+                _sb_cache.pop(next(iter(_sb_cache)), None)
+
+    if data is not None:
+        _provision_supabase_user(data)
+    return data
 
 
 def _download_jwks() -> list[dict]:

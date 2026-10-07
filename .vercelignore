@@ -1,0 +1,32 @@
+# Never upload local Python state or secrets
+.venv/
+.env
+.env.*
+secrets/
+**/__pycache__/
+*.py[cod]
+
+# Backend runtime-only / heavy dirs (would blow the 500MB function bundle)
+quant-app-v1/backend/models/
+quant-app-v1/backend/vendor/
+quant-app-v1/backend/tests/
+# data/ holds only runtime state plus the 8.7KB instrument catalogue, which
+# is a read-only dependency of /stocks/{ticker}/metadata and /stocks/search —
+# excluding the whole dir made those routes fail on Vercel, and a `!`
+# negation did not bring the file back, so exclude the state file directly.
+quant-app-v1/backend/data/event_logs
+quant-app-v1/backend/app/data/
+quant-app-v1/backend/app/settings/
+quant-app-v1/backend/test_alpaca.py
+
+# Frontend build deps (rebuilt in the cloud)
+quant-app-v1/frontend/node_modules/
+quant-app-v1/frontend/dist/
+
+# Repo tooling not needed at build time
+.github/
+.codebase-memory/
+docs/
+.idea/
+.vscode/
+*.log

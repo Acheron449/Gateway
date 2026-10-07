@@ -41,3 +41,5 @@ secrets/
 quant-app-v1/backend/app/data/
 quant-app-v1/backend/app/settings/
 quant-app-v1/backend/vendor/
+.vercel
+.env*

@@ -313,7 +313,24 @@ async def get_quote(
             status="unavailable",
             message=message,
         )
-    return QuoteResponse(**quote)
+    # Providers return different payload shapes (Yahoo sends symbol/price,
+    # Finnhub sends instrument/last_price). Normalize to the QuoteResponse
+    # contract so a mismatched payload degrades instead of raising a pydantic
+    # ValidationError (HTTP 500) inside response serialization.
+    payload = dict(quote)
+    payload.setdefault("instrument", payload.pop("symbol", None) or symbol.upper())
+    if payload.get("last_price") is None and "price" in payload:
+        payload["last_price"] = payload.pop("price")
+    payload.setdefault(
+        "provenance",
+        {
+            "source": provider_instance.name,
+            "provider_version": provider_instance.meta.get("version", "unknown"),
+            "coverage": "US equities quote",
+            "entitlement": "unknown",
+        },
+    )
+    return QuoteResponse(**payload)
 
 
 @router.get("/providers")

@@ -731,8 +731,7 @@ export function PaperTrading({
   // state each second and auto-fills accepted orders while connected.
   useEffect(() => {
     if (isLive) return undefined;
-    const token = localStorage.getItem("gateway_auth_token");
-    if (!token) return undefined;
+    if (!localStorage.getItem("gateway_auth_token")) return undefined;
 
     let closed = false;
     let socket: WebSocket | null = null;
@@ -740,6 +739,11 @@ export function PaperTrading({
 
     const connect = () => {
       if (closed) return;
+      // Read the token per attempt (not once per effect): after a Supabase
+      // token refresh the stored value changes, and a retry loop pinned to a
+      // stale token would be rejected forever.
+      const token = localStorage.getItem("gateway_auth_token");
+      if (!token) return;
       try {
         socket = new WebSocket(`${WS_BASE}/portfolio/stream?token=${encodeURIComponent(token)}`);
       } catch {
