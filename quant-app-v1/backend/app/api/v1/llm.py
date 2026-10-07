@@ -74,7 +74,10 @@ async def update_llm_provider(provider_id: str, request: ProviderUpdateRequest, 
 
 @router.delete("/providers/{provider_id}/key")
 async def delete_llm_key(provider_id: str, user: CurrentUser) -> dict[str, Any]:
-    deleted = svc.delete_provider_key(provider_id)
+    try:
+        deleted = svc.delete_provider_key(provider_id)
+    except svc.LlmError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="No stored key for this provider")
     return {"provider": provider_id, "deleted": True}

@@ -11,6 +11,15 @@ take down provider-backed routes with a bare 500:
   excluded from the bundle).
 * ``QuoteResponse(**quote)`` pydantic ``ValidationError`` for providers that
   return ``symbol``/``price`` instead of ``instrument``/``provenance``.
+
+Second round (LLM providers):
+
+* ``llm_providers._ensure_dir()`` hit the same EROFS on the bundled
+  ``app/settings`` dir — ``GET /llm/providers`` 500'd ("internal server error
+  for llm provider retrieval").
+* ``GATEWAY_PROVIDER_KEY`` missing on Vercel — saving a provider API key
+  raised ``RuntimeError`` (``/settings/providers/{name}/key`` → 503,
+  ``PUT /llm/providers/{id}`` → 400).
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ import pytest
 from app.api.main import app
 from app.api.v1 import stocks as stocks_api
 from app.providers import registry
+from app.services import llm_providers as llm_svc
 from app.services.catalogue import InstrumentCatalogueError
 
 
@@ -119,6 +129,71 @@ class TestReadOnlyBundleSettings:
         registry._ensure_settings_dir()
         assert registry._SETTINGS_DIR == bundled
         assert bundled.is_dir()
+
+
+def _install_readonly_llm_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm_svc, "_SETTINGS_DIR", _ReadOnlyDir())
+    monkeypatch.setattr(
+        llm_svc, "_SETTINGS_FILE", Path("/var/task/app/settings/llm_providers.json")
+    )
+    monkeypatch.setenv("GATEWAY_DATA_DIR", str(tmp_path))
+
+
+class TestReadOnlyLlmProviderSettings:
+    def test_llm_settings_relocate_when_bundle_is_read_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_readonly_llm_bundle(tmp_path, monkeypatch)
+
+        # Must not raise: reads degrade to "no saved providers".
+        assert llm_svc._load_store() == {}
+        assert llm_svc._SETTINGS_DIR == tmp_path / "provider_settings"
+        assert llm_svc._SETTINGS_DIR.is_dir()
+
+    @pytest.mark.asyncio
+    async def test_llm_providers_endpoint_survives_read_only_bundle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_readonly_llm_bundle(tmp_path, monkeypatch)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        # The exact production crash site: GET /llm/providers -> _load_store()
+        # -> _ensure_dir() used to raise EROFS ("internal server error").
+        response = await fetch("/llm/providers")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["providers"], "catalogue must not be empty"
+        by_id = {p["id"]: p for p in body["providers"]}
+        # Keyed provider with no env key and no stored key reports unconfigured.
+        assert by_id["openrouter"]["has_key"] is False
+        assert by_id["openrouter"]["configured"] is False
+        # Keyless entries stay available so local Ollama still works.
+        assert by_id["ollama-local"]["key_required"] is False
+
+    def test_llm_key_roundtrip_after_relocation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_readonly_llm_bundle(tmp_path, monkeypatch)
+        monkeypatch.setenv("GATEWAY_PROVIDER_KEY", registry._make_fernet_key().decode())
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        llm_svc.save_provider_settings("openrouter", api_key="sk-or-test")
+        assert llm_svc.stored_api_key("openrouter") == "sk-or-test"
+        assert llm_svc.has_usable_key(llm_svc.CATALOG_BY_ID["openrouter"]) is True
+
+        assert llm_svc.delete_provider_key("openrouter") is True
+        assert llm_svc.stored_api_key("openrouter") is None
+
+    def test_llm_key_save_without_encryption_key_raises_clear_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The exact production failure: no GATEWAY_PROVIDER_KEY on Vercel.
+        monkeypatch.setenv("GATEWAY_PROVIDER_KEY", "")
+        monkeypatch.setenv("GATEWAY_PROVIDER_KEY_FILE", "")
+
+        with pytest.raises(llm_svc.LlmError) as excinfo:
+            llm_svc.save_provider_settings("openrouter", api_key="sk-or-test")
+        assert "GATEWAY_PROVIDER_KEY" in str(excinfo.value)
 
 
 class TestCatalogueDegradation:
