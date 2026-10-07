@@ -70,10 +70,11 @@ npx vercel deploy --prod   # aliases https://gateway-gules-ten.vercel.app
   `app/services/llm_providers.py` follows the same pattern — without it
   `GET /llm/providers` 500'd with *"internal server error for llm provider
   retrieval"* — and a failed settings write now surfaces as a clear 400/503
-  (`LlmError`) instead of a bare 500.
-  Consequence: **provider API keys saved from the UI on Vercel live in
-  per-instance `/tmp`** and vanish when the instance recycles — set them as
-  Vercel env vars (`FINNHUB_API_KEY`, …) for durability.
+  (  `LlmError`) instead of a bare 500.
+  Keys saved from the UI are durable: they are Fernet-encrypted and
+  persisted to Supabase (`gateway_provider_keys`, see §3), with the
+  per-instance file only as a read fallback — set provider keys as Vercel
+  env vars (`FINNHUB_API_KEY`, …) if you prefer env over UI-managed keys.
 - **WebSockets work** (Vercel public beta; Python/ASGI support shipped
   2026-07-23 — FastAPI needs no Vercel-specific upgrade code, just a WS
   implementation such as `websockets`/`uvicorn[standard]`, both already in
@@ -145,6 +146,32 @@ the project — `gateway_users_preferences_rpcs`):
 - Access goes through SECURITY DEFINER RPCs (`gw_create_user`,
   `gw_get_user_by_email`, `gw_get_user_by_id`, `gw_get_preferences`,
   `gw_upsert_preferences`), gated by `_gw_check(<SUPABASE_RPC_SECRET>)`.
+- **Provider API keys** use the same pattern (migration
+  `gateway_provider_keys_rpcs`): table `public.gateway_provider_keys`
+  (`store` = `market`/`llm`, `name`, `ciphertext`, `payload jsonb`) with
+  **RLS enabled and no policies** — anon reads return `[]`, verified.
+  The table only ever holds **Fernet ciphertext** (encrypted app-side with
+  `GATEWAY_PROVIDER_KEY`); `payload` carries non-secret settings (LLM
+  `base_url`, model lists). RPCs `gw_list_provider_keys`,
+  `gw_upsert_provider_key`, `gw_delete_provider_key` are `_gw_check`-gated
+  like the auth ones. `app/services/key_store.py` fronts them:
+  Supabase authoritative when the trio is set, reads cached in memory 60s
+  (the `get_provider()` hot path costs ≤1 outbound RPC per window), read
+  failures degrade to the per-instance file — never 500; write failures
+  raise and the key routes answer **503 "not saved"**.
+  **Old data survives updates**: keys/settings written to the per-instance
+  file before this feature existed are backfilled into Supabase on first
+  read against an empty store (at most once per process; a failed
+  promotion stays eligible and retries after the TTL), so nothing is lost
+  across deploys or instance recycling.
+- **Device cache (frontend)**: the Providers pages, the AI harness and the
+  Agentic Lab cache the non-secret provider lists in `localStorage` under
+  `gw_providers_v1_*` (7-day TTL) — the site paints instantly from the
+  user's device and keeps the last-known configuration visible when the
+  API is unreachable. Deliberately `localStorage`, not cookies: httpOnly
+  cookies are unreadable from JS, readable ones are ~4KB and ride on every
+  request. **API keys are never cached client-side** — only ids, labels,
+  base URLs, flags and model lists.
 - `app/services/database.py` switches modes from the environment at call
   time: all three of `SUPABASE_URL` / `SUPABASE_KEY` /
   `SUPABASE_RPC_SECRET` ⇒ Supabase (transport errors raise — no silent
@@ -195,7 +222,7 @@ All of these belong in the backend environment (see [.env.example](../.env.examp
 | Variable | Purpose |
 | --- | --- |
 | `JWT_SECRET_KEY` | Session signing — required, the API refuses to boot without it |
-| `GATEWAY_PROVIDER_KEY` | Fernet key encrypting provider keys **and** the secrets vault — without it `POST /settings/providers/{name}/key` answers 503 and `PUT /llm/providers/{id}` answers 400 with *"… is not set"*. Set for Production **and** Preview (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` \| `npx vercel env add GATEWAY_PROVIDER_KEY production`); Production is set, Preview still needs it (the CLI's branch prompt blocks non-interactive adds) |
+| `GATEWAY_PROVIDER_KEY` | Fernet key encrypting provider keys **and** the secrets vault — without it `POST /settings/providers/{name}/key` answers 503 and `PUT /llm/providers/{id}` answers 400 with *"… is not set"*. Set for Production **and** Preview (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` \| `npx vercel env add GATEWAY_PROVIDER_KEY production`); Production is set, Preview still needs it (the CLI's branch prompt blocks non-interactive adds). Keys encrypted with it are stored as ciphertext in Supabase `gateway_provider_keys`, so rotating it requires re-encrypting stored rows |
 | `GATEWAY_QUOTES_TTL` | Seconds before batch quotes refetch (default 10) |
 | `GATEWAY_PRICE_TTL` | Seconds before the fill/risk price cache refetches (default 10) |
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Live trading section (Alpaca) |

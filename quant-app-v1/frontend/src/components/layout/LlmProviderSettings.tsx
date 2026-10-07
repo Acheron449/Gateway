@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE } from "../../lib/constants";
+import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 
@@ -204,38 +205,46 @@ export function LlmProviderSettings() {
   const [selected, setSelected] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const applyProviders = useCallback((list: LlmProvider[]) => {
+    setProviders(list);
+    setOpen((current) => {
+      const next = { ...current };
+      for (const provider of list) {
+        if (!next[provider.id]) {
+          next[provider.id] = {
+            baseUrl: provider.base_url,
+            apiKey: "",
+            showKey: false,
+            modelInput: "",
+            defaultModel: provider.default_model ?? "",
+            loading: false,
+            message: null,
+          };
+        }
+      }
+      return next;
+    });
+  }, []);
+
   const fetchProviders = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/llm/providers`);
       if (!response.ok) throw new Error(await readError(response, "Failed to load LLM providers"));
       const data = (await response.json()) as { providers: LlmProvider[] };
-      setProviders(data.providers);
+      applyProviders(data.providers);
+      writeProviderCache("llm", data); // device cache: full payload, no secrets
       setLoadError(null);
-      setOpen((current) => {
-        const next = { ...current };
-        for (const provider of data.providers) {
-          if (!next[provider.id]) {
-            next[provider.id] = {
-              baseUrl: provider.base_url,
-              apiKey: "",
-              showKey: false,
-              modelInput: "",
-              defaultModel: provider.default_model ?? "",
-              loading: false,
-              message: null,
-            };
-          }
-        }
-        return next;
-      });
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Failed to load LLM providers");
     }
-  }, []);
+  }, [applyProviders]);
 
   useEffect(() => {
+    // Paint instantly from the device cache, then reconcile with the server.
+    const cached = readProviderCache<{ providers: LlmProvider[] }>("llm");
+    if (cached?.providers?.length) applyProviders(cached.providers);
     void fetchProviders();
-  }, [fetchProviders]);
+  }, [fetchProviders, applyProviders]);
 
   const mutate = async (id: string, run: (state: CardState) => Promise<CardState>) => {
     const state = open[id];

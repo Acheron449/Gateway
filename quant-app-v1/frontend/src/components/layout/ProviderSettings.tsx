@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_BASE } from "../../lib/constants";
+import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { REFRESH_OPTIONS, setRefreshMs, useRefreshMs } from "../../lib/refresh";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
@@ -471,11 +472,17 @@ export function ProviderSettings() {
     } catch (error) {
       const message = toErrorMessage(error, "Failed to load provider settings");
       setLoadError(message);
-      setProviders([]);
+      // Keep the last-known list (or the device-cache copy shown on mount)
+      // instead of blanking the page — the error banner still shows.
     } finally {
       setLoadingProviders(false);
     }
   }, []);
+
+  useEffect(() => {
+    // Keep the device cache in step with every successful (re)load.
+    if (providers.length) writeProviderCache("settings", providers);
+  }, [providers]);
 
   const refreshProviderStatus = useCallback(async (name: string) => {
     try {
@@ -503,6 +510,12 @@ export function ProviderSettings() {
   }, []);
 
   useEffect(() => {
+    // Paint instantly from the device cache, then reconcile with the server.
+    const cached = readProviderCache<ProviderStatus[]>("settings");
+    if (cached?.length) {
+      setProviders(cached);
+      setLoadingProviders(false);
+    }
     void fetchProviders();
   }, [fetchProviders, isAuthenticated]);
 

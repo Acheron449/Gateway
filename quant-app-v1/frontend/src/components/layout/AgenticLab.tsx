@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../../lib/constants";
+import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 
@@ -325,6 +326,7 @@ export function AgenticLab({ selectedSymbol }: AgenticLabProps) {
       if (provRes.ok) {
         const data = (await provRes.json()) as { providers: LlmProvider[] };
         setProviders(data.providers);
+        writeProviderCache("llm", data); // device cache: no secrets in it
       }
       if (agentRes.ok) setAgents(((await agentRes.json()) as { agents: LabAgent[] }).agents);
       if (runRes.ok) {
@@ -350,6 +352,9 @@ export function AgenticLab({ selectedSymbol }: AgenticLabProps) {
   }, []);
 
   useEffect(() => {
+    // Paint the provider picker from the device cache, then reconcile.
+    const cached = readProviderCache<{ providers: LlmProvider[] }>("llm");
+    if (cached?.providers?.length) setProviders(cached.providers);
     void refresh();
     return () => {
       if (pollRef.current) clearTimeout(pollRef.current);
