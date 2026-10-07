@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -169,7 +170,8 @@ LLM_PROVIDER_CATALOG: list[dict[str, Any]] = [
 
 CATALOG_BY_ID: dict[str, dict[str, Any]] = {entry["id"]: entry for entry in LLM_PROVIDER_CATALOG}
 
-_SETTINGS_DIR = Path(__file__).resolve().parent.parent / "settings"
+_BUNDLED_SETTINGS_DIR = Path(__file__).resolve().parent.parent / "settings"
+_SETTINGS_DIR = _BUNDLED_SETTINGS_DIR
 _SETTINGS_FILE = _SETTINGS_DIR / "llm_providers.json"
 
 _MODELS_CACHE_TTL = 60.0
@@ -184,15 +186,41 @@ class LlmError(RuntimeError):
 # Storage
 # ---------------------------------------------------------------------------
 
+def _fallback_settings_dir() -> Path:
+    """Writable location when the bundled ``app/settings`` dir is unusable.
+
+    Vercel deployments exclude ``app/settings/`` (.vercelignore) and run on a
+    read-only function filesystem, so ``mkdir`` on the bundled path raises
+    ``OSError: [Errno 30] Read-only file system`` and used to 500 every
+    ``/llm/providers`` request. Fall back to the configured data dir (or the
+    system temp dir) — the same ephemeral-storage tradeoff the SQLite data
+    dir already makes there.
+    """
+    data_dir = os.getenv("GATEWAY_DATA_DIR", "").strip()
+    base = Path(data_dir) if data_dir else Path(tempfile.gettempdir())
+    return base / "provider_settings"
+
+
 def _ensure_dir() -> None:
+    global _SETTINGS_DIR, _SETTINGS_FILE
+    try:
+        _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        return
+    except OSError:
+        pass
+    # Bundled location missing and/or read-only: relocate to a writable one.
+    _SETTINGS_DIR = _fallback_settings_dir()
+    _SETTINGS_FILE = _SETTINGS_DIR / "llm_providers.json"
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_store() -> dict[str, dict[str, Any]]:
-    _ensure_dir()
-    if not _SETTINGS_FILE.exists():
-        return {}
+    # Reads must never raise: an unusable settings store means "no saved
+    # providers", so the catalogue still renders instead of 500-ing.
     try:
+        _ensure_dir()
+        if not _SETTINGS_FILE.exists():
+            return {}
         with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
         return value if isinstance(value, dict) else {}
@@ -328,7 +356,10 @@ def save_provider_settings(
         store[entry["id"]] = settings
     else:
         store.pop(entry["id"], None)
-    _save_store(store)
+    try:
+        _save_store(store)
+    except OSError as exc:
+        raise LlmError(f"Could not persist {entry['label']} settings: {exc}") from exc
     return settings
 
 
@@ -346,7 +377,10 @@ def delete_provider_key(provider_id: str) -> bool:
         store[entry["id"]] = settings
     else:
         store.pop(entry["id"], None)
-    _save_store(store)
+    try:
+        _save_store(store)
+    except OSError as exc:
+        raise LlmError(f"Could not persist provider settings: {exc}") from exc
     return True
 
 

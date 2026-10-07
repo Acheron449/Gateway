@@ -67,6 +67,10 @@ npx vercel deploy --prod   # aliases https://gateway-gules-ten.vercel.app
   (news, calendar and quote routes). It now relocates its provider-key
   settings dir to `$GATEWAY_DATA_DIR/provider_settings` on EROFS, and reads
   degrade to "no stored keys" (routes answer 503 instead of 500).
+  `app/services/llm_providers.py` follows the same pattern — without it
+  `GET /llm/providers` 500'd with *"internal server error for llm provider
+  retrieval"* — and a failed settings write now surfaces as a clear 400/503
+  (`LlmError`) instead of a bare 500.
   Consequence: **provider API keys saved from the UI on Vercel live in
   per-instance `/tmp`** and vanish when the instance recycles — set them as
   Vercel env vars (`FINNHUB_API_KEY`, …) for durability.
@@ -191,7 +195,7 @@ All of these belong in the backend environment (see [.env.example](../.env.examp
 | Variable | Purpose |
 | --- | --- |
 | `JWT_SECRET_KEY` | Session signing — required, the API refuses to boot without it |
-| `GATEWAY_PROVIDER_KEY` | Fernet key encrypting provider keys **and** the secrets vault |
+| `GATEWAY_PROVIDER_KEY` | Fernet key encrypting provider keys **and** the secrets vault — without it `POST /settings/providers/{name}/key` answers 503 and `PUT /llm/providers/{id}` answers 400 with *"… is not set"*. Set for Production **and** Preview (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` \| `npx vercel env add GATEWAY_PROVIDER_KEY production`); Production is set, Preview still needs it (the CLI's branch prompt blocks non-interactive adds) |
 | `GATEWAY_QUOTES_TTL` | Seconds before batch quotes refetch (default 10) |
 | `GATEWAY_PRICE_TTL` | Seconds before the fill/risk price cache refetches (default 10) |
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Live trading section (Alpaca) |
