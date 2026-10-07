@@ -22,6 +22,7 @@ from typing import Any, AsyncIterator, Optional
 import httpx
 
 from app.providers.registry import _decrypt_key, _encrypt_key, _encryption_key
+from app.services import key_store
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +218,33 @@ def _ensure_dir() -> None:
 def _load_store() -> dict[str, dict[str, Any]]:
     # Reads must never raise: an unusable settings store means "no saved
     # providers", so the catalogue still renders instead of 500-ing.
+    local: dict[str, dict[str, Any]] = {}
     try:
         _ensure_dir()
-        if not _SETTINGS_FILE.exists():
-            return {}
-        with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
-        return value if isinstance(value, dict) else {}
+        if _SETTINGS_FILE.exists():
+            with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            local = value if isinstance(value, dict) else {}
     except (OSError, ValueError, TypeError):
-        return {}
+        local = {}
+    remote = key_store.load_with_backfill("llm", local)
+    if remote is None or (not remote and local):
+        # Supabase not configured (local dev/tests), unreachable, or still
+        # empty after a promotion attempt: the per-instance file holds the
+        # best available copy of old data.
+        return local
+    # Supabase is authoritative when configured: entries are rebuilt from
+    # the durable row (payload = base_url/models/default_model, ciphertext
+    # = api_key), so the local file's possibly stale copy never wins.
+    merged: dict[str, dict[str, Any]] = {}
+    for provider_id, entry in remote.items():
+        if not isinstance(entry, dict):
+            continue
+        settings: dict[str, Any] = dict(entry.get("payload") or {})
+        if entry.get("ciphertext"):
+            settings["api_key"] = str(entry["ciphertext"])
+        merged[provider_id] = settings
+    return merged
 
 
 def _save_store(store: dict[str, dict[str, Any]]) -> None:
@@ -356,10 +375,7 @@ def save_provider_settings(
         store[entry["id"]] = settings
     else:
         store.pop(entry["id"], None)
-    try:
-        _save_store(store)
-    except OSError as exc:
-        raise LlmError(f"Could not persist {entry['label']} settings: {exc}") from exc
+    _persist_entry(entry["id"], settings, store)
     return settings
 
 
@@ -377,11 +393,32 @@ def delete_provider_key(provider_id: str) -> bool:
         store[entry["id"]] = settings
     else:
         store.pop(entry["id"], None)
+    _persist_entry(entry["id"], settings, store)
+    return True
+
+
+def _persist_entry(provider_id: str, settings: dict[str, Any], store: dict) -> None:
+    """Write one entry remote-first (Supabase), then to the local file.
+
+    Remote write failures raise RuntimeError so the routes can answer 503
+    ("not saved") instead of silently keeping the key only in ephemeral
+    /tmp; local write failures raise LlmError.
+    """
+    ciphertext = settings.get("api_key")
+    payload = {k: v for k, v in settings.items() if k != "api_key"}
+    if settings:
+        key_store.save(
+            "llm",
+            provider_id,
+            ciphertext if isinstance(ciphertext, str) else None,
+            payload=payload or None,
+        )
+    else:
+        key_store.delete("llm", provider_id)
     try:
         _save_store(store)
     except OSError as exc:
         raise LlmError(f"Could not persist provider settings: {exc}") from exc
-    return True
 
 
 def has_usable_key(entry: dict[str, Any]) -> bool:

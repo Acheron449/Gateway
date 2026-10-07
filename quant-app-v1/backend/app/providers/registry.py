@@ -11,6 +11,7 @@ from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import get_settings
+from app.services import key_store
 from app.providers.adanos_provider import AdanosSentimentProvider
 from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, ProviderMeta
@@ -86,18 +87,31 @@ def _ensure_settings_dir() -> None:
 
 
 def _load_settings() -> dict[str, str]:
+    local: dict[str, str] = {}
     try:
         _ensure_settings_dir()
-        if not _SETTINGS_FILE.exists():
-            return {}
-        with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
-        return value if isinstance(value, dict) else {}
+        if _SETTINGS_FILE.exists():
+            with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            local = value if isinstance(value, dict) else {}
     except (OSError, ValueError, TypeError):
         # Reads must never raise: an unwritable/unreadable settings store
         # means "no stored keys", so providers report themselves as
         # unconfigured and routes answer 503 instead of crashing with 500.
-        return {}
+        local = {}
+    remote = key_store.load_with_backfill("market", local)
+    if remote is None or (not remote and local):
+        # Supabase not configured (local dev/tests), unreachable, or still
+        # empty after a promotion attempt: the per-instance file holds the
+        # best available copy of old data.
+        return local
+    # Supabase is authoritative when configured (same rule as database.py):
+    # durable ciphertext only, never the local file's possibly stale copy.
+    return {
+        name: str(entry["ciphertext"])
+        for name, entry in remote.items()
+        if isinstance(entry, dict) and entry.get("ciphertext")
+    }
 
 
 def _save_settings(settings: dict[str, str]) -> None:
@@ -200,8 +214,12 @@ def _store_api_key(provider: str, key: str) -> None:
     encryption_key = _encryption_key()
     if not encryption_key:
         raise RuntimeError("GATEWAY_PROVIDER_KEY or GATEWAY_PROVIDER_KEY_FILE is not set")
+    ciphertext = _encrypt_key(value, encryption_key)
+    # Remote first: if Supabase rejects the write, nothing lands locally
+    # either, so the route's 503 accurately means "nothing was saved".
+    key_store.save("market", name, ciphertext)
     settings = _load_settings()
-    settings[name] = _encrypt_key(value, encryption_key)
+    settings[name] = ciphertext
     _save_settings(settings)
 
 
@@ -213,6 +231,7 @@ def _delete_api_key(provider: str) -> bool:
     matched = next((key for key in settings if key.casefold() == name.casefold()), None)
     if matched is None:
         return False
+    key_store.delete("market", matched)  # remote first; RuntimeError → 503
     del settings[matched]
     _save_settings(settings)
     return True

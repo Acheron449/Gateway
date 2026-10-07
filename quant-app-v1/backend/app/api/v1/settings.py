@@ -121,7 +121,10 @@ async def delete_provider_key(
     if not has_stored_key(meta["name"]):
         raise HTTPException(status_code=404, detail="No stored key found for this provider")
 
-    _delete_api_key(meta["name"])
+    try:
+        _delete_api_key(meta["name"])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ProviderKeyDeleteResponse(
         provider=meta["name"],
         deleted=True,

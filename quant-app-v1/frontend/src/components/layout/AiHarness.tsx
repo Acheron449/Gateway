@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../../lib/constants";
+import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 
@@ -140,11 +141,8 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
   const selected = useMemo(() => providers.find((p) => p.id === providerId) ?? null, [providers, providerId]);
 
   // ---- providers ---------------------------------------------------------
-  const fetchProviders = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/llm/providers`);
-      if (!response.ok) throw new Error(await readError(response, "Failed to load providers"));
-      const data = (await response.json()) as { providers: LlmProvider[]; default_provider: string | null };
+  const applyProviders = useCallback(
+    (data: { providers: LlmProvider[]; default_provider: string | null }) => {
       setProviders(data.providers);
       setProvidersError(null);
       setProviderId((current) => {
@@ -157,14 +155,28 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
         }
         return data.default_provider;
       });
+    },
+    [],
+  );
+
+  const fetchProviders = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/llm/providers`);
+      if (!response.ok) throw new Error(await readError(response, "Failed to load providers"));
+      const data = (await response.json()) as { providers: LlmProvider[]; default_provider: string | null };
+      applyProviders(data);
+      writeProviderCache("llm", data); // device cache: full payload, no secrets
     } catch (error) {
       setProvidersError(error instanceof Error ? error.message : "Failed to load providers");
     }
-  }, []);
+  }, [applyProviders]);
 
   useEffect(() => {
+    // Instant provider picker from the device cache, then reconcile.
+    const cached = readProviderCache<{ providers: LlmProvider[]; default_provider: string | null }>("llm");
+    if (cached?.providers?.length) applyProviders(cached);
     void fetchProviders();
-  }, [fetchProviders]);
+  }, [fetchProviders, applyProviders]);
 
   useEffect(() => {
     if (!selected) return;
