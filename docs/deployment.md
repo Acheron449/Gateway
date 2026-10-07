@@ -40,8 +40,13 @@ npx vercel deploy --prod   # aliases https://gateway-gules-ten.vercel.app
 - **500 MB uncompressed function-bundle limit** (no tree-shaking). Two
   guards keep us under it:
   - [.vercelignore](../.vercelignore) excludes `models/` (405 MB),
-    `vendor/` (31 MB), `tests/`, `data/`, `app/settings/`, `.env*`,
-    `node_modules/` from the upload.
+    `vendor/` (31 MB), `tests/`, `data/event_logs`, `app/data/`,
+    `app/settings/`, `.env*`, `node_modules/` from the upload.
+    `data/instruments/catalogue_v1.json` (8.7 KB) must stay **included**:
+    `/stocks/{ticker}/metadata` and `/stocks/search` read it at runtime, and
+    excluding `data/` wholesale made those routes fail on Vercel (the
+    uploader also does not appear to honor `!` negations, so exclude the
+    state file explicitly rather than the directory).
   - [quant-app-v1/backend/requirements.txt](../quant-app-v1/backend/requirements.txt)
     is a **trimmed Vercel-only subset** of the root `requirements.txt`
     (Docker/CI remain the source of truth there): scikit-learn, skfolio,
@@ -54,6 +59,17 @@ npx vercel deploy --prod   # aliases https://gateway-gules-ten.vercel.app
     size; optimizing dependencies”). The pre-trim build failed at 840 MB.
 - Vercel's Python requirements parser rejects `-r` includes and inline `#`
   comments after a pin — keep every comment on its own line in both files.
+- **The function filesystem is read-only** (only `/tmp` is writable). Code
+  that writes next to its own module must fall back to `GATEWAY_DATA_DIR`
+  (set to `/tmp`) or it raises `OSError: [Errno 30] Read-only file system`
+  and 500s every affected route — that is exactly what
+  `app/providers/registry.py` used to do on each `get_provider()` call
+  (news, calendar and quote routes). It now relocates its provider-key
+  settings dir to `$GATEWAY_DATA_DIR/provider_settings` on EROFS, and reads
+  degrade to "no stored keys" (routes answer 503 instead of 500).
+  Consequence: **provider API keys saved from the UI on Vercel live in
+  per-instance `/tmp`** and vanish when the instance recycles — set them as
+  Vercel env vars (`FINNHUB_API_KEY`, …) for durability.
 - **WebSockets work** (Vercel public beta; Python/ASGI support shipped
   2026-07-23 — FastAPI needs no Vercel-specific upgrade code, just a WS
   implementation such as `websockets`/`uvicorn[standard]`, both already in

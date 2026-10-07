@@ -29,7 +29,12 @@ async def search_tickers(query: str) -> dict:
 
 @router.get("/{ticker}/metadata")
 async def get_ticker_metadata(ticker: str) -> dict:
-    instrument = get_instrument(ticker)
+    try:
+        instrument = get_instrument(ticker)
+    except InstrumentCatalogueError as exc:
+        # Degrade like /stocks/search does when the catalogue is absent
+        # instead of surfacing an unhandled 500.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if instrument is None:
         raise HTTPException(status_code=404, detail=f"'{ticker.upper()}' is not in the supported instrument catalogue")
     result = await market_data.fetch_ohlcv(ticker, limit=2)
