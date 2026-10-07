@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
 import { API_BASE } from "../lib/constants";
 import { auth0Enabled } from "../lib/auth0";
+import { supabase, supabaseEnabled } from "../lib/supabase";
 
 interface User {
   id: string;
@@ -51,7 +52,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  /** Validate an access token against the API and adopt it as the session.
+   *  Shared by every sign-in path so a token the API rejects never yields a
+   *  half-signed-in UI where every data call 401s. */
+  const adoptToken = useCallback(async (accessToken: string) => {
+    const me = await apiGetMe(accessToken);
+    if (!me) {
+      throw new Error(
+        "The API rejected this sign-in token — check SUPABASE_URL / SUPABASE_KEY on the backend",
+      );
+    }
+    setToken(accessToken);
+    setUser(me);
+    localStorage.setItem(TOKEN_KEY, accessToken);
+    localStorage.setItem(USER_KEY, JSON.stringify(me));
+  }, []);
+
   useEffect(() => {
+    let cancelled = false;
+
+    if (supabaseEnabled && supabase) {
+      // Supabase Auth is the session authority: it persists the session in
+      // localStorage, refreshes access tokens itself, and emits changes we
+      // mirror into this context.
+      const sb = supabase; // narrowed copy: `supabase` is a nullable module const
+      sb.auth
+        .getSession()
+        .then(({ data }) => {
+          if (cancelled) return;
+          const accessToken = data.session?.access_token;
+          if (accessToken) {
+            return adoptToken(accessToken).catch(() => {
+              if (!cancelled) sb.auth.signOut().catch(() => undefined);
+            });
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoading(false);
+        });
+
+      const { data: { subscription } } = sb.auth.onAuthStateChange((_event, session) => {
+        if (cancelled) return;
+        const accessToken = session?.access_token ?? null;
+        if (accessToken) {
+          setToken(accessToken);
+          // Mirror the refreshed token into storage too: WebSocket clients
+          // (and anything else re-reading the stored token after a refresh)
+          // must not keep retrying with a stale one.
+          localStorage.setItem(TOKEN_KEY, accessToken);
+          // Keep profile data fresh (sign-in, token refresh, metadata edits).
+          apiGetMe(accessToken).then((me) => {
+            if (!cancelled && me) {
+              setUser(me);
+              localStorage.setItem(USER_KEY, JSON.stringify(me));
+            }
+          });
+        } else {
+          setToken(null);
+          setUser(null);
+          localStorage.removeItem(TOKEN_KEY);
+          localStorage.removeItem(USER_KEY);
+        }
+      });
+
+      return () => {
+        cancelled = true;
+        subscription.unsubscribe();
+      };
+    }
+
+    // No Supabase config (local dev): fall back to the backend's own
+    // register/login endpoints and the token this app stored itself.
     const storedToken = localStorage.getItem(TOKEN_KEY);
     if (storedToken) {
       setToken(storedToken);
@@ -66,9 +137,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     }
     setIsLoading(false);
-  }, []);
+  }, [adoptToken]);
 
   const login = useCallback(async (email: string, password: string) => {
+    if (supabaseEnabled && supabase) {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message);
+      const accessToken = data.session?.access_token;
+      if (!accessToken) throw new Error("Sign-in failed");
+      // adoptToken validates against /auth/me before the UI turns signed-in;
+      // onAuthStateChange keeps the token fresh afterwards.
+      await adoptToken(accessToken);
+      return;
+    }
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -79,16 +160,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(error.detail || "Login failed");
     }
     const { access_token } = await res.json();
-    setToken(access_token);
-    localStorage.setItem(TOKEN_KEY, access_token);
-    const me = await apiGetMe(access_token);
-    if (me) {
-      setUser(me);
-      localStorage.setItem(USER_KEY, JSON.stringify(me));
-    }
-  }, []);
+    await adoptToken(access_token);
+  }, [adoptToken]);
 
   const register = useCallback(async (email: string, password: string, name?: string) => {
+    if (supabaseEnabled && supabase) {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name } },
+      });
+      if (error) throw new Error(error.message);
+      const accessToken = data.session?.access_token;
+      if (accessToken) {
+        await adoptToken(accessToken);
+        return;
+      }
+      // Confirm-email is enabled on the project: no session until the link
+      // in the confirmation email has been clicked.
+      throw new Error("Account created — check your email to confirm it, then sign in.");
+    }
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -99,14 +190,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(error.detail || "Registration failed");
     }
     const { access_token } = await res.json();
-    setToken(access_token);
-    localStorage.setItem(TOKEN_KEY, access_token);
-    const me = await apiGetMe(access_token);
-    if (me) {
-      setUser(me);
-      localStorage.setItem(USER_KEY, JSON.stringify(me));
-    }
-  }, []);
+    await adoptToken(access_token);
+  }, [adoptToken]);
 
   const externalLogoutRef = useRef<(() => void) | null>(null);
 
@@ -119,6 +204,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearSession();
+    if (supabaseEnabled && supabase) {
+      // Ends the Supabase session (and its refresh token); the state change
+      // also comes back through onAuthStateChange, which is idempotent here.
+      supabase.auth.signOut().catch(() => undefined);
+    }
     try {
       // Auth0 bridge registers this; must never block local sign-out.
       externalLogoutRef.current?.();

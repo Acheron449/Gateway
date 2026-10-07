@@ -18,6 +18,60 @@ _DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = _DATA_DIR / "quant_app.db"
 
 
+# --- Supabase (cloud) mode -------------------------------------------------
+# On Vercel the filesystem is ephemeral, so auth state (users + preferences)
+# is stored in Supabase Postgres via secret-gated SECURITY DEFINER RPCs.
+# Enabled only when SUPABASE_URL, SUPABASE_KEY and SUPABASE_RPC_SECRET are all
+# set; otherwise every helper below falls through to local SQLite exactly as
+# before. When configured, Supabase is authoritative — there is deliberately
+# no silent SQLite fallback, which would split-brain registrations across the
+# two stores.
+
+def _supabase_conf() -> tuple[str, str, str]:
+    """Read Supabase config at call time (not import time) for testability."""
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    key = (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    secret = os.getenv("SUPABASE_RPC_SECRET", "").strip()
+    return url, key, secret
+
+
+def _supabase_enabled() -> bool:
+    return all(_supabase_conf())
+
+
+def _sb_rpc(fn: str, payload: dict):
+    """POST to PostgREST ``/rest/v1/rpc/<fn>``; returns parsed JSON or None.
+
+    Raises RuntimeError on transport/server errors so a Supabase outage fails
+    the request loudly instead of writing auth state to throwaway SQLite.
+    """
+    import httpx
+
+    url, key, secret = _supabase_conf()
+    body = {"p_secret": secret, **payload}
+    try:
+        resp = httpx.post(
+            f"{url}/rest/v1/rpc/{fn}",
+            json=body,
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15.0,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Supabase RPC {fn} unreachable: {exc}") from exc
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Supabase RPC {fn} failed ({resp.status_code}): {resp.text[:300]}"
+        )
+    if not resp.content:
+        return None
+    data = resp.json()
+    return None if data is None else data
+
+
 def _migrate_event_snapshots(cur):
     row = cur.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'event_snapshots'"
@@ -1016,7 +1070,17 @@ def get_news_item(news_id: str) -> dict | None:
 
 # --- Phase 1.4 User & Preference helpers ---
 
-def create_user(user_id: str, email: str, hashed_password: str, name: str | None = None) -> None:
+def create_user(user_id: str, email: str, hashed_password: str | None, name: str | None = None) -> None:
+    # hashed_password is NULL for Supabase-Auth-managed users (they have no
+    # local password); local register/login always passes a bcrypt hash.
+    if _supabase_enabled():
+        _sb_rpc("gw_create_user", {
+            "p_id": user_id,
+            "p_email": email,
+            "p_name": name,
+            "p_hashed_password": hashed_password,
+        })
+        return
     init_db()
     now = __import__('datetime').datetime.utcnow().isoformat()
     with get_connection() as conn:
@@ -1029,6 +1093,8 @@ def create_user(user_id: str, email: str, hashed_password: str, name: str | None
 
 
 def get_user_by_email(email: str) -> dict | None:
+    if _supabase_enabled():
+        return _sb_rpc("gw_get_user_by_email", {"p_email": email})
     init_db()
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
@@ -1037,11 +1103,43 @@ def get_user_by_email(email: str) -> dict | None:
 
 
 def get_user_by_id(user_id: str) -> dict | None:
+    if _supabase_enabled():
+        return _sb_rpc("gw_get_user_by_id", {"p_id": user_id})
     init_db()
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return dict(row) if row else None
+
+
+def ensure_user(user_id: str, email: str, name: str | None = None) -> dict | None:
+    """Idempotently create the profile row for an externally authenticated user.
+
+    Supabase Auth users authenticate at GoTrue, not here — this only
+    provisions the ``gateway_users`` row that ``gateway_preferences`` (FK) and
+    ``/auth/me`` depend on, with a NULL password so local login can never use
+    it. Returns the row, or None when it could not be created (e.g. an email
+    already registered by a different local user); callers log rather than
+    fail the sign-in over a profile write.
+    """
+    user = get_user_by_id(user_id)
+    if user is not None:
+        return user
+    try:
+        create_user(
+            user_id=user_id,
+            email=email or f"{user_id}@supabase.local",
+            hashed_password=None,
+            name=name,
+        )
+    except Exception:
+        # Another instance may have won the insert race — a row that exists is
+        # all we need; anything else (unique-email conflict) propagates.
+        user = get_user_by_id(user_id)
+        if user is None:
+            raise
+        return user
+    return get_user_by_id(user_id)
 
 
 def create_watchlist(wl_id: str, user_id: str, name: str, symbols: list[str]) -> None:
@@ -1136,20 +1234,81 @@ def delete_layout(user_id: str, symbol: str) -> None:
         conn.commit()
 
 
+def _jsonable(value):
+    """Coerce pydantic models (and containers of them) to plain JSON data.
+
+    Callers hand us ``UserPreferences`` members, which hold ``Watchlist`` /
+    ``Layout`` models. Both storage paths serialize (``json.dumps`` for
+    SQLite, ``httpx``'s JSON encoder for the Supabase RPC) and neither can
+    encode a pydantic model, so normalize once at this boundary.
+    """
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _normalize_watchlists(watchlists) -> list[dict]:
+    """Shape stored watchlists as the ``Watchlist`` model expects.
+
+    Rows written before this schema (or by older callers) can hold bare
+    symbol strings; upgrading them keeps response-model validation from
+    turning a read into a 500.
+    """
+    out: list[dict] = []
+    for entry in watchlists or []:
+        if isinstance(entry, str):
+            out.append({"id": entry, "name": entry, "symbols": [entry]})
+        elif isinstance(entry, dict):
+            item = dict(entry)
+            item.setdefault("id", str(item.get("name") or item.get("symbol") or ""))
+            item.setdefault("name", str(item.get("symbol") or item.get("id") or ""))
+            item.setdefault("symbols", [])
+            out.append(item)
+    return out
+
+
 def get_preferences(user_id: str) -> dict:
+    default_prefs = {"theme": "dark", "default_timezone": "UTC", "watchlists": [], "saved_layouts": {}}
+    if _supabase_enabled():
+        row = _sb_rpc("gw_get_preferences", {"p_user_id": user_id})
+        if not row:
+            return dict(default_prefs)
+        # PostgREST already returns jsonb columns parsed (list/dict).
+        row.setdefault("watchlists", [])
+        row.setdefault("saved_layouts", {})
+        row["watchlists"] = _normalize_watchlists(row.get("watchlists"))
+        row.pop("user_id", None)  # internal column, not part of the payload
+        return row
     init_db()
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM preferences WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
-        return {"theme": "dark", "default_timezone": "UTC", "watchlists": [], "saved_layouts": {}}
+        return dict(default_prefs)
     item = dict(row)
     item['watchlists'] = json.loads(item['watchlists']) if item.get('watchlists') else []
     item['saved_layouts'] = json.loads(item['saved_layouts']) if item.get('saved_layouts') else {}
+    item['watchlists'] = _normalize_watchlists(item['watchlists'])
+    item.pop('user_id', None)  # internal column, not part of the payload
     return item
 
 
 def upsert_preferences(user_id: str, *, theme: str | None = None, default_timezone: str | None = None, watchlists: list | None = None, saved_layouts: dict | None = None) -> None:
+    watchlists = _jsonable(watchlists or [])
+    saved_layouts = _jsonable(saved_layouts or {})
+    if _supabase_enabled():
+        _sb_rpc("gw_upsert_preferences", {
+            "p_user_id": user_id,
+            "p_theme": theme or "dark",
+            "p_default_timezone": default_timezone or "UTC",
+            "p_watchlists": watchlists or [],
+            "p_saved_layouts": saved_layouts or {},
+        })
+        return
     init_db()
     now = __import__('datetime').datetime.utcnow().isoformat()
     with get_connection() as conn:

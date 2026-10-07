@@ -1,0 +1,61 @@
+# Vercel backend service requirements (service root: quant-app-v1/backend/).
+#
+# This is intentionally a TRIMMED subset of the repo-root requirements.txt
+# (Docker/CI source of truth), because Vercel's Python function bundle limit
+# is 500MB uncompressed and the full set (llvmlite/numba/scipy + sklearn +
+# skfolio/plotly + ccxt + ...) exceeded it. Only packages actually imported
+# by app/ at runtime are kept; everything below has zero import sites or is
+# wrapped in try/except and degrades gracefully when absent.
+#
+# Vercel's parser rejects '-r' includes and inline comments after pins, so
+# every comment sits on its own line.
+#
+# Divergences from the root requirements.txt (keep root intact for Docker/CI):
+#   DROPPED (unused or lazy+guarded in app/):
+#     Flask, flask_session      — no import sites in app/
+#     scikit-learn, skfolio     — no import sites in app/ (skfolio pulls
+#                                 plotly/cvxpy/highspy ~60MB)
+#     ccxt (~36MB)              — lazy import in providers/ccxt_provider.py;
+#                                 is_configured/backup paths catch ImportError
+#     fastapi-utils, finnhub-python, beautifulsoup4, textblob, vaderSentiment
+#                               — no import sites in app/
+#     psycopg2-binary, redis    — no import sites in app/ (Supabase via httpx)
+#     pytest, pytest-asyncio    — tests/ is excluded from the deploy
+#   KEPT but note: scipy is still installed transitively via numba, which
+#   pandas-ta requires (numba==0.61.2); pandas_ta imports numba at import
+#   time, so the numba/llvmlite/scipy chain cannot be removed.
+
+# --- Web Server & API Framework ---
+fastapi==0.115.4
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+pydantic-settings==2.10.1
+bcrypt==4.2.0
+passlib==1.7.4
+python-jose[cryptography]==3.4.0
+slowapi==0.1.9
+
+# --- Quantitative Math & Indicators ---
+pandas==2.3.2
+numpy==2.2.6
+pandas-ta==0.4.71b0
+scipy==1.15.1
+
+# --- Data Fetching & Networking ---
+httpx==0.28.1
+websockets>=13.0
+yfinance==0.2.65
+alpaca-py==0.37.0
+aiohttp==3.10.11
+
+# --- Database & Utilities ---
+python-dotenv==1.0.1
+loguru==0.7.3
+
+# --- Security / serialization / build support ---
+cryptography==44.0.2
+orjson==3.10.11
+packaging==24.2
+
+# Note: Frontend build deps (React / Vite / TypeScript) live in
+# quant-app-v1/frontend/package.json and do not belong in this file.

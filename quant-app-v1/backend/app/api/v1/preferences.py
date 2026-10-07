@@ -1,19 +1,25 @@
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from typing import Optional
-from app.auth import get_current_user, CurrentUser
+from fastapi import APIRouter
+from app.auth import CurrentUser
 from app.models.user import UserPreferences
+from app.services.database import get_preferences, upsert_preferences
 
 router = APIRouter(prefix="/preferences", tags=["preferences"])
 
-# In-memory per user (dev)
-_user_prefs = {}
 
 @router.get("", response_model=UserPreferences)
-def get_preferences(user: CurrentUser):
-    return _user_prefs.get(user.id, UserPreferences())
+def read_preferences(user: CurrentUser):
+    # DB-backed (SQLite locally, Supabase RPCs on Vercel) — the previous
+    # in-memory dict silently lost every write on serverless deployments.
+    return UserPreferences.model_validate(get_preferences(user.id))
+
 
 @router.patch("", response_model=UserPreferences)
-def update_preferences(prefs: UserPreferences, user: CurrentUser):
-    _user_prefs[user.id] = prefs
-    return prefs
+def write_preferences(prefs: UserPreferences, user: CurrentUser):
+    upsert_preferences(
+        user.id,
+        theme=prefs.theme,
+        default_timezone=prefs.default_timezone,
+        watchlists=prefs.watchlists,
+        saved_layouts=prefs.saved_layouts,
+    )
+    return UserPreferences.model_validate(get_preferences(user.id))
