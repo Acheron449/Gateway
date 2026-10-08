@@ -18,6 +18,105 @@ class KronosUnavailable(RuntimeError):
     """Raised when the optional Kronos source checkout or model is unavailable."""
 
 
+def local_server_url() -> str:
+    """Base URL of a locally running Kronos inference server (item 12).
+
+    Set ``KRONOS_SERVER_URL`` to point at your own server; the default matches
+    a local ``kronos_server`` process exposing ``/health`` and ``/predict``.
+    """
+    return (os.getenv("KRONOS_SERVER_URL", "").strip() or "http://127.0.0.1:8765").rstrip("/")
+
+
+_local_status_cache: tuple[float, dict] | None = None
+
+
+def _local_server_enabled() -> bool:
+    return os.getenv("KRONOS_LOCAL_SERVER", "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def local_server_status(timeout: float = 0.8, *, refresh: bool = False) -> dict:
+    """Probe the local model server so the UI can show the connection state.
+
+    Probing costs a socket round-trip, so the result is memoised for a few
+    seconds — forecasts should not each pay the probe when the server is down.
+    """
+    global _local_status_cache
+    if not _local_server_enabled():
+        return {"configured_url": local_server_url(), "reachable": False, "detail": "disabled by KRONOS_LOCAL_SERVER", "enabled": False}
+
+    import time as _time
+
+    now = _time.monotonic()
+    if not refresh and _local_status_cache is not None and now - _local_status_cache[0] < 8:
+        return _local_status_cache[1]
+
+    url = local_server_url()
+    try:
+        import httpx
+
+        response = httpx.get(f"{url}/health", timeout=timeout)
+        reachable = response.status_code == 200
+        detail = None if reachable else f"HTTP {response.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any transport error just means "not up"
+        reachable = False
+        detail = str(exc) or type(exc).__name__
+    status = {
+        "configured_url": url,
+        "reachable": reachable,
+        "detail": detail,
+        "enabled": True,
+    }
+    _local_status_cache = (now, status)
+    return status
+
+
+def _forecast_from_local_server(
+    bars: list[dict], horizon: int, frequency: str, sample_count: int
+) -> pd.DataFrame:
+    """POST candles to the local model server and rebuild a Kronos-shaped frame."""
+    import httpx
+
+    url = local_server_url()
+    response = httpx.post(
+        f"{url}/predict",
+        json={
+            "bars": bars,
+            "horizon": horizon,
+            "frequency": frequency,
+            "sample_count": sample_count,
+        },
+        timeout=float(os.getenv("KRONOS_LOCAL_SERVER_TIMEOUT", "60")),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("forecast") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list) or not rows:
+        raise KronosUnavailable("Local Kronos server returned no forecast rows")
+
+    frame = pd.DataFrame(rows)
+    # The server may label the date column `index`, `time` or `date`.
+    stamp = next((c for c in ("index", "time", "date", "timestamp") if c in frame.columns), None)
+    if stamp is None:
+        raise KronosUnavailable("Local Kronos server response is missing a date column")
+    dates = pd.to_datetime(frame.pop(stamp), errors="coerce")
+    if dates.isna().any():
+        raise KronosUnavailable("Local Kronos server returned unparseable dates")
+
+    for column in ("open", "high", "low", "close", "volume"):
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    missing = {"open", "high", "low", "close"}.difference(frame.columns)
+    if missing:
+        raise KronosUnavailable(
+            f"Local Kronos server response is missing: {', '.join(sorted(missing))}"
+        )
+    keep = [c for c in ("open", "high", "low", "close", "volume") if c in frame]
+    out = frame[keep].copy()
+    # Unnamed DatetimeIndex so the API's reset_index() yields an `index` key.
+    out.index = pd.DatetimeIndex(dates)
+    return out
+
+
 def bars_to_kronos_frame(bars: list[dict]) -> tuple[pd.DataFrame, pd.Series]:
     """Convert Gateway chart bars to Kronos' lower-case OHLCV input contract."""
     frame = pd.DataFrame(bars).copy()
@@ -95,12 +194,20 @@ def _predictor():
         raise KronosUnavailable(f"Unable to load Kronos model '{model_name}': {exc}") from exc
 
 
-def forecast(bars: list[dict], horizon: int, frequency: str = "D", sample_count: int = 1) -> pd.DataFrame:
+def forecast_in_process(
+    bars: list[dict], horizon: int, frequency: str = "D", sample_count: int = 1
+) -> pd.DataFrame:
+    """Load the Kronos model in this process and predict.
+
+    Split out from :func:`forecast` so a locally running model server can call
+    it without re-probing itself and recursing.
+    """
     if not 1 <= horizon <= 240:
         raise ValueError("horizon must be between 1 and 240")
     frame, timestamps = bars_to_kronos_frame(bars)
     if len(frame) < 20:
         raise ValueError("at least 20 historical candles are required for a Kronos forecast")
+
     future = pd.Series(pd.date_range(timestamps.iloc[-1], periods=horizon + 1, freq=frequency)[1:])
     return _predictor().predict(
         df=frame,
@@ -111,3 +218,27 @@ def forecast(bars: list[dict], horizon: int, frequency: str = "D", sample_count:
         top_p=0.9,
         sample_count=max(1, min(int(sample_count), 20)),
     )
+
+
+def forecast(bars: list[dict], horizon: int, frequency: str = "D", sample_count: int = 1) -> pd.DataFrame:
+    """Forecast candles, preferring a locally running Kronos model server."""
+    if not 1 <= horizon <= 240:
+        raise ValueError("horizon must be between 1 and 240")
+    if len(bars) < 20:
+        raise ValueError("at least 20 historical candles are required for a Kronos forecast")
+
+    # Prefer a locally running model server when one is reachable (item 12),
+    # then fall back to loading the model in-process.
+    if _local_server_enabled() and local_server_status()["reachable"]:
+        try:
+            return _forecast_from_local_server(bars, horizon, frequency, sample_count)
+        except KronosUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 — degrade to the in-process path
+            import logging
+
+            logging.getLogger("gateway.kronos").warning(
+                "Local Kronos server failed (%s) — falling back to in-process model", exc
+            )
+
+    return forecast_in_process(bars, horizon, frequency, sample_count)

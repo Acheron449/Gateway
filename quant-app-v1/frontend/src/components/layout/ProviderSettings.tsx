@@ -5,6 +5,7 @@ import { REFRESH_OPTIONS, setRefreshMs, useRefreshMs } from "../../lib/refresh";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 import { LlmProviderSettings } from "./LlmProviderSettings";
+import { AccountSettings } from "./AccountSettings";
 
 interface ProviderMeta {
   name: string;
@@ -368,7 +369,11 @@ function ProviderCard({
                     type={showKey ? "text" : "password"}
                     value={inputApiKey}
                     onChange={(event) => setInputApiKey(event.target.value)}
-                    placeholder="Paste your API key…"
+                    placeholder={
+                      provider.name === "Alpaca"
+                        ? "Paste KEY_ID:SECRET…"
+                        : "Paste your API key…"
+                    }
                     className="api-key-input"
                     autoComplete="off"
                     spellCheck={false}
@@ -731,6 +736,8 @@ export function ProviderSettings() {
       <LlmProviderSettings />
 
       <SecretsVaultSection isAuthenticated={isAuthenticated} />
+
+      <AccountSettings isAuthenticated={isAuthenticated} />
 
       <div className="settings-section">
         <h2>Encryption key management</h2>

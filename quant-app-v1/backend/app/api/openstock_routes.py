@@ -1,7 +1,8 @@
-"""OpenStock symbol lookup and Adanos sentiment routes.
+"""Symbol lookup and Adanos sentiment routes.
 
-Phase 1-1.5 / Phase 2 extension: expose OpenStock's Finnhub-backed symbol search
-and the optional Adanos sentiment endpoint through the Gateway provider layer.
+Symbol search is backed directly by the Finnhub provider (the former
+OpenStock wrapper was removed — it only re-exposed Finnhub /stock/symbol).
+Adanos supplies the cross-source sentiment endpoint.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 from app.providers.registry import get_provider
 
-router = APIRouter(prefix="/openstock", tags=["openstock"])
+router = APIRouter(prefix="/openstock", tags=["symbols"])
 
 
 class SymbolSearchResponse(BaseModel):
@@ -35,12 +36,12 @@ async def search_symbols(
     exchange: str = Query("US", description="Exchange code (US, LSE, TSX, NSE, ...)"),
     limit: int = Query(20, ge=1, le=50),
 ) -> SymbolSearchResponse:
-    """Search symbols via the OpenStock provider (Finnhub /stock/symbol)."""
-    provider = get_provider("OpenStock")
+    """Search symbols via the Finnhub provider (/stock/symbol)."""
+    provider = get_provider("Finnhub")
     if provider is None or not provider.is_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenStock provider is not configured. Set a Finnhub API key.",
+            detail="Symbol search is not configured. Set a Finnhub API key.",
         )
     try:
         instruments = await provider.search(query, exchange=exchange, limit=limit)

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from app.models import EconomicEvent, EventImportance, NewsItem
+from app.models import EconomicEvent, EventImportance, Instrument, NewsItem, provenance_now
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
 
 
@@ -20,8 +20,25 @@ FINNHUB_NEWS_ENDPOINT = "/company-news"
 # Premium-only on Finnhub: free keys receive HTTP 403 here.
 FINNHUB_CALENDAR_ENDPOINT = "/calendar/economic"
 FINNHUB_QUOTE_ENDPOINT = "/quote"
+# Symbol search across exchanges (the former OpenStock lookup, now first-class).
+FINNHUB_SYMBOL_ENDPOINT = "/stock/symbol"
+# OHLCV candles for the interactive chart (premium-gated on free keys -> 403).
+FINNHUB_CANDLE_ENDPOINT = "/stock/candle"
 FINNHUB_VERSION = "finnhub-v1"
 FINNHUB_RATE_LIMIT = 60
+
+# Finnhub resolution codes for the chart's timeframe ids.
+_FINNHUB_RESOLUTIONS = {
+    "1m": "1",
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "60m": "60",
+    "1h": "60",
+    "1d": "D",
+    "1w": "W",
+    "1M": "M",
+}
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -297,6 +314,124 @@ class FinnhubProvider(MarketDataProvider):
                 "entitlement": "finnhub-free-tier",
             },
         }
+
+    async def history(
+        self,
+        instrument: str,
+        interval: str = "1d",
+        range: str = "1y",
+    ) -> list[dict[str, Any]] | None:
+        """Fetch OHLCV candles for the chart from Finnhub /stock/candle."""
+        if not self.is_configured or not instrument.strip():
+            return None
+
+        resolution = _FINNHUB_RESOLUTIONS.get(interval, "D")
+        now = datetime.now(timezone.utc)
+        span = {"1D": 1, "1W": 7, "1M": 30}.get(range, 365)
+        start = int((now - timedelta(days=span)).timestamp())
+        end = int(now.timestamp())
+
+        try:
+            response = await self._http.get(
+                f"{FINNHUB_BASE}{FINNHUB_CANDLE_ENDPOINT}",
+                params={
+                    "symbol": instrument.upper(),
+                    "resolution": resolution,
+                    "from": start,
+                    "to": end,
+                },
+                headers=self._headers(),
+            )
+        except Exception as exc:
+            raise ProviderUnavailableError("Finnhub candle request failed") from exc
+        if response.status_code != 200:
+            raise ProviderUnavailableError(
+                "Finnhub candle request was rejected", status_code=response.status_code
+            )
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise ProviderUnavailableError("Finnhub candle response was malformed") from exc
+        if not isinstance(payload, dict) or payload.get("s") != "ok":
+            # Free keys are premium-gated here; report so the caller can fall back.
+            raise ProviderUnavailableError(
+                "Finnhub candles are not available on this key (premium-gated)"
+            )
+        times = payload.get("t") or []
+        opens = payload.get("o") or []
+        highs = payload.get("h") or []
+        lows = payload.get("l") or []
+        closes = payload.get("c") or []
+        volumes = payload.get("v") or []
+        rows: list[dict[str, Any]] = []
+        for i, ts in enumerate(times):
+            try:
+                close = float(closes[i])
+                if not math.isfinite(close) or close <= 0:
+                    continue
+                rows.append(
+                    {
+                        "time": int(ts),
+                        "open": float(opens[i]),
+                        "high": float(highs[i]),
+                        "low": float(lows[i]),
+                        "close": close,
+                        "volume": float(volumes[i]) if i < len(volumes) else 0.0,
+                    }
+                )
+            except (IndexError, TypeError, ValueError):
+                continue
+        rows.sort(key=lambda row: row["time"])
+        return rows or None
+
+    async def search(self, query: str, *, exchange: str = "US", limit: int = 20) -> list[Instrument]:
+        """Search symbols via Finnhub /stock/symbol into typed Instrument records."""
+        if not self.is_configured or not query or limit <= 0:
+            return []
+        try:
+            response = await self._http.get(
+                f"{FINNHUB_BASE}{FINNHUB_SYMBOL_ENDPOINT}",
+                params={"exchange": exchange, "query": query, "limit": limit},
+                headers=self._headers(),
+            )
+        except Exception as exc:
+            raise ProviderUnavailableError("Finnhub symbol search request failed") from exc
+        if response.status_code != 200:
+            raise ProviderUnavailableError("Finnhub symbol search was rejected")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise ProviderUnavailableError("Finnhub symbol search response was malformed") from exc
+        results = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+        if not isinstance(results, list):
+            raise ProviderUnavailableError("Finnhub symbol search response was malformed")
+        provenance = provenance_now(
+            source="finnhub",
+            provider_version=FINNHUB_VERSION,
+            coverage=f"symbol-lookup/{exchange}",
+            delay_seconds=0,
+        )
+        instruments: list[Instrument] = []
+        for record in results[:limit]:
+            if not isinstance(record, dict):
+                continue
+            symbol = str(record.get("symbol", "")).strip().upper()
+            if not symbol or len(symbol) > 12:
+                continue
+            try:
+                instruments.append(
+                    Instrument(
+                        symbol=symbol,
+                        name=str(record.get("description") or symbol),
+                        exchange=str(record.get("exchange") or exchange),
+                        currency=str(record.get("currency") or "USD"),
+                        instrument_type=str(record.get("type") or "common_stock"),
+                        provenance=provenance,
+                    )
+                )
+            except Exception:
+                continue
+        return instruments
 
     async def health_check(self) -> dict[str, Any]:
         result = await super().health_check()

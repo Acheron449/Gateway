@@ -58,9 +58,37 @@ export function TopBar({ activeView, selectedSymbol, onSymbolSelect, onOpenSearc
 
         {isAuthenticated && user ? (
           <div className="user-menu">
-            <button className="user-avatar" aria-label="User menu" title={user.email} onClick={handleLogout}>
+            <button
+              className="user-avatar"
+              aria-label="User menu"
+              aria-haspopup="menu"
+              title={user.email}
+              onClick={() => navigate("/app/settings")}
+            >
               <span className="avatar-initial">{initial}</span>
             </button>
+            <div className="user-dropdown" role="menu">
+              <div className="user-dropdown-head">
+                <span className="user-dropdown-name">{user.name || user.email}</span>
+                <span className="user-dropdown-email">{user.email}</span>
+              </div>
+              <button
+                type="button"
+                className="user-dropdown-item"
+                role="menuitem"
+                onClick={() => navigate("/app/settings")}
+              >
+                ⚙️ Account settings
+              </button>
+              <button
+                type="button"
+                className="user-dropdown-item danger"
+                role="menuitem"
+                onClick={handleLogout}
+              >
+                ⎋ Log out
+              </button>
+            </div>
           </div>
         ) : (
           <button className="signin-button" onClick={() => openAuth("login")}>

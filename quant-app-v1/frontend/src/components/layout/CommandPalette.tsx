@@ -25,7 +25,7 @@ const NAVIGATION_COMMANDS: Omit<CommandItem, "action">[] = [
   { id: "markets", label: "Markets", description: "Market data and charts", category: "navigation", shortcut: "G M" },
   { id: "calendar", label: "Calendar", description: "Economic events calendar", category: "navigation", shortcut: "G C" },
   { id: "strategies", label: "Strategies", description: "Strategy studio", category: "navigation", shortcut: "G T" },
-  { id: "backtests", label: "Backtests", description: "Run and analyze backtests", category: "navigation", shortcut: "G B" },
+  { id: "backtests", label: "Backtester", description: "Replay strategies over historical bars", category: "navigation", shortcut: "G B" },
   { id: "paper-trading", label: "Paper Trading", description: "Simulated portfolio and orders", category: "navigation", shortcut: "G P" },
   { id: "journal", label: "Journal", description: "Trade journal", category: "navigation", shortcut: "G J" },
   { id: "risk", label: "Risk", description: "Risk dashboard", category: "navigation", shortcut: "G R" },

@@ -11,8 +11,6 @@ export type View =
   | "live-trading"
   | "ai-trading"
   | "journal"
-  | "risk"
-  | "divergence"
   | "settings";
 
 export interface ViewDef {
@@ -30,13 +28,11 @@ export const VIEWS: ViewDef[] = [
   { id: "harness", label: "AI Chat", icon: "🤖", group: "workspace" },
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
   { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
-  { id: "backtests", label: "Backtests", icon: "📊", group: "myWork" },
+  { id: "backtests", label: "Backtester", icon: "📊", group: "myWork" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝", group: "myWork" },
   { id: "live-trading", label: "Live Trading", icon: "💸", group: "myWork" },
   { id: "ai-trading", label: "AI Trading", icon: "🧠", group: "myWork" },
   { id: "journal", label: "Journal", icon: "📓", group: "myWork" },
-  { id: "risk", label: "Risk", icon: "⚠️", group: "myWork" },
-  { id: "divergence", label: "Divergence", icon: "📉", group: "myWork" },
   { id: "settings", label: "Providers", icon: "🔧", group: "settings" },
 ];
 

@@ -9,6 +9,7 @@ blocks on it.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ KRONOS_REPO_URL = os.getenv("KRONOS_REPO_URL", "https://github.com/shiyu-coder/K
 
 _SETTINGS_DIR = Path(__file__).resolve().parents[1] / "settings"
 _LOG_FILE = _SETTINGS_DIR / "kronos_install.log"
+_PATH_FILE = _SETTINGS_DIR / "kronos_install_path.json"
 
 _proc: subprocess.Popen[bytes] | None = None
 
@@ -28,10 +30,23 @@ class KronosInstallError(RuntimeError):
     """Raised when an install cannot be started."""
 
 
+def _saved_path() -> str:
+    """Directory the user picked in the installer popup (item 11)."""
+    try:
+        if _PATH_FILE.exists():
+            return str(json.loads(_PATH_FILE.read_text(encoding="utf-8")).get("path") or "")
+    except (OSError, ValueError, TypeError):
+        return ""
+    return ""
+
+
 def repo_target() -> Path:
     env = os.getenv("KRONOS_REPO_PATH", "").strip()
     if env:
         return Path(env).expanduser().resolve()
+    saved = _saved_path().strip()
+    if saved:
+        return Path(saved).expanduser().resolve()
     return Path(__file__).resolve().parents[2] / "vendor" / "Kronos"
 
 
@@ -41,6 +56,30 @@ def models_dir() -> Path:
 
 def _repo_ready() -> bool:
     return (repo_target() / "model").is_dir()
+
+
+# Import names for vendor/Kronos/requirements.txt — checked with find_spec so
+# status() stays cheap and never imports torch just to answer a poll.
+_REQUIRED_MODULES = ("torch", "einops", "huggingface_hub", "safetensors", "numpy", "pandas", "tqdm")
+
+
+def dependency_status() -> dict[str, bool]:
+    import importlib.util
+
+    result: dict[str, bool] = {}
+    for name in _REQUIRED_MODULES:
+        try:
+            result[name] = importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError, ModuleNotFoundError):
+            result[name] = False
+    return result
+
+
+def _usable(repo_present: bool, deps: dict[str, bool]) -> bool:
+    """"Installed"" means the model can actually be loaded, not just that the
+    repository folder exists — otherwise the installer UI would never offer to
+    fetch missing packages (torch & friends are large and often absent)."""
+    return repo_present and all(deps.values())
 
 
 def _tail(lines: int = 40) -> str:
@@ -61,10 +100,15 @@ def status() -> dict[str, Any]:
     tokenizer = models_dir() / "Kronos-Tokenizer-base"
     model = models_dir() / "Kronos-base"
     ready = _repo_ready()
+    deps = dependency_status()
+    usable = _usable(ready, deps)
     return {
-        "installed": ready,
+        "installed": usable,
+        "repo_ready": ready,
         "repo_path": str(repo_target()),
-        "repo_present": _repo_ready(),
+        "repo_present": ready,
+        "dependencies": deps,
+        "missing_dependencies": sorted(name for name, ok in deps.items() if not ok),
         "models": {
             "tokenizer": tokenizer.is_dir(),
             "model": model.is_dir(),
@@ -76,15 +120,33 @@ def status() -> dict[str, Any]:
     }
 
 
-def start_install(force: bool = False) -> dict[str, Any]:
-    """Kick off the detached install. Raises if one is already running."""
+def start_install(force: bool = False, path: str | None = None) -> dict[str, Any]:
+    """Kick off the detached install. Raises if one is already running.
+
+    ``path`` is the destination the user chose in the installer popup — it is
+    persisted so status() and later predictions resolve to the same checkout.
+    """
     global _proc
     if _proc is not None and _proc.poll() is None:
         raise KronosInstallError("Kronos install is already running")
-    if _repo_ready() and not force:
-        raise KronosInstallError("Kronos is already installed (set force to reinstall)")
 
     target = repo_target()
+    if path and path.strip():
+        target = Path(path).strip().expanduser().resolve()
+        try:
+            _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+            _PATH_FILE.write_text(
+                json.dumps({"path": str(target)}, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            raise KronosInstallError(f"Could not save the install location: {exc}") from exc
+
+    # "Already installed" only blocks a *re*-install into the very same
+    # destination when the model is genuinely usable; a partial install (repo
+    # present, packages missing) must always be completable without force.
+    if _usable((target / "model").is_dir(), dependency_status()) and not force:
+        raise KronosInstallError("Kronos is already installed (set force to reinstall)")
+
     models = models_dir()
     models.mkdir(parents=True, exist_ok=True)
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)

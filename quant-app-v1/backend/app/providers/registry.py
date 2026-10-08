@@ -10,21 +10,17 @@ from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import get_settings
 from app.services import key_store
 from app.providers.adanos_provider import AdanosSentimentProvider
 from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, ProviderMeta
 from app.providers.bloomberg_provider import BloombergProvider
 from app.providers.ccxt_provider import CCXTProvider
+from app.providers.economic_calendar_provider import EconomicCalendarApiProvider, FmpCalendarProvider
 from app.providers.finnhub_provider import FinnhubProvider
-from app.providers.forexfactory_provider import ForexFactoryProvider
 from app.providers.jblanked_provider import JBlankedProvider
 from app.providers.lse_provider import LSEProvider
-from app.providers.openbb_provider import OpenBBConfig, OpenBBProvider
-from app.providers.openbb_server_provider import OpenBBServerProvider
 from app.providers.alltick_provider import AllTickProvider
-from app.providers.openstock_provider import OpenStockSymbolProvider
 from app.providers.tradingview_provider import TradingViewProvider
 from app.providers.yahoo_provider import YahooFinanceProvider
 
@@ -36,12 +32,10 @@ _PROVIDER_CLASSES: dict[str, type[MarketDataProvider]] = {
     "TradingView": TradingViewProvider,
     "AllTick": AllTickProvider,
     "JBlanked": JBlankedProvider,
-    "ForexFactory": ForexFactoryProvider,
     "Bloomberg": BloombergProvider,
-    "OpenBB": OpenBBProvider,
-    "OpenBB-Server": OpenBBServerProvider,
+    "EconomicCalendar": EconomicCalendarApiProvider,
+    "FinancialModelingPrep": FmpCalendarProvider,
     "Alpaca": AlpacaProvider,
-    "OpenStock": OpenStockSymbolProvider,
     "Adanos": AdanosSentimentProvider,
     "London Strategic Edge": LSEProvider,
 }
@@ -203,9 +197,9 @@ def has_stored_key(provider: str) -> bool:
 
 def _store_api_key(provider: str, key: str) -> None:
     name = _canonical_name(provider)
-    if name is None or name not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge"):
+    if name is None or name not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge", "Alpaca"):
         raise ValueError(
-            "Only Finnhub, AllTick, JBlanked and London Strategic Edge support "
+            "Only Finnhub, AllTick, JBlanked, London Strategic Edge and Alpaca support "
             "browser-managed API keys"
         )
     value = key.strip()
@@ -250,24 +244,15 @@ def get_provider(
         key = api_key if api_key is not None else _read_api_key(name)
         return FinnhubProvider(api_key=key or "")
 
-    if name == "OpenBB":
-        if not get_settings().enable_openbb_data:
-            return None
-        return OpenBBProvider(OpenBBConfig())
-
-    if name == "OpenBB-Server":
-        if not get_settings().enable_openbb_server:
-            return None
-        return OpenBBServerProvider()
-
     if name == "Alpaca":
-        key = api_key if api_key is not None else _read_api_key(name)
-        secret = api_secret or os.getenv("ALPACA_SECRET_KEY") or os.getenv("ALPACA_API_SECRET")
-        return AlpacaProvider(api_key=key, api_secret=secret)
-
-    if name == "OpenStock":
-        key = api_key if api_key is not None else _read_api_key(name)
-        return OpenStockSymbolProvider(api_key=key or "")
+        stored = api_key if api_key is not None else _read_api_key(name)
+        key, secret = stored, api_secret
+        if stored and ":" in stored:
+            # Browser-managed Alpaca credentials are stored as "KEY_ID:SECRET".
+            key, _, secret_stored = stored.partition(":")
+            secret = secret or secret_stored
+        secret = secret or os.getenv("ALPACA_SECRET_KEY") or os.getenv("ALPACA_API_SECRET")
+        return AlpacaProvider(api_key=key or "", api_secret=secret)
 
     if name == "AllTick":
         key = api_key if api_key is not None else _read_api_key(name)
@@ -297,12 +282,10 @@ def list_providers() -> dict[str, ProviderMeta]:
         "TradingView": TradingViewProvider().meta,
         "AllTick": AllTickProvider().meta,
         "JBlanked": JBlankedProvider().meta,
-        "ForexFactory": ForexFactoryProvider().meta,
         "Bloomberg": BloombergProvider().meta,
-        "OpenBB": OpenBBProvider().meta,
-        "OpenBB-Server": OpenBBServerProvider().meta,
+        "EconomicCalendar": EconomicCalendarApiProvider().meta,
+        "FinancialModelingPrep": FmpCalendarProvider().meta,
         "Alpaca": AlpacaProvider().meta,
-        "OpenStock": OpenStockSymbolProvider("").meta,
         "Adanos": AdanosSentimentProvider("").meta,
         "London Strategic Edge": LSEProvider("").meta,
     }
@@ -323,7 +306,6 @@ __all__ = [
     "AllTickProvider",
     "BloombergProvider",
     "FinnhubProvider",
-    "ForexFactoryProvider",
     "JBlankedProvider",
     "TradingViewProvider",
     "MarketDataProvider",

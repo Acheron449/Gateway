@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 
 import { API_BASE } from "../../lib/constants";
 import { NewsPage } from "../../components/features/NewsPage";
@@ -219,6 +219,27 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
     };
   }, [activeView, selectedSymbol]);
 
+  // Volatility & risk of the selected symbol (relocated from the old Risk
+  // dashboard) — realized volatility annualised from the loaded candles.
+  const riskStats = useMemo(() => {
+    const closes = candles.map((c) => c.close).filter((v) => Number.isFinite(v) && v > 0);
+    if (closes.length < 5) return null;
+    const returns: number[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      const curr = closes[i];
+      const prev = closes[i - 1];
+      if (curr !== undefined && prev !== undefined && prev > 0) returns.push(curr / prev - 1);
+    }
+    if (returns.length < 4) return null;
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, returns.length - 1);
+    const std = Math.sqrt(variance);
+    // Loaded candles are 1h bars → ~24 sessions × 252 days per year.
+    const annualized = std * Math.sqrt(24 * 252) * 100;
+    const level = annualized >= 60 ? "High" : annualized >= 30 ? "Medium" : "Low";
+    return { annualized, level };
+  }, [candles]);
+
   if (collapsed) {
     const change = quote?.change_pct;
     const up = change === undefined || change === null ? null : change >= 0;
@@ -296,6 +317,36 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
             <div><dt>52W High</dt><dd>{candles.length > 0 ? formatPrice(Math.max(...candles.map(c => c.high))) : "—"}</dd></div>
             <div><dt>52W Low</dt><dd>{candles.length > 0 ? formatPrice(Math.min(...candles.map(c => c.low))) : "—"}</dd></div>
           </dl>
+        </section>
+
+        <section className="inspector-section">
+          <h3 className="section-label">Volatility &amp; Risk</h3>
+          {riskStats ? (
+            <div className="risk-stat-block">
+              <div className="risk-stat-row">
+                <span>Annualised volatility</span>
+                <strong>{riskStats.annualized.toFixed(1)}%</strong>
+              </div>
+              <div className="risk-stat-row">
+                <span>Risk level</span>
+                <strong className={`risk-level ${riskStats.level.toLowerCase()}`}>{riskStats.level}</strong>
+              </div>
+              {typeof analysis?.rsi === "number" && (
+                <div className="risk-stat-row">
+                  <span>RSI(14)</span>
+                  <strong>{analysis.rsi.toFixed(1)}</strong>
+                </div>
+              )}
+              {analysis?.direction && (
+                <div className="risk-stat-row">
+                  <span>Signal</span>
+                  <strong>{analysis.direction}</strong>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="risk-stat-empty">Not enough price history to size risk yet.</div>
+          )}
         </section>
 
         <section className="inspector-section">

@@ -6,13 +6,14 @@ import { AiTrading } from "../../components/features/AiTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
 import { AgenticLab } from "./AgenticLab";
+import Backtester from "./Backtester";
 import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
 import { TradeJournal } from "./TradeJournal";
-import { RiskDashboard } from "./RiskDashboard";
-import { DivergenceScorecards } from "./DivergenceScorecards";
 import { ProviderSettings } from "./ProviderSettings";
+import { LastUpdated } from "../../lib/LastUpdated";
+import { IdleScreen } from "./IdleScreen";
 
 interface CenterCanvasProps {
   activeView: string;
@@ -31,6 +32,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <div className="view-header">
             <h1>Scanner</h1>
             <p className="view-description">Search and filter instruments</p>
+            <LastUpdated />
           </div>
           <ScannerV2
             onPickSymbol={(symbol: string) => window.dispatchEvent(new CustomEvent("symbol-select", { detail: symbol }))}
@@ -41,11 +43,11 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
     case "markets":
       return (
         <div className="canvas-view">
-          <div className="view-header">
-            <div className="view-title-group">
-              <h1>Markets</h1>
-              <AssetSelector value={selectedSymbol} onChange={() => {}} />
-            </div>
+          <div className="view-header">              <div className="view-title-group">
+                <h1>Markets</h1>
+                <AssetSelector value={selectedSymbol} onChange={() => {}} />
+              </div>
+              <LastUpdated />
           </div>
           <div className="markets-content">
             <ChartContainer ticker={selectedSymbol} />
@@ -58,6 +60,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <div className="view-header">
             <h1>Calendar</h1>
             <p className="view-description">Economic events and earnings calendar</p>
+            <LastUpdated />
           </div>
           <CalendarView />
         </div>
@@ -82,14 +85,16 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
       );
     case "backtests":
       return (
-        <div className="canvas-view">
+        <div className="canvas-view canvas-view-wide">
           <div className="view-header">
-            <h1>Backtests</h1>
-            <p className="view-description">Run and analyze backtests</p>
+            <h1>Backtester</h1>
+            <p className="view-description">
+              Replay strategies over past bars only — a paper layout of trades, opened positions,
+              logs and theoretical P&amp;L. No live orders are placed from here.
+            </p>
+            <LastUpdated />
           </div>
-          <div className="backtests-content">
-            <div className="empty-state">Backtest runner coming soon. Credible backtesting with reproducible receipts.</div>
-          </div>
+          <Backtester />
         </div>
       );
     case "paper-trading":
@@ -124,6 +129,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
             <p className="view-description">
               Let the AI allocate funds and trade using lessons from past trades, data and backtests
             </p>
+            <LastUpdated />
           </div>
           <AiTrading selectedSymbol={selectedSymbol} />
         </div>
@@ -134,22 +140,12 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <TradeJournal />
         </div>
       );
-    case "risk":
-      return (
-        <div className="canvas-view">
-          <RiskDashboard />
-        </div>
-      );
-    case "divergence":
-      return (
-        <div className="canvas-view">
-          <DivergenceScorecards />
-        </div>
-      );
     case "settings":
       return (
         <div className="canvas-view">
           <ProviderSettings />
+          {/* Credentials page: black out after 15s without input. */}
+          <IdleScreen />
         </div>
       );
     default:
@@ -185,8 +181,15 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
 export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  // Trading desks own their own scrolling: the page itself stays put and only
+  // the rail/watchlist/ticket/quote panels scroll internally.
+  const fixed = activeView === "paper-trading" || activeView === "live-trading";
+
   return (
-    <div className="center-canvas-inner" ref={canvasRef}>
+    <div
+      className={`center-canvas-inner${fixed ? " center-canvas-fixed" : ""}`}
+      ref={canvasRef}
+    >
       {getViewComponent(activeView, selectedSymbol)}
     </div>
   );

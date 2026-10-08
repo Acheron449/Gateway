@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,33 @@ from app.services import llm_providers as llm_svc
 
 _SETTINGS_DIR = Path(__file__).resolve().parent.parent / "settings"
 _SETTINGS_FILE = _SETTINGS_DIR / "agentic_lab.json"
+
+
+def _ensure_settings_dir() -> None:
+    """Resolve a writable settings dir, relocating off read-only filesystems.
+
+    Vercel excludes ``app/settings/`` (.vercelignore) and runs on a read-only
+    function filesystem, so ``mkdir`` on the bundled path raises ``OSError:
+    [Errno 30] Read-only file system`` and used to 500 every agent save. Fall
+    back to the configured data dir (or the system temp dir) so reads degrade
+    to an empty store and writes land somewhere writable.
+    """
+    global _SETTINGS_DIR, _SETTINGS_FILE
+    try:
+        _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        return
+    except OSError:
+        pass
+    data_dir = os.getenv("GATEWAY_DATA_DIR", "").strip()
+    base = Path(data_dir) if data_dir else Path(tempfile.gettempdir())
+    _SETTINGS_DIR = base / "agentic_lab_settings"
+    _SETTINGS_FILE = _SETTINGS_DIR / "agentic_lab.json"
+    try:
+        _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Unwritable everywhere: reads will return empty, writes will raise a
+        # clear error rather than crashing at import/mkdir time.
+        pass
 
 MAX_RUNS = 50
 DEFAULT_PROMPT = (
@@ -101,7 +129,7 @@ _PERIODS_PER_YEAR = {"1m": 12, "5m": 390 * 252 / 60 / 5, "15m": 390 * 252 / 60 /
 # ---------------------------------------------------------------------------
 
 def _load() -> dict[str, Any]:
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_settings_dir()
     if not _SETTINGS_FILE.exists():
         return {"agents": [], "runs": []}
     try:
@@ -117,7 +145,7 @@ def _load() -> dict[str, Any]:
 
 
 def _save(data: dict[str, Any]) -> None:
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_settings_dir()
     temporary = _SETTINGS_FILE.with_suffix(".json.tmp")
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)

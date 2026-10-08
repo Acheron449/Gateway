@@ -436,6 +436,13 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS watchlists (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, symbols TEXT, created_at TEXT)")
         cur.execute("CREATE TABLE IF NOT EXISTS layouts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, symbol TEXT, tab TEXT, timeframe TEXT, indicators TEXT, inspector_width INTEGER, UNIQUE(user_id, symbol))")
         cur.execute("CREATE TABLE IF NOT EXISTS preferences (user_id TEXT PRIMARY KEY, theme TEXT, default_timezone TEXT, watchlists TEXT, saved_layouts TEXT)")
+        # Account deletion requests (item 19) — an audit queue, not an instant
+        # delete: an operator reviews and fulfils each ticket.
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS deletion_requests ("
+            "ticket TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT, "
+            "reason TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT)"
+        )
         conn.commit()
 
 
@@ -1140,6 +1147,78 @@ def ensure_user(user_id: str, email: str, name: str | None = None) -> dict | Non
             raise
         return user
     return get_user_by_id(user_id)
+
+
+def update_user_profile(user_id: str, *, name: str | None = None, email: str | None = None) -> dict | None:
+    """Update the personal details (display name and/or email) on a user row.
+
+    Pass only the fields to change; ``None`` leaves a column untouched.
+    Raises ``ValueError`` when the new email is already taken so the API can
+    translate it into a 409.
+    """
+    if _supabase_enabled():
+        # Requires a gw_update_user_profile SECURITY DEFINER RPC on the
+        # Supabase side; failures surface loudly rather than silently writing
+        # to an ephemeral SQLite file.
+        return _sb_rpc("gw_update_user_profile", {
+            "p_id": user_id,
+            "p_name": name,
+            "p_email": email,
+        })
+
+    sets: list[str] = []
+    values: list[object] = []
+    if name is not None:
+        sets.append("name = ?")
+        values.append(name)
+    if email is not None:
+        sets.append("email = ?")
+        values.append(email)
+    if not sets:
+        return get_user_by_id(user_id)
+
+    init_db()
+    values.append(user_id)
+    with get_connection() as conn:
+        try:
+            conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", values)
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Email already in use") from exc
+    return get_user_by_id(user_id)
+
+
+def record_deletion_request(user_id: str, email: str | None, reason: str | None) -> str:
+    """Queue an account-deletion request for operator review; returns a ticket.
+
+    This deliberately does NOT delete the account — deletion is destructive and
+    irreversible, so it is recorded as a reviewable ticket instead.
+    """
+    ticket = f"DEL-{uuid4().hex[:10].upper()}"
+    if _supabase_enabled():
+        # No deletion_requests RPC is provisioned on the Supabase side yet;
+        # record it in the app log so the request is still visible to an
+        # operator, and hand the ticket back to the user.
+        try:
+            import logging
+            logging.getLogger("gateway.auth").warning(
+                "Account deletion request %s for user=%s email=%s reason=%r",
+                ticket, user_id, email, reason,
+            )
+        except Exception:
+            pass
+        return ticket
+
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO deletion_requests (ticket, user_id, email, reason, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'pending', ?)",
+            (ticket, user_id, email, reason, now),
+        )
+        conn.commit()
+    return ticket
 
 
 def create_watchlist(wl_id: str, user_id: str, name: str, symbols: list[str]) -> None:
