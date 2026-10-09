@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../../context/AuthContext";
@@ -21,11 +21,43 @@ export function TopBar({ activeView, selectedSymbol, onSymbolSelect, onOpenSearc
   const { user, isAuthenticated, logout } = useAuth();
   const { openAuth } = useAuthUI();
   const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const avatarRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        avatarRef.current?.focus();
+      }
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
 
   const handleLogout = useCallback(() => {
+    setMenuOpen(false);
     logout();
     navigate("/");
   }, [logout, navigate]);
+
+  const handleAccountSettings = useCallback(() => {
+    setMenuOpen(false);
+    navigate("/app/settings");
+  }, [navigate]);
 
   const initial = user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || "U";
 
@@ -57,17 +89,25 @@ export function TopBar({ activeView, selectedSymbol, onSymbolSelect, onOpenSearc
         </button>
 
         {isAuthenticated && user ? (
-          <div className="user-menu">
+          <div className="user-menu" ref={menuRef}>
             <button
+              ref={avatarRef}
+              type="button"
               className="user-avatar"
               aria-label="User menu"
               aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-controls="account-menu-dropdown"
               title={user.email}
-              onClick={() => navigate("/app/settings")}
+              onClick={() => setMenuOpen((open) => !open)}
             >
               <span className="avatar-initial">{initial}</span>
             </button>
-            <div className="user-dropdown" role="menu">
+            <div
+              id="account-menu-dropdown"
+              className={`user-dropdown ${menuOpen ? "open" : ""}`}
+              role="menu"
+            >
               <div className="user-dropdown-head">
                 <span className="user-dropdown-name">{user.name || user.email}</span>
                 <span className="user-dropdown-email">{user.email}</span>
@@ -76,7 +116,7 @@ export function TopBar({ activeView, selectedSymbol, onSymbolSelect, onOpenSearc
                 type="button"
                 className="user-dropdown-item"
                 role="menuitem"
-                onClick={() => navigate("/app/settings")}
+                onClick={handleAccountSettings}
               >
                 ⚙️ Account settings
               </button>

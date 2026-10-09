@@ -1436,6 +1436,7 @@ export function PaperTrading({
                     liveUpdate={liveUpdate}
                     indicators={chartIndicators}
                     nowSignal={nowSignal}
+                    fillContainer
                   />
                 </div>
                 <div className="desk-tf-row" role="group" aria-label="Chart timeframe">

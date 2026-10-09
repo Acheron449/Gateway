@@ -2814,7 +2814,14 @@ body.panel-resizing .resize-handle {
 }
 
 .desk-chart-body {
+  flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+.desk-chart-body > .main-chart {
+  height: 100% !important;
+  min-height: 0;
 }
 
 .desk-tf-row {
@@ -5566,6 +5573,16 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   text-align: left;
 }
 .ctx-pop-anchor { position: relative; }
+.ctx-pop-bridge {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: 42px;
+  height: 12px;
+  background: transparent;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  z-index: 41;
+}
 .ctx-pop-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
 .ctx-bar { height: 7px; border-radius: 4px; background: var(--bg-tertiary); overflow: hidden; margin: 6px 0 8px; }
 .ctx-bar-fill { height: 100%; background: var(--wheel-color, var(--accent-primary)); }
@@ -6519,10 +6536,20 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   overflow-y: auto;
 }
 
-/* The chart gets a definite height so it can be dragged on the Y axis and
-   the quote list above it can scroll independently. */
+/* The chart card keeps its resized height; its toolbar and timeframe row
+   stay intrinsic while the rendered chart fills the remaining center area. */
 .center-canvas-fixed .desk-chart-card {
+  display: flex;
   flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.center-canvas-fixed .desk-chart-card > .desk-chart-body {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.center-canvas-fixed .desk-chart-card > .desk-chart-body > .main-chart {
+  height: 100% !important;
 }
 
 /* --- Stacking: the chart is pinned to the bottom, so panels that must stay

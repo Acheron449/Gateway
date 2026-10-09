@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *
  * After 15 seconds without pointer or keyboard input the viewport is covered
  * by a blackout showing the current time, how long the screen has been idle,
- * a prompt and an "I'm Back" button. Any interaction dismisses it.
+ * a prompt and an "I'm Back" button. Only that button dismisses the overlay.
  */
 
 const IDLE_AFTER_MS = 15_000;
@@ -33,8 +33,15 @@ export function IdleScreen() {
   const lastActivityRef = useRef<number>(Date.now());
   const [now, setNow] = useState<number>(() => Date.now());
   const [idle, setIdle] = useState(false);
+  const lockedRef = useRef(false);
 
   const markActive = useCallback(() => {
+    if (lockedRef.current) return;
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  const unlock = useCallback(() => {
+    lockedRef.current = false;
     lastActivityRef.current = Date.now();
     setIdle(false);
   }, []);
@@ -44,7 +51,10 @@ export function IdleScreen() {
     const id = window.setInterval(() => {
       const current = Date.now();
       setNow(current);
-      setIdle(current - lastActivityRef.current >= IDLE_AFTER_MS);
+      if (!lockedRef.current && current - lastActivityRef.current >= IDLE_AFTER_MS) {
+        lockedRef.current = true;
+        setIdle(true);
+      }
     }, TICK_MS);
     return () => window.clearInterval(id);
   }, []);
@@ -72,8 +82,7 @@ export function IdleScreen() {
       role="dialog"
       aria-modal="true"
       aria-label="Screen locked due to inactivity"
-      // Stop activity listeners on this layer from instantly unlocking it —
-      // only an explicit click/keypress outside the button should.
+      // Prevent activity events from reaching parent handlers while locked.
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
     >
@@ -86,7 +95,7 @@ export function IdleScreen() {
         <button
           type="button"
           className="btn-primary idle-screen-back"
-          onClick={markActive}
+          onClick={unlock}
           autoFocus
         >
           I&apos;m Back

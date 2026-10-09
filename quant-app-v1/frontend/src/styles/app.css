@@ -469,7 +469,7 @@ body {
   color: var(--text-primary);
 }
 
-/* Hover panel: account settings + log out (replaces click-to-logout) */
+/* Click-controlled account menu: settings + log out. */
 .user-dropdown {
   position: absolute;
   top: calc(100% + 8px);
@@ -486,8 +486,7 @@ body {
   transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
   z-index: 60;
 }
-.user-menu:hover .user-dropdown,
-.user-menu:focus-within .user-dropdown {
+.user-dropdown.open {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);

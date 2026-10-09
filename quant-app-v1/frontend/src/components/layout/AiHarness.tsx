@@ -649,13 +649,15 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
         <span className="chat-composer-hint">{context && context.ok_count > 0 ? `📎 ${context.symbol} context on` : ""}</span>
 
         {/* context wheel: hover/click → token usage, max context, compact */}
-        <div className="ctx-pop-anchor">
+        <div
+          className="ctx-pop-anchor"
+          onMouseEnter={() => setWheelOpen(true)}
+          onMouseLeave={() => setWheelOpen(false)}
+        >
           <button
             type="button"
             className="ctx-wheel"
             style={{ "--wheel-pct": tokenPct, "--wheel-color": wheelColor } as CSSProperties}
-            onMouseEnter={() => setWheelOpen(true)}
-            onMouseLeave={() => setWheelOpen(false)}
             onClick={() => setWheelOpen((v) => !v)}
             aria-label="Context usage"
             title="Context usage"
@@ -663,16 +665,25 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
             <span className="ctx-wheel-label">{tokenPct}%</span>
           </button>
           {wheelOpen && (
-            <div className="ctx-pop" role="dialog" aria-label="Context usage">
-              <div className="ctx-pop-title">Context usage</div>
-              <div className="ctx-rows"><span>Tokens used</span><span>{tokens.toLocaleString()}</span></div>
-              <div className="ctx-bar"><div className="ctx-bar-fill" style={{ width: `${tokenPct}%`, background: wheelColor }} /></div>
-              <div className="ctx-rows"><span>Max context</span><span>{maxTokens.toLocaleString()}</span></div>
-              <div className="ctx-rows"><span>Remaining</span><span>{Math.max(0, maxTokens - tokens).toLocaleString()}</span></div>
-              <button type="button" className="ctx-compact" onClick={() => void compact()} disabled={compacting || streaming}>
-                {compacting ? "Compacting…" : "⤨ Compact chat"}
-              </button>
-            </div>
+            <>
+              <div className="ctx-pop-bridge" aria-hidden="true" />
+              <div
+                className="ctx-pop"
+                role="dialog"
+                aria-label="Context usage"
+                onMouseEnter={() => setWheelOpen(true)}
+                onMouseLeave={() => setWheelOpen(false)}
+              >
+                <div className="ctx-pop-title">Context usage</div>
+                <div className="ctx-rows"><span>Tokens used</span><span>{tokens.toLocaleString()}</span></div>
+                <div className="ctx-bar"><div className="ctx-bar-fill" style={{ width: `${tokenPct}%`, background: wheelColor }} /></div>
+                <div className="ctx-rows"><span>Max context</span><span>{maxTokens.toLocaleString()}</span></div>
+                <div className="ctx-rows"><span>Remaining</span><span>{Math.max(0, maxTokens - tokens).toLocaleString()}</span></div>
+                <button type="button" className="ctx-compact" onClick={() => void compact()} disabled={compacting || streaming}>
+                  {compacting ? "Compacting…" : "⤨ Compact chat"}
+                </button>
+              </div>
+            </>
           )}
         </div>
 
