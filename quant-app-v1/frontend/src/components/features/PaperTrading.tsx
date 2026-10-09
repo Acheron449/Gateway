@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { API_BASE, WS_BASE } from "../../lib/constants";
@@ -412,18 +412,19 @@ const DESK_LIMITS = {
   ticket: { min: 260, max: 560 },
 };
 
-/** Quote-list height (the panel above the chart) — dragged vertically. */
+/** Quote-list height — the single divider transfers space to/from the chart. */
 const DESK_QUOTES_H_KEY = "gateway_ui_desk_quotes_h";
 const QUOTES_H_MIN = 160;
-const quotesHMax = () => Math.max(QUOTES_H_MIN + 80, Math.floor(window.innerHeight * 0.7));
-const quotesHDefault = () => Math.floor(window.innerHeight * 0.4);
-
-// Chart height (Y axis) — the chart gets its own drag handle so the user can
-// trade vertical space between the instrument list and the chart directly.
-const DESK_CHART_H_KEY = "gateway_ui_desk_chart_h";
-const CHART_H_MIN = 200;
-const chartHMax = () => Math.max(CHART_H_MIN + 120, Math.floor(window.innerHeight * 0.82));
-const chartHDefault = () => Math.floor(window.innerHeight * 0.46);
+const CHART_CARD_MIN_H = 300;
+const DESK_CENTER_GAP = 14;
+const DEFAULT_QUOTES_FRACTION = 0.34;
+const quotesHMax = (centerHeight = 0) => {
+  const available = centerHeight > 0
+    ? centerHeight - CHART_CARD_MIN_H - DESK_CENTER_GAP
+    : Math.floor(window.innerHeight * 0.7);
+  return Math.max(QUOTES_H_MIN, Math.min(Math.floor(window.innerHeight * 0.7), available));
+};
+const quotesHDefault = () => Math.floor(window.innerHeight * DEFAULT_QUOTES_FRACTION);
 
 function readDeskWidth(key: string, min: number, max: number): number | null {
   try {
@@ -717,23 +718,19 @@ export function PaperTrading({
   const [ticketW, setTicketW] = useState<number | null>(() =>
     readDeskWidth(DESK_WIDTH_KEYS.ticket, DESK_LIMITS.ticket.min, DESK_LIMITS.ticket.max),
   );
-  // Quote-list height: null → responsive CSS default (40vh).
-  const [quotesH, setQuotesH] = useState<number | null>(() => {
+  // Quote-list height defaults to roughly one-third of the center desk.
+  const [quotesH, setQuotesH] = useState(() => {
     const stored = readDeskWidth(DESK_QUOTES_H_KEY, QUOTES_H_MIN, 4000);
-    return stored === null ? null : Math.min(stored, quotesHMax());
+    return stored ?? quotesHDefault();
   });
-  // Chart height: null → CSS default (whatever the column has left over).
-  const [chartH, setChartH] = useState<number | null>(() => {
-    const stored = readDeskWidth(DESK_CHART_H_KEY, CHART_H_MIN, 4000);
-    return stored === null ? null : Math.min(stored, chartHMax());
-  });
+  const quotesHeightCustomizedRef = useRef(readDeskWidth(DESK_QUOTES_H_KEY, QUOTES_H_MIN, 4000) !== null);
+  const deskCenterRef = useRef<HTMLElement | null>(null);
 
   const deskRef = useRef<HTMLDivElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const watchlistRef = useRef<HTMLElement | null>(null);
   const ticketRef = useRef<HTMLElement | null>(null);
   const quotesRef = useRef<HTMLElement | null>(null);
-  const chartRef = useRef<HTMLElement | null>(null);
 
   const deskStyle = {
     "--desk-rail-w": railW !== null ? `${railW}px` : undefined,
@@ -758,9 +755,13 @@ export function PaperTrading({
     }
   };
 
-  /** Quote-list height: viewport-relative bounds, persisted. */
+  /** Instrument-list height: the chart takes the remaining space to the viewport bottom. */
   const applyQuotesHeight = (value: number) => {
-    const clamped = Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, value));
+    const clamped = Math.min(
+      quotesHMax(deskCenterRef.current?.clientHeight ?? 0),
+      Math.max(QUOTES_H_MIN, value),
+    );
+    quotesHeightCustomizedRef.current = true;
     setQuotesH(clamped);
     try {
       localStorage.setItem(DESK_QUOTES_H_KEY, String(clamped));
@@ -769,25 +770,27 @@ export function PaperTrading({
     }
   };
 
-  /** Chart height (Y axis): viewport-relative bounds, persisted. */
-  const applyChartHeight = (value: number) => {
-    const clamped = Math.min(chartHMax(), Math.max(CHART_H_MIN, value));
-    setChartH(clamped);
-    try {
-      localStorage.setItem(DESK_CHART_H_KEY, String(clamped));
-    } catch {
-      /* private mode — ignore */
-    }
-  };
+  // Keep the divider within the visible desk and preserve the list/chart split
+  // when the window or surrounding layout changes size.
+  useLayoutEffect(() => {
+    const center = deskCenterRef.current;
+    if (!center) return undefined;
 
-  // Re-clamp both vertical panels when the window resizes (bounds are vh-based).
-  useEffect(() => {
-    const onResize = () => {
-      setQuotesH((h) => (h === null ? h : Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, h))));
-      setChartH((h) => (h === null ? h : Math.min(chartHMax(), Math.max(CHART_H_MIN, h))));
+    const syncSplit = () => {
+      const available = center.clientHeight;
+      if (available <= 0) return;
+      setQuotesH((height) => {
+        const preferred = quotesHeightCustomizedRef.current
+          ? height
+          : Math.floor(available * DEFAULT_QUOTES_FRACTION);
+        return Math.min(quotesHMax(available), Math.max(QUOTES_H_MIN, preferred));
+      });
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+
+    syncSplit();
+    const observer = new ResizeObserver(syncSplit);
+    observer.observe(center);
+    return () => observer.disconnect();
   }, []);
 
   /**
@@ -1273,13 +1276,13 @@ export function PaperTrading({
         </aside>
 
         {/* Center: quote list + chart (Trade) or account panels */}
-        <main className="desk-center">
+        <main className="desk-center" ref={deskCenterRef}>
           {section === "trade" && (
             <>
               <section
                 className="desk-card desk-quotes-card"
                 ref={quotesRef}
-                style={quotesH !== null ? { height: `${quotesH}px`, maxHeight: "none" } : undefined}
+                style={{ height: `${quotesH}px`, maxHeight: "none" }}
               >
                 <table className="desk-quotes">
                   <thead>
@@ -1355,47 +1358,27 @@ export function PaperTrading({
                 </table>
               </section>
 
-              {/* Drag vertically: more instruments vs. a taller chart */}
+              {/* Drag up to give the chart more room; drag down to give instruments more. */}
               <ResizeHandle
                 side="top"
                 orientation="horizontal"
                 mode="delta"
                 className="desk-handle-row"
                 measureRef={quotesRef}
-                width={quotesH ?? quotesHDefault()}
+                width={quotesH}
                 minWidth={QUOTES_H_MIN}
-                maxWidth={quotesHMax()}
+                maxWidth={quotesHMax(deskCenterRef.current?.clientHeight ?? 0)}
                 collapseBelow={QUOTES_H_MIN}
                 collapsedWidth={QUOTES_H_MIN}
-                defaultWidth={quotesHDefault()}
+                defaultWidth={Math.floor(
+                  (deskCenterRef.current?.clientHeight ?? window.innerHeight) * DEFAULT_QUOTES_FRACTION,
+                ) || quotesHDefault()}
                 storageKey={DESK_QUOTES_H_KEY}
-                ariaLabel="Resize quote list height"
+                ariaLabel="Resize instrument list and chart"
                 onChange={applyQuotesHeight}
               />
 
-              {/* Drag vertically: resize the chart's Y axis directly */}
-              <ResizeHandle
-                side="top"
-                orientation="horizontal"
-                mode="delta"
-                className="desk-handle-row"
-                measureRef={chartRef}
-                width={chartH ?? chartHDefault()}
-                minWidth={CHART_H_MIN}
-                maxWidth={chartHMax()}
-                collapseBelow={CHART_H_MIN}
-                collapsedWidth={CHART_H_MIN}
-                defaultWidth={chartHDefault()}
-                storageKey={DESK_CHART_H_KEY}
-                ariaLabel="Resize chart height"
-                onChange={applyChartHeight}
-              />
-
-              <section
-                className="desk-card desk-chart-card"
-                ref={chartRef}
-                style={chartH !== null ? { height: `${chartH}px`, maxHeight: "none" } : undefined}
-              >
+              <section className="desk-card desk-chart-card">
                 <div className="desk-chart-toolbar">
                   <span className="desk-chart-inst">
                     <span className="desk-inst-icon" style={{ background: activeMeta.tint }} aria-hidden="true">
