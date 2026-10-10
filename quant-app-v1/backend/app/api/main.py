@@ -549,9 +549,7 @@ _HISTORY_PROVIDER_IDS: dict[str, str] = {
     "tradingview": "TradingView",
     "tv": "TradingView",
     "alltick": "AllTick",
-    "openbb": "OpenBB",
-    "openbb-server": "OpenBB-Server",
-    "openbb server": "OpenBB-Server",
+    "finnhub": "Finnhub",
     "lse": "London Strategic Edge",
     "london strategic edge": "London Strategic Edge",
     "londonstrategicedge": "London Strategic Edge",
@@ -567,7 +565,7 @@ def _canonical_history_provider(provider: str | None) -> str:
     canonical = _HISTORY_PROVIDER_IDS.get(wanted)
     if canonical:
         return canonical
-    for name in ("Yahoo Finance", "CCXT", "Alpaca", "TradingView", "AllTick", "OpenBB", "OpenBB-Server", "London Strategic Edge"):
+    for name in ("Yahoo Finance", "CCXT", "Alpaca", "TradingView", "AllTick", "Finnhub", "London Strategic Edge"):
         if name.casefold() == wanted:
             return name
     return "Yahoo Finance"
@@ -599,6 +597,15 @@ def _lse_available() -> bool:
         return False
 
 
+def _finnhub_available() -> bool:
+    """True when a Finnhub key is configured (stored or env)."""
+    try:
+        instance = get_registry_provider("Finnhub")
+        return bool(instance and instance.is_configured)
+    except Exception:
+        return False
+
+
 def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | None:
     """CCXT fallback used when yfinance fails on a crypto symbol.
 
@@ -619,7 +626,6 @@ def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | No
 
 def _history_provider_catalogue() -> list[dict[str, Any]]:
     """Providers the interactive chart can be pointed at (default: Yahoo Finance)."""
-    settings = get_settings()
     return [
         {
             "id": "yahoo",
@@ -657,24 +663,17 @@ def _history_provider_catalogue() -> list[dict[str, Any]]:
             "is_default": False,
         },
         {
+            "id": "finnhub",
+            "name": "Finnhub",
+            "detail": "Finnhub OHLCV candles · API key required · premium-gated",
+            "available": _finnhub_available(),
+            "is_default": False,
+        },
+        {
             "id": "lse",
             "name": "London Strategic Edge",
             "detail": "London Strategic Edge vault candles (stocks to 2003, FX 2009, crypto 2017) · free API key",
             "available": _lse_available(),
-            "is_default": False,
-        },
-        {
-            "id": "openbb",
-            "name": "OpenBB",
-            "detail": "OpenBB Platform data integrations",
-            "available": bool(settings.enable_openbb_data),
-            "is_default": False,
-        },
-        {
-            "id": "openbb-server",
-            "name": "OpenBB Server",
-            "detail": "Self-hosted OpenBB API server",
-            "available": bool(settings.enable_openbb_server),
             "is_default": False,
         },
     ]
@@ -748,7 +747,7 @@ async def _fetch_history_alt_provider_sync(
             return None
         return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
 
-    if provider in ("OpenBB", "OpenBB-Server", "TradingView", "AllTick", "CCXT", "London Strategic Edge"):
+    if provider in ("Finnhub", "TradingView", "AllTick", "CCXT", "London Strategic Edge"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None

@@ -8,6 +8,7 @@ from app.auth import create_access_token, get_current_user, CurrentUser, local_a
 from app.services.database import (
     create_user, get_user_by_email, get_user_by_id,
     get_preferences, upsert_preferences,
+    update_user_profile, record_deletion_request,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -66,12 +67,80 @@ def login(payload: LoginRequest):
 
 @router.get("/me")
 def me(user: CurrentUser):
+    """Current profile + preferences.
+
+    Name/email are read from the stored user row (the token's claims are a
+    snapshot from sign-in), so edits made through ``PATCH /auth/me`` show up
+    immediately without forcing a fresh token.
+    """
     prefs = get_preferences(user.id)
+    record = get_user_by_id(user.id) or {}
     return {
         "id": user.id,
-        "email": user.email,
-        "name": user.name,
+        "email": record.get("email") or user.email,
+        "name": record.get("name") if record.get("name") is not None else user.name,
         "preferences": prefs,
+    }
+
+
+class ProfileUpdate(BaseModel):
+    """Partial update of the signed-in user's personal details."""
+    name: Optional[str] = Field(default=None, max_length=120)
+    email: Optional[str] = Field(default=None, min_length=3, max_length=255)
+
+
+@router.patch("/me")
+def update_me(payload: ProfileUpdate, user: CurrentUser):
+    """Edit personal details (display name and/or email)."""
+    name = payload.name.strip() if payload.name is not None else None
+    email = payload.email.strip().lower() if payload.email is not None else None
+    if name == "":
+        name = None
+    if email == "":
+        email = None
+    if name is None and email is None:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    try:
+        updated = update_user_profile(user.id, name=name, email=email)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": updated.get("id", user.id),
+        "email": updated.get("email", user.email),
+        "name": updated.get("name"),
+    }
+
+
+class DeletionRequest(BaseModel):
+    """Request account deletion — recorded as a ticket, not executed."""
+    reason: Optional[str] = Field(default=None, max_length=500)
+    confirm: bool = False
+
+
+@router.post("/delete-request")
+def request_deletion(payload: DeletionRequest, user: CurrentUser):
+    """Queue an account-deletion request for review.
+
+    Destructive deletion is never performed inline; the user receives a ticket
+    they can quote to an operator.
+    """
+    if not payload.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirm the deletion request before submitting",
+        )
+    reason = payload.reason.strip() if payload.reason else None
+    ticket = record_deletion_request(user.id, user.email, reason)
+    return {
+        "ticket": ticket,
+        "status": "pending",
+        "message": (
+            "Deletion requested. Your account stays active until the request "
+            "is reviewed — keep this ticket to follow up."
+        ),
     }
 
 

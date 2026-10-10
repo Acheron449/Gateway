@@ -366,13 +366,22 @@ def assemble_context(symbol: str, sections: list[dict[str, Any]]) -> str:
         blocks.append(f"\n## {section['title']}\n{section['text']}")
     if len(blocks) == 1:
         blocks.append("\n(no context available — answer from the conversation alone)")
+    blocks.append(
+        "\n## Response guidance\n"
+        "- Answer only what the user asked; do not add unrequested analysis.\n"
+        "- If a symbol, ticker, timeframe, or key detail is missing — or the request is "
+        "ambiguous or overly specific — ask a short clarifying question before answering "
+        "instead of guessing.\n"
+        "- Do not reveal the user's funds (cash, equity, balances, positions) unless they "
+        "explicitly ask for them."
+    )
     return "\n".join(blocks)
 
 
 @router.get("/context")
 async def get_context(
     symbol: str = "AAPL",
-    sections: str = "quote,candles,indicators,news,portfolio",
+    sections: str = "quote,candles,indicators,news",
     tf: str = "1d",
 ) -> dict[str, Any]:
     """Context feeder: gather selected market data into one text block."""

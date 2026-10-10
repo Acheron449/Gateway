@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { API_BASE } from "../../lib/constants";
 import type { QuoteRow } from "../../types/market";
@@ -71,27 +71,34 @@ export function SymbolTicker({ selectedSymbol, onSelect, contextView }: SymbolTi
         </span>
       )}
       {status === "ok" && (
-        <div className="ticker-track">
-          {quotes.map((q) => {
-            const up = q.change >= 0;
-            const selected = q.symbol === selectedSymbol;
-            return (
-              <button
-                key={q.symbol}
-                className={`ticker-chip ${selected ? "selected" : ""} ${up ? "up" : "down"}`}
-                onClick={() => onSelect(q.symbol)}
-                title={`${q.symbol} — ${up ? "+" : ""}${q.change.toFixed(2)} today${lastUpdate ? ` · updated ${new Date(lastUpdate).toLocaleTimeString()}` : ""} · click to chart in ${contextView}`}
-              >
-                <span className="ticker-symbol">{q.symbol}</span>
-                <span className="ticker-arrow" aria-hidden="true">{up ? "▲" : "▼"}</span>
-                <span className="ticker-price">{formatPrice(q.price)}</span>
-                <span className="ticker-change">
-                  {up ? "+" : ""}
-                  {q.change_pct.toFixed(2)}%
-                </span>
-              </button>
-            );
-          })}
+        <div
+          className="ticker-track"
+          style={{ "--ticker-duration": `${Math.max(20, quotes.length * 3)}s` } as CSSProperties}
+        >
+          {/* Two identical copies give a seamless right→left loop: once the
+              final symbol scrolls past, the first reappears and repeats. */}
+          {[0, 1].map((dup) =>
+            quotes.map((q) => {
+              const up = q.change >= 0;
+              const selected = q.symbol === selectedSymbol;
+              return (
+                <button
+                  key={`${dup}-${q.symbol}`}
+                  className={`ticker-chip ${selected ? "selected" : ""} ${up ? "up" : "down"}`}
+                  onClick={() => onSelect(q.symbol)}
+                  title={`${q.symbol} — ${up ? "+" : ""}${q.change.toFixed(2)} today${lastUpdate ? ` · updated ${new Date(lastUpdate).toLocaleTimeString()}` : ""} · click to chart in ${contextView}`}
+                >
+                  <span className="ticker-symbol">{q.symbol}</span>
+                  <span className="ticker-arrow" aria-hidden="true">{up ? "▲" : "▼"}</span>
+                  <span className="ticker-price">{formatPrice(q.price)}</span>
+                  <span className="ticker-change">
+                    {up ? "+" : ""}
+                    {q.change_pct.toFixed(2)}%
+                  </span>
+                </button>
+              );
+            }),
+          )}
         </div>
       )}
     </div>

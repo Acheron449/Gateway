@@ -92,7 +92,7 @@ async def store_provider_key(
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
     if meta is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    if meta["name"] not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge"):
+    if meta["name"] not in ("Finnhub", "AllTick", "JBlanked", "London Strategic Edge", "Alpaca"):
         raise HTTPException(status_code=400, detail="This provider does not support browser-managed API keys")
 
     try:

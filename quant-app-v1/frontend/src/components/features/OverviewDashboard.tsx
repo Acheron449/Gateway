@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { API_BASE } from "../../lib/constants";
+import { LastUpdated } from "../../lib/LastUpdated";
 import { NewsPage } from "../../components/features/NewsPage";
 
 /**
@@ -348,6 +349,7 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
   // --- filings ------------------------------------------------------------
   const [filings, setFilings] = useState<Filing[]>([]);
   const [filingTab, setFilingTab] = useState<(typeof FILING_TABS)[number]>("Watchlist");
+  const [showAllFilings, setShowAllFilings] = useState(false);
 
   // --- risk ---------------------------------------------------------------
   const [riskMetrics, setRiskMetrics] = useState<RiskMetrics | null>(null);
@@ -437,7 +439,7 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
   useEffect(() => {
     let cancelled = false;
     const symbols = WATCH_TABS.find((t) => t.id === "stocks")!.symbols.map((s) => s.symbol).join(",");
-    fetchJson<{ items?: Filing[] }>(`/filings?symbols=${symbols}&limit=6`)
+    fetchJson<{ items?: Filing[] }>(`/filings?symbols=${symbols}&limit=30`)
       .then((payload) => {
         if (!cancelled) setFilings(payload.items ?? []);
       })
@@ -520,19 +522,22 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
   }, [news, newsTab]);
 
   const visibleFilings = useMemo(() => {
-    // Cap rows so the card stays card-sized (the full feed is per-symbol
-    // paginated server-side); newest filings sort first.
-    const CAP = 8;
+    // Show a scrollable window of filings (4 visible rows; scroll for more).
+    // "View all" expands to reveal the whole fetched feed.
+    const CAP = 50;
+    let list = filings;
     if (filingTab === "Insider") {
-      return filings.filter((f) => /^4\/?A?$/i.test(f.type.trim())).slice(0, CAP);
-    }
-    if (filingTab === "Transcripts") return []; // not part of the SEC forms feed
-    if (filingTab === "Watchlist") {
+      list = filings.filter((f) => /^4\/?A?$/i.test(f.type.trim()));
+    } else if (filingTab === "Transcripts") {
+      return []; // not part of the SEC forms feed
+    } else if (filingTab === "Watchlist") {
       const watch = new Set(WATCH_TABS.find((t) => t.id === "stocks")!.symbols.map((s) => s.symbol));
-      return filings.filter((f) => watch.has(f.symbol)).slice(0, CAP);
+      list = filings.filter((f) => watch.has(f.symbol));
     }
-    return filings.slice(0, CAP);
-  }, [filings, filingTab]);
+    return list.slice(0, showAllFilings ? CAP : CAP);
+  }, [filings, filingTab, showAllFilings]);
+
+  const filingsExpandable = visibleFilings.length > 4;
 
   const chartQuote = stripQuotes[chartSymbol] ?? basket.find((q) => q.symbol === chartSymbol);
   const lastCandle = candles[candles.length - 1];
@@ -558,6 +563,7 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
       <div className="view-header">
         <h1>Overview</h1>
         <p className="view-description">Markets, news, filings and risk at a glance</p>
+        <LastUpdated />
       </div>
 
       {/* Market overview strip — click a tile to load it in the main chart */}
@@ -668,7 +674,7 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
         {/* Filings */}
         <Card title="Filings">
           <Tabs tabs={FILING_TABS} active={filingTab} onSelect={setFilingTab} />
-          <div className="ov-table-wrap">
+          <div className={`ov-table-wrap filings-scroll ${showAllFilings ? "expanded" : ""}`}>
             {visibleFilings.length === 0 ? (
               <div className="empty-state">
                 {filingTab === "Transcripts" ? "Transcripts are not part of the SEC forms feed." : "No filings found."}
@@ -704,6 +710,15 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
               </table>
             )}
           </div>
+          {filingsExpandable && (
+            <button
+              type="button"
+              className="filings-viewall"
+              onClick={() => setShowAllFilings((v) => !v)}
+            >
+              {showAllFilings ? "Show less" : `View all (${visibleFilings.length})`}
+            </button>
+          )}
         </Card>
 
         {/* Risk summary — metrics + derived checklist side by side */}
@@ -797,12 +812,15 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
                       change >= 0
                         ? `rgba(34, 197, 94, ${(0.14 + strength * 0.55).toFixed(2)})`
                         : `rgba(239, 68, 68, ${(0.14 + strength * 0.55).toFixed(2)})`;
+                    // Bigger movers get bigger cells (growth/recession scale),
+                    // while flex-basis:0 keeps the row inside the panel.
+                    const grow = 1 + strength * 1.5;
                     return (
                       <button
                         key={symbol}
                         type="button"
                         className="ov-heat-cell"
-                        style={{ background }}
+                        style={{ background, flexGrow: grow, flexBasis: 0 }}
                         onClick={() => pickSymbol(symbol)}
                         title={`${symbol}: ${pct(change)}`}
                       >

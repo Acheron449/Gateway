@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { API_BASE } from "../../lib/constants";
 import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
+import { Markdown } from "../../lib/markdown";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
 
@@ -62,6 +63,36 @@ const SECTION_OPTIONS = [
 
 const SELECTION_KEY = "gateway_llm_selection";
 const SESSIONS_KEY = "gateway_chat_sessions";
+
+/**
+ * Standing system policy injected on every turn — governs answer scope,
+ * clarifying questions, fund privacy, and deep-linking into app features.
+ */
+const SYSTEM_POLICY = [
+  "You are Gateway's in-app trading assistant. Follow these rules:",
+  "1. Answer ONLY what the user asked. Be concise and do not volunteer extra analysis, metrics, or tangents they did not request.",
+  "2. If the request is ambiguous, overly specific, or missing a symbol/ticker, timeframe, or key detail, ask a short clarifying question before answering instead of guessing.",
+  "3. Never access, reveal, or act on the user's funds (real or simulated: cash, equity, buying power, balances, positions) unless the user explicitly requests it in this conversation.",
+  "4. You can deep-link into app features when useful. Available in-app routes: Strategy Studio /app/strategies, Backtester /app/backtests, Agentic Lab /app/agentic-lab, AI Chat /app/chat, Trading /app/trading, Overview /app/overview, Calendar /app/calendar, News /app/news, Trade Journal /app/journal, Providers /app/settings. To help the user create a strategy, link them to [Strategy Studio](/app/strategies). Use markdown links like [Strategy Studio](/app/strategies).",
+  "5. Format output with GitHub-flavored Markdown: headings, bold, bullet/numbered lists, tables for comparisons, and fenced code blocks for code.",
+].join("\n");
+
+/** Rough token estimate (~4 chars/token) for the context wheel. */
+function estimateTokens(messages: ChatMessage[]): number {
+  let chars = 0;
+  for (const m of messages) chars += (m.content || "").length;
+  return Math.ceil(chars / 4);
+}
+
+/** Max context window for the selected model (best-effort, conservative default). */
+function maxContextTokens(model: string): number {
+  const name = (model || "").toLowerCase();
+  if (name.includes("128k") || name.includes("gpt-4o") || name.includes("claude-3-5-sonnet") || name.includes("gemini-1.5-pro")) return 128000;
+  if (name.includes("16k") || name.includes("gpt-4")) return 16384;
+  if (name.includes("8k") || name.includes("llama-3.1-70b")) return 8192;
+  if (name.includes("32k")) return 32768;
+  return 16384; // sensible default
+}
 
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("gateway_auth_token");
@@ -314,7 +345,7 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     setChatError(null);
     setStreaming(true);
 
-    const outbound: { role: string; content: string }[] = [];
+    const outbound: { role: string; content: string }[] = [{ role: "system", content: SYSTEM_POLICY }];
     if (context && context.ok_count > 0) outbound.push({ role: "system", content: context.context });
     for (const message of messages) {
       if (message.role !== "system") outbound.push({ role: message.role, content: message.content });
@@ -392,6 +423,74 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     abortRef.current?.abort();
     setStreaming(false);
   }, []);
+
+  // ---- context wheel: token usage + compact ------------------------------
+  const [wheelOpen, setWheelOpen] = useState(false);
+  const [compacting, setCompacting] = useState(false);
+  const tokens = estimateTokens(messages);
+  const maxTokens = maxContextTokens(model);
+  const tokenPct = Math.min(100, Math.round((tokens / maxTokens) * 100));
+  const wheelColor = tokenPct >= 90 ? "var(--accent-danger)" : tokenPct >= 70 ? "#f59e0b" : "var(--accent-primary)";
+
+  const compact = useCallback(async () => {
+    if (streaming || compacting) return;
+    if (messages.filter((m) => m.role !== "system").length < 2) return;
+    setCompacting(true);
+    setChatError(null);
+    try {
+      const outbound: { role: string; content: string }[] = [
+        {
+          role: "system",
+          content:
+            "You are a conversation compressor. Summarize the following conversation into a tight context brief: keep every symbol, decision, number, and preference in bullet points, drop pleasantries. Under 300 words. Output only the summary.",
+        },
+      ];
+      for (const m of messages) if (m.role !== "system") outbound.push({ role: m.role, content: m.content });
+
+      const response = await fetch(`${API_BASE}/llm/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ provider: providerId, model: model.trim(), messages: outbound }),
+      });
+      if (!response.ok || !response.body) throw new Error(await readError(response, "Compaction failed"));
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let assembled = "";
+      let finished = false;
+      while (!finished) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          const line = event.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          const payload = JSON.parse(line.slice(5).trim()) as { type: string; text?: string; message?: string };
+          if (payload.type === "delta" && payload.text) assembled += payload.text;
+          else if (payload.type === "error") throw new Error(payload.message || "Compaction error");
+          else if (payload.type === "done") finished = true;
+        }
+      }
+      if (!assembled.trim()) throw new Error("Compaction produced an empty summary");
+
+      const condensed: ChatMessage[] = [
+        { role: "system", content: SYSTEM_POLICY },
+        { role: "system", content: `Compacted conversation context:\n${assembled.trim()}` },
+      ];
+      setMessages(condensed);
+      const id = sessionId ?? newSessionId();
+      if (!sessionId) setSessionId(id);
+      persistSession(id, condensed);
+      setWheelOpen(false);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : "Compaction failed");
+    } finally {
+      setCompacting(false);
+    }
+  }, [streaming, compacting, messages, providerId, model, sessionId, persistSession]);
 
   const grouped = useMemo(() => {
     const compatible = providers.filter((p) => p.group === "compatible");
@@ -549,6 +648,45 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
 
         <span className="chat-composer-hint">{context && context.ok_count > 0 ? `📎 ${context.symbol} context on` : ""}</span>
 
+        {/* context wheel: hover/click → token usage, max context, compact */}
+        <div
+          className="ctx-pop-anchor"
+          onMouseEnter={() => setWheelOpen(true)}
+          onMouseLeave={() => setWheelOpen(false)}
+        >
+          <button
+            type="button"
+            className="ctx-wheel"
+            style={{ "--wheel-pct": tokenPct, "--wheel-color": wheelColor } as CSSProperties}
+            onClick={() => setWheelOpen((v) => !v)}
+            aria-label="Context usage"
+            title="Context usage"
+          >
+            <span className="ctx-wheel-label">{tokenPct}%</span>
+          </button>
+          {wheelOpen && (
+            <>
+              <div className="ctx-pop-bridge" aria-hidden="true" />
+              <div
+                className="ctx-pop"
+                role="dialog"
+                aria-label="Context usage"
+                onMouseEnter={() => setWheelOpen(true)}
+                onMouseLeave={() => setWheelOpen(false)}
+              >
+                <div className="ctx-pop-title">Context usage</div>
+                <div className="ctx-rows"><span>Tokens used</span><span>{tokens.toLocaleString()}</span></div>
+                <div className="ctx-bar"><div className="ctx-bar-fill" style={{ width: `${tokenPct}%`, background: wheelColor }} /></div>
+                <div className="ctx-rows"><span>Max context</span><span>{maxTokens.toLocaleString()}</span></div>
+                <div className="ctx-rows"><span>Remaining</span><span>{Math.max(0, maxTokens - tokens).toLocaleString()}</span></div>
+                <button type="button" className="ctx-compact" onClick={() => void compact()} disabled={compacting || streaming}>
+                  {compacting ? "Compacting…" : "⤨ Compact chat"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
         {streaming ? (
           <button type="button" className="chat-send stop" onClick={stop} aria-label="Stop">
             ■
@@ -640,8 +778,16 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
                 </div>
                 {message.contextLabel && <div className="chat-context-tag">📎 {message.contextLabel}</div>}
                 <div className="chat-turn-body">
-                  {message.content ||
-                    (streaming && index === messages.length - 1 ? <span className="chat-cursor" /> : "")}
+                  {message.role === "assistant" ? (
+                    message.content ? (
+                      <Markdown content={message.content} />
+                    ) : streaming && index === messages.length - 1 ? (
+                      <span className="chat-cursor" />
+                    ) : null
+                  ) : (
+                    message.content ||
+                    (streaming && index === messages.length - 1 ? <span className="chat-cursor" /> : "")
+                  )}
                 </div>
               </div>
             ))

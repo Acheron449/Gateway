@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { API_BASE } from "../../lib/constants";
 import type { HistoryCandle } from "../../types/market";
+import { writeKronosSnapshot } from "../../lib/kronosCache";
+import { KronosInstallModal, type KronosInstallStatus } from "./KronosInstallModal";
 
 interface ForecastRow {
   index: string;
@@ -12,14 +14,11 @@ interface ForecastRow {
   volume?: number;
 }
 
-interface KronosInstallStatus {
-  installed: boolean;
-  repo_path: string;
-  repo_present: boolean;
-  models: { tokenizer: boolean; model: boolean };
-  installing: boolean;
-  exit_code: number | null;
-  log_tail: string;
+interface LocalServerStatus {
+  configured_url: string;
+  reachable: boolean;
+  detail: string | null;
+  enabled: boolean;
 }
 
 const HORIZONS = [5, 10, 20] as const;
@@ -69,8 +68,8 @@ export function KronosForecast({
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [install, setInstall] = useState<KronosInstallStatus | null>(null);
-  const [installBusy, setInstallBusy] = useState(false);
-  const [installError, setInstallError] = useState<string | null>(null);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [localServer, setLocalServer] = useState<LocalServerStatus | null>(null);
   const requestSeq = useRef(0);
   const autoStartedFor = useRef<string | null>(null);
   const sparkRef = useRef<HTMLCanvasElement | null>(null);
@@ -95,6 +94,17 @@ export function KronosForecast({
       if (!response.ok) throw new Error(body.detail ?? "Forecast request failed");
       if (seq !== requestSeq.current) return;
       setRows(body.forecast ?? []);
+      // Publish to the shared cache so AI Insights can quote the same numbers
+      // without re-running the model (item 24).
+      writeKronosSnapshot({
+        symbol: ticker,
+        horizon: nextHorizon,
+        unit,
+        rows: body.forecast ?? [],
+        updatedAt: Date.now(),
+        installed: install?.installed ?? false,
+        lastClose: bars.at(-1)?.close,
+      });
     } catch (error) {
       if (seq !== requestSeq.current) return;
       setRows([]);
@@ -120,10 +130,22 @@ export function KronosForecast({
     }
   }, []);
 
+  // Item 12: show whether predictions are served by a local model server.
+  const fetchLocalServer = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/forecast/kronos/local-server`);
+      if (!res.ok) return;
+      setLocalServer((await res.json()) as LocalServerStatus);
+    } catch {
+      /* the indicator is decoration */
+    }
+  }, []);
+
   // One-click installer: track whether Kronos is present, poll while running.
   useEffect(() => {
     void fetchInstallStatus();
-  }, [fetchInstallStatus]);
+    void fetchLocalServer();
+  }, [fetchInstallStatus, fetchLocalServer]);
 
   useEffect(() => {
     if (!install?.installing) return undefined;
@@ -140,21 +162,7 @@ export function KronosForecast({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [install?.installed]);
 
-  const handleInstall = async () => {
-    setInstallBusy(true);
-    setInstallError(null);
-    try {
-      const res = await fetch(`${API_BASE}/forecast/kronos/install`, { method: "POST" });
-      const body = (await res.json().catch(() => ({}))) as { detail?: string } & KronosInstallStatus;
-      if (!res.ok) throw new Error(body.detail ?? "Install failed to start");
-      setInstall(body);
-    } catch (err) {
-      setInstallError(err instanceof Error ? err.message : "Install failed to start");
-    } finally {
-      setInstallBusy(false);
-    }
-  };
-
+  // The install itself runs inside <KronosInstallModal/> (items 10 + 11).
   // Auto-run once per symbol/timeframe once enough candles have loaded.
   useEffect(() => {
     if (bars.length >= 20 && autoStartedFor.current !== runKey) {
@@ -315,19 +323,15 @@ export function KronosForecast({
             <button
               type="button"
               className="kronos-run"
-              onClick={() => void handleInstall()}
-              disabled={installBusy || install.installing}
+              onClick={() => setInstallOpen(true)}
+              disabled={install.installing}
             >
-              {install.installing
-                ? "Installing…"
-                : installBusy
-                  ? "Starting…"
-                  : "⚡ Install Kronos (one click)"}
+              {install.installing ? "Installing…" : "⚡ Install Kronos…"}
             </button>
           </div>
           <p className="kronos-hint">
-            One click clones the repository, installs its Python requirements into this app’s
-            interpreter, and downloads the model weights to <code>{install.repo_path}</code>.
+            Installs through a guided popup: what it does, requirements, license consent, then
+            you pick where to save it. Downloads to <code>{install.repo_path}</code>.
           </p>
           {install.log_tail ? (
             <pre className="kronos-install-log">
@@ -336,11 +340,33 @@ export function KronosForecast({
           ) : null}
           {install.exit_code !== null && install.exit_code !== 0 ? (
             <p className="kronos-error">
-              Install exited with code {install.exit_code} — check the log above.
+              Install exited with code {install.exit_code} — reopen the installer to see the log.
             </p>
           ) : null}
-          {installError ? <p className="kronos-error">{installError}</p> : null}
         </div>
+      ) : null}
+
+      {install && install.installed ? (
+        <div className="kronos-reinstall" role="status">
+          <span className="kronos-hint">
+            Installed at <code>{install.repo_path}</code>.
+          </span>
+          <button type="button" className="kronos-run" onClick={() => setInstallOpen(true)}>
+            Modify install…
+          </button>
+        </div>
+      ) : null}
+
+      {/* Item 12: which engine is serving predictions right now. */}
+      {localServer ? (
+        <p
+          className={`kronos-engine ${localServer.reachable ? "connected" : ""}`}
+          title={localServer.detail ?? undefined}
+        >
+          {localServer.reachable
+            ? `● Connected to local model server (${localServer.configured_url}) — predicting on-site`
+            : `○ Local model server offline — using the in-process model`}
+        </p>
       ) : null}
 
       {!message && rows.length === 0 && !loading ? (
@@ -407,6 +433,13 @@ export function KronosForecast({
           </div>
         </>
       ) : null}
+
+      <KronosInstallModal
+        open={installOpen}
+        status={install}
+        onClose={() => setInstallOpen(false)}
+        onStatus={setInstall}
+      />
     </section>
   );
 }

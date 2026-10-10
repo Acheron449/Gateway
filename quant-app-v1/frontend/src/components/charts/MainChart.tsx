@@ -28,6 +28,8 @@ export interface MainChartProps {
    * (the chart's "Now" button). Any value change recenters on the latest bar.
    */
   nowSignal?: number;
+  /** Fill the dimensions allocated by the parent, used by the resizable trading desk. */
+  fillContainer?: boolean;
 }
 
 const UP_COLOR = "#3fb950";
@@ -127,6 +129,7 @@ export function MainChart({
   eventMarkers = [],
   indicators = [],
   nowSignal = 0,
+  fillContainer = false,
 }: MainChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -762,7 +765,7 @@ export function MainChart({
       ref={containerRef}
       className="main-chart"
       style={{
-        height: "min(460px, 56vh)",
+        height: fillContainer ? "100%" : "min(460px, 56vh)",
         width: "100%",
         border: "1px solid var(--border-primary, #30363d)",
         borderRadius: "10px",

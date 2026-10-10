@@ -15,6 +15,14 @@ const GROUPS: { id: "workspace" | "myWork" | "settings"; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
+/**
+ * Providers is intentionally *not* in the app sidebar — it holds credentials,
+ * so it is reached only from the user avatar → Settings (/app/settings).
+ */
+const SIDEBAR_HIDDEN_GROUPS = new Set<string>((["settings"] as const).map(String));
+
+const sidebarGroups = () => GROUPS.filter((group) => !SIDEBAR_HIDDEN_GROUPS.has(group.id));
+
 const WATCHLIST_DEFAULTS = [
   { id: "default", name: "Default", symbols: ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL"] },
   { id: "tech", name: "Tech Giants", symbols: ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN"] },
@@ -45,7 +53,7 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
   if (collapsed) {
     return (
       <nav className="left-sidebar rail" aria-label="Workspace rail">
-        {GROUPS.map((group) => {
+        {sidebarGroups().map((group) => {
           const views = VIEWS.filter((v) => v.group === group.id);
           const groupActive = views.some((v) => v.id === activeView);
           return (
@@ -79,9 +87,8 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
     );
   }
 
-  return (
-    <nav className="left-sidebar" aria-label="Workspace">
-      {GROUPS.map((group) => {
+  return (      <nav className="left-sidebar" aria-label="Workspace">
+        {sidebarGroups().map((group) => {
         const sectionKey = group.id as "workspace" | "myWork" | "settings";
         const views = VIEWS.filter((v) => v.group === group.id);
         const isOpen = expandedSections[sectionKey];

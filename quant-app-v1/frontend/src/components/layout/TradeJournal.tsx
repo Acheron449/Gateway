@@ -36,6 +36,23 @@ interface JournalStats {
   avg_hold_time: string;
 }
 
+// Divergence scorecards (relocated from the removed Divergence dashboard):
+// backtest-vs-paper metric deltas for each tracked strategy.
+interface DivergenceItem {
+  strategy_id: string;
+  divergence_score: number;
+  metrics_comparison: {
+    pnl_pct: { backtest: number; paper: number; diff: number };
+    win_rate: { backtest: number; paper: number; diff: number };
+    sharpe_ratio: { backtest: number; paper: number; diff: number };
+  };
+}
+
+function fmtDiff(diff?: number): string {
+  if (diff === undefined || Number.isNaN(diff)) return "—";
+  return `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}`;
+}
+
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 
 const SIDE_LABELS = { buy: "Buy", sell: "Sell" };
@@ -87,6 +104,24 @@ export function TradeJournal() {
   }>({});
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [divergences, setDivergences] = useState<DivergenceItem[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/divergence/analyses`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { analyses?: DivergenceItem[] };
+        if (!cancelled && Array.isArray(data.analyses)) setDivergences(data.analyses);
+      } catch {
+        /* divergence panel is optional decoration */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
@@ -416,6 +451,30 @@ export function TradeJournal() {
               {(compare.paper?.total_pnl ?? 0).toFixed(2)}
             </span>
             <span className="stat-label">Paper PnL · {compare.paper?.total_trades ?? 0} trades</span>
+          </div>
+        </div>
+      )}
+
+      {divergences.length > 0 && (
+        <div className="journal-divergence">
+          <div className="journal-divergence-head">
+            <span>Strategy divergence (backtest → paper)</span>
+            <span className="journal-divergence-note">relocated from Divergence Scorecards</span>
+          </div>
+          <div className="journal-divergence-list">
+            {divergences.slice(0, 6).map((d) => {
+              const pct = Math.round((d.divergence_score ?? 0) * 100);
+              const level = pct >= 50 ? "high" : pct >= 25 ? "medium" : "low";
+              return (
+                <div key={d.strategy_id} className={`div-row ${level}`}>
+                  <span className="div-strategy">Strategy {String(d.strategy_id).slice(0, 8)}</span>
+                  <span className={`div-score ${level}`}>{pct}%</span>
+                  <span className="div-metrics">
+                    PnL {fmtDiff(d.metrics_comparison?.pnl_pct?.diff)} · Win {fmtDiff(d.metrics_comparison?.win_rate?.diff)} · Sharpe {fmtDiff(d.metrics_comparison?.sharpe_ratio?.diff)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

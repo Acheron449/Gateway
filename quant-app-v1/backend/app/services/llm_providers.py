@@ -493,8 +493,27 @@ def _headers(api_key: Optional[str], provider_id: str) -> dict[str, str]:
     return headers
 
 
-def _client(timeout: float) -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0))
+def _is_loopback(base_url: str | None) -> bool:
+    """True when the target host is a local/loopback endpoint."""
+    if not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
+
+
+def _client(timeout: float, base_url: str | None = None) -> httpx.AsyncClient:
+    """HTTP client. Loopback targets bypass proxy env (trust_env) so custom
+    localhost endpoints (vLLM/LM Studio/llama.cpp) connect even when
+    HTTP(S)_PROXY is set — a common cause of local-endpoint failures."""
+    kwargs: dict[str, Any] = {"timeout": httpx.Timeout(timeout, connect=15.0)}
+    if _is_loopback(base_url):
+        kwargs["trust_env"] = False
+    return httpx.AsyncClient(**kwargs)
 
 
 def _extract_error(response: httpx.Response, body: str) -> str:
@@ -531,7 +550,7 @@ async def fetch_models(provider_id: str, *, use_cache: bool = True) -> list[str]
         return cached[1]
 
     base_url, api_key = resolve_endpoint(entry["id"])
-    async with _client(20.0) as client:
+    async with _client(20.0, base_url) as client:
         try:
             response = await client.get(f"{base_url}/models", headers=_headers(api_key, entry["id"]))
         except httpx.HTTPError as exc:
@@ -586,7 +605,7 @@ async def chat_once(
     """One-shot (non-streaming) chat completion; returns the text content."""
     base_url, api_key = resolve_endpoint(provider_id)
     payload = _chat_payload(model, messages, stream=False, temperature=temperature, max_tokens=max_tokens)
-    async with _client(timeout) as client:
+    async with _client(timeout, base_url) as client:
         try:
             response = await client.post(
                 f"{base_url}/chat/completions", json=payload, headers=_headers(api_key, provider_id)
@@ -622,7 +641,7 @@ async def stream_chat(
     payload = _chat_payload(model, messages, stream=True, temperature=temperature, max_tokens=max_tokens)
 
     try:
-        async with _client(timeout) as client:
+        async with _client(timeout, base_url) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/chat/completions",

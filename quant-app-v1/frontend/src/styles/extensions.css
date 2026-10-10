@@ -188,7 +188,7 @@ body.panel-resizing .resize-handle {
   min-width: 0;
   display: flex;
   align-items: center;
-  overflow-x: auto;
+  overflow-x: hidden; /* continuous loop: content scrolls past the edge */
   overflow-y: hidden;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -201,8 +201,17 @@ body.panel-resizing .resize-handle {
 .ticker-track {
   display: flex;
   align-items: center;
-  gap: 8px;
+  width: max-content; /* size to content so -50% == one full set */
   padding: 2px;
+  will-change: transform;
+  animation: ticker-scroll var(--ticker-duration, 40s) linear infinite;
+}
+
+.symbol-ticker:hover .ticker-track { animation-play-state: paused; }
+
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
 }
 
 .ticker-status {
@@ -219,6 +228,7 @@ body.panel-resizing .resize-handle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-right: 8px; /* uniform spacing → seamless loop at -50% */
   padding: 5px 10px;
   border: 1px solid var(--border-primary);
   border-radius: 999px;
@@ -2293,8 +2303,7 @@ body.panel-resizing .resize-handle {
   right: calc(var(--desk-ticket-w, 340px) - 4px);
 }
 
-/* Row handle between the quote list and the chart (vertical resize).
-   Negative margins keep it centered in desk-center's existing 14px gap. */
+/* Single row handle between the instrument list and chart. */
 .resize-handle-horizontal {
   cursor: row-resize;
 }
@@ -2305,7 +2314,58 @@ body.panel-resizing .resize-handle {
 }
 
 .desk-handle-row {
+  position: relative;
+  z-index: 12;
+  width: 100%;
+  height: 7px;
+  min-height: 7px;
+  flex: 0 0 7px;
+  align-items: center;
+  justify-content: center;
   margin: -10.5px 0;
+}
+
+/* ── Trading layout tweaks ────────────────────────────────────── */
+.canvas-view.canvas-view-trading {
+  width: 100%;
+}
+
+.view-header.trading-view-header {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 0;
+}
+
+.trading-view-title {
+  flex: 1 1 33%;
+  min-width: 0;
+}
+
+.trading-view-header > .desk-status {
+  flex: 2 1 60%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .view-header.trading-view-header {
+    align-items: flex-start;
+  }
+
+  .trading-view-header > .desk-status {
+    width: 100%;
+  }
+}
+
+/* The chart card fills the remaining desk height after the instrument list
+   and divider; no sticky positioning is needed to keep its bottom in view. */
+.desk-chart-card {
+  position: relative;
+  z-index: 6;
 }
 
 @media (max-width: 1700px) {
@@ -2567,12 +2627,12 @@ body.panel-resizing .resize-handle {
   padding: 8px 8px 4px;
 }
 
-/* Quote list — its own fixed-height scroll panel so the trade chart below
-   stays visible without scrolling past the table. */
+/* Quote list scrolls internally; the resize handle sets its outer height. */
 .desk-quotes-card {
   padding: 0 6px;
   overflow: auto;
-  max-height: 40vh;
+  max-height: none;
+  flex: 0 0 auto;
 }
 
 .desk-quotes thead th {
@@ -2779,7 +2839,14 @@ body.panel-resizing .resize-handle {
 }
 
 .desk-chart-body {
+  flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+.desk-chart-body > .main-chart {
+  height: 100% !important;
+  min-height: 0;
 }
 
 .desk-tf-row {
@@ -5095,7 +5162,7 @@ a.rail-icon {
 .ov-heat { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .ov-heat-sector { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ov-heat-name { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
-.ov-heat-cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.ov-heat-cells { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
 .ov-heat-cell {
   border: none;
   border-radius: 8px;
@@ -5109,6 +5176,10 @@ a.rail-icon {
   color: #f5f5f5;
   font-size: 12px;
   min-height: 52px;
+  /* Cells size proportionally to each symbol's move (inline flex-grow), but
+     flex-basis:0 keeps the row exactly panel-width — never overflowing. */
+  flex: 1 1 0;
+  min-width: 64px;
 }
 .ov-heat-cell strong { font-size: 12.5px; }
 .ov-heat-cell span { font-size: 11px; opacity: 0.9; font-variant-numeric: tabular-nums; }
@@ -5392,4 +5463,1203 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+/* =========================================================================
+   AI chat — Markdown output (tables, code, formatting)
+   ========================================================================= */
+.md-body { font-size: 14.5px; line-height: 1.62; color: var(--text-primary); }
+.chat-turn.user .md-body { font-size: 14.5px; }
+.md-para { margin: 0 0 8px; }
+.md-para:last-child { margin-bottom: 0; }
+.md-heading { margin: 14px 0 6px; line-height: 1.3; color: var(--text-primary); font-weight: 700; }
+.md-h1 { font-size: 20px; }
+.md-h2 { font-size: 18px; }
+.md-h3 { font-size: 16px; }
+.md-h4, .md-h5, .md-h6 { font-size: 15px; }
+.md-heading:first-child { margin-top: 0; }
+.md-hr { border: none; border-top: 1px solid var(--border-primary); margin: 12px 0; }
+.md-quote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent-primary);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.md-inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.md-link { color: var(--accent-primary); text-decoration: none; }
+.md-link:hover { text-decoration: underline; }
+.md-body ul, .md-body ol { margin: 6px 0 10px; padding-left: 22px; }
+.md-body li { margin: 3px 0; }
+.md-body strong { font-weight: 700; }
+
+/* Tables — wrapped so wide tables scroll horizontally inside the chat */
+.md-table-wrap {
+  margin: 10px 0;
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+}
+.md-table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.md-table th, .md-table td {
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  padding: 7px 11px;
+  text-align: left;
+  white-space: nowrap;
+}
+.md-table th:last-child, .md-table td:last-child { border-right: none; }
+.md-table th { background: var(--bg-tertiary); color: var(--text-primary); font-weight: 600; position: sticky; top: 0; }
+.md-table tr:last-child td { border-bottom: none; }
+.md-table-wrap::-webkit-scrollbar { height: 8px; }
+.md-table-wrap::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 4px; }
+
+/* Copyable code blocks */
+.md-codeblock {
+  margin: 10px 0;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-tertiary);
+}
+.md-codeblock-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+.md-codeblock-lang { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.md-copy-btn {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.md-copy-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
+.md-codeblock-pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.md-codeblock-pre code { white-space: pre; }
+
+/* =========================================================================
+   AI chat — context wheel (token usage + compact)
+   ========================================================================= */
+.ctx-wheel {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: conic-gradient(var(--wheel-color, var(--accent-primary)) calc(var(--wheel-pct, 0) * 1%), var(--bg-tertiary) 0);
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+.ctx-wheel::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  background: var(--bg-secondary);
+  border-radius: 999px;
+}
+.ctx-wheel-label { position: relative; z-index: 1; font-size: 9px; color: var(--text-secondary); font-weight: 700; }
+.ctx-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 236px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+  text-align: left;
+}
+.ctx-pop-anchor { position: relative; }
+.ctx-pop-bridge {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: 42px;
+  height: 12px;
+  background: transparent;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  z-index: 41;
+}
+.ctx-pop-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+.ctx-bar { height: 7px; border-radius: 4px; background: var(--bg-tertiary); overflow: hidden; margin: 6px 0 8px; }
+.ctx-bar-fill { height: 100%; background: var(--wheel-color, var(--accent-primary)); }
+.ctx-rows { font-size: 12.5px; color: var(--text-primary); display: flex; justify-content: space-between; margin-bottom: 4px; }
+.ctx-rows span:last-child { color: var(--text-secondary); }
+.ctx-compact {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-primary);
+  background: var(--accent-primary);
+  color: #fff;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ctx-compact:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* =========================================================================
+   Overview — Filings panel: 4 visible rows, scroll for more, View all
+   ========================================================================= */
+.filings-scroll {
+  max-height: 176px; /* ≈ 4 rows */
+  overflow-y: auto;
+  overflow-x: auto;
+  transition: max-height 0.2s ease;
+}
+.filings-scroll.expanded { max-height: 480px; }
+.filings-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.filings-scroll::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 4px; }
+.filings-viewall {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--accent-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.filings-viewall:hover { border-color: var(--accent-primary); }
+
+/* =========================================================================
+   Right inspector — Volatility & Risk stat (relocated from Risk dashboard)
+   ========================================================================= */
+.risk-stat-block { display: flex; flex-direction: column; gap: 6px; }
+.risk-stat-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12.5px; color: var(--text-secondary);
+}
+.risk-stat-row strong { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.risk-level { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.risk-level.low { color: var(--accent-success); background: rgba(34, 197, 94, 0.14); }
+.risk-level.medium { color: #f59e0b; background: rgba(245, 158, 11, 0.16); }
+.risk-level.high { color: var(--accent-danger); background: rgba(239, 68, 68, 0.16); }
+.risk-stat-empty { font-size: 12.5px; color: var(--text-secondary); }
+
+/* =========================================================================
+   Trade Journal — strategy divergence (relocated from Divergence dashboard)
+   ========================================================================= */
+.journal-divergence {
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 10px 0;
+  background: var(--bg-secondary);
+}
+.journal-divergence-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 12.5px; color: var(--text-primary); font-weight: 600;
+  margin-bottom: 8px;
+}
+.journal-divergence-note { font-size: 11px; color: var(--text-secondary); font-weight: 400; }
+.journal-divergence-list { display: flex; flex-direction: column; gap: 6px; }
+.div-row {
+  display: grid; grid-template-columns: 140px 64px 1fr; align-items: center; gap: 10px;
+  font-size: 12.5px; padding: 6px 8px; border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+.div-strategy { color: var(--text-primary); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.div-score { font-weight: 700; text-align: center; border-radius: 999px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+.div-score.low { color: var(--accent-success); background: rgba(34,197,94,0.14); }
+.div-score.medium { color: #f59e0b; background: rgba(245,158,11,0.16); }
+.div-score.high { color: var(--accent-danger); background: rgba(239,68,68,0.16); }
+.div-metrics { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* AI Insights — BUY/SELL recommendation with price point */
+.desk-rec { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; flex-wrap: wrap; }
+.desk-rec-action { font-weight: 800; font-size: 12.5px; padding: 2px 10px; border-radius: 999px; letter-spacing: 0.04em; }
+.desk-rec-action.buy { color: #fff; background: var(--accent-success, #16a34a); }
+.desk-rec-action.sell { color: #fff; background: var(--accent-danger, #dc2626); }
+.desk-rec-action.hold { color: var(--text-primary); background: var(--bg-tertiary); border: 1px solid var(--border-primary); }
+.desk-rec-price { font-size: 13px; color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.desk-rec-conf { font-size: 12px; color: var(--text-secondary); }
+
+/* =========================================================================
+   AI auto Buy/Sell panel + consent flow (item 23)
+   ========================================================================= */
+.auto-panel-empty { font-size: 12.5px; color: var(--text-secondary); margin-top: 8px; }
+.auto-panel-wrap { position: relative; margin-top: 10px; }
+.auto-panel {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  width: 100%; padding: 10px 12px; cursor: pointer;
+  border-radius: var(--radius-md); border: 1px solid var(--border-primary);
+  background: var(--bg-secondary); transition: border-color 0.15s, transform 0.05s;
+}
+.auto-panel:hover { border-color: var(--accent-primary); }
+.auto-panel:active { transform: translateY(1px); }
+.auto-panel-side { font-weight: 800; font-size: 13px; padding: 3px 12px; border-radius: 999px; letter-spacing: 0.04em; }
+.auto-panel-side.buy { color: #fff; background: var(--accent-success, #16a34a); }
+.auto-panel-side.sell { color: #fff; background: var(--accent-danger, #dc2626); }
+.auto-panel-tp { color: var(--accent-success, #16a34a); font-weight: 700; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.auto-panel-sl { color: var(--accent-danger, #dc2626); font-weight: 700; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.auto-panel-rr { margin-left: auto; font-size: 11.5px; color: var(--text-secondary); }
+.auto-panel-msg { margin-top: 6px; font-size: 12px; color: var(--accent-primary); }
+
+.auto-consent { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.auto-consent-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--text-secondary); }
+.auto-consent-row strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.auto-consent-row strong.buy, .auto-consent-row strong.tp { color: var(--accent-success, #16a34a); }
+.auto-consent-row strong.sell, .auto-consent-row strong.sl { color: var(--accent-danger, #dc2626); }
+.auto-consent-row strong.loss { color: #f59e0b; }
+.auto-slider { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
+.auto-slider input[type="range"] { width: 100%; accent-color: var(--accent-primary); }
+.auto-consent-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.auto-consent-note { font-size: 12px; color: var(--accent-danger); }
+.btn-primary.buy { background: var(--accent-success, #16a34a); border-color: var(--accent-success, #16a34a); }
+.btn-primary.sell { background: var(--accent-danger, #dc2626); border-color: var(--accent-danger, #dc2626); }
+
+/* 'Last updated' timestamp shown alongside page descriptions */
+.last-updated {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums; margin-top: 2px;
+}
+.last-updated-dot {
+  width: 7px; height: 7px; border-radius: 999px;
+  background: var(--accent-success, #16a34a);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Backtester (paper layout, historical-only)
+   Two-column desk: detail sidebar + run viewer.
+   ═══════════════════════════════════════════════════════════════ */
+.bt-desk {
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-height: 0;
+}
+
+.bt-side {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 210px);
+}
+
+.bt-side-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-tertiary, var(--bg-primary));
+}
+
+.bt-side-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.bt-side-tab span {
+  width: 16px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.bt-side-tab:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.bt-side-tab.active {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+.bt-side-body {
+  padding: 12px;
+  overflow-y: auto;
+  min-height: 180px;
+}
+
+.bt-panel h3 {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+  color: var(--text-primary);
+}
+
+.bt-note {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.bt-pnl-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.bt-pnl-value {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-pnl-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-defs {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.bt-defs > div {
+  display: contents;
+}
+
+.bt-defs dt {
+  color: var(--text-muted);
+}
+
+.bt-defs dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.bt-verdict {
+  margin: 12px 0 0;
+  padding: 6px 9px;
+  border-radius: var(--radius-md, 8px);
+  font-size: 12px;
+  border: 1px solid var(--border-primary);
+}
+
+.bt-verdict.good { border-color: var(--color-up, #16a34a); color: var(--color-up, #16a34a); }
+.bt-verdict.bad { border-color: var(--color-down, #dc2626); color: var(--color-down, #dc2626); }
+
+.bt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.bt-table th {
+  text-align: left;
+  padding: 6px 6px;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-primary);
+  white-space: nowrap;
+}
+
+.bt-table td {
+  padding: 6px 6px;
+  border-bottom: 1px solid var(--border-secondary, var(--border-primary));
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-side-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.bt-side-chip.long { background: rgba(22, 163, 74, 0.16); color: var(--color-up, #16a34a); }
+.bt-side-chip.short { background: rgba(220, 38, 38, 0.16); color: var(--color-down, #dc2626); }
+
+.bt-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.bt-status.open { color: var(--accent-backtests, #ef4444); font-weight: 600; }
+
+.bt-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.bt-log li {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11.5px;
+  align-items: baseline;
+}
+
+.bt-log-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.bt-log-msg { color: var(--text-primary); word-break: break-word; }
+.bt-log-msg.warn { color: #f59e0b; }
+.bt-log-msg b.long { color: var(--color-up, #16a34a); }
+.bt-log-msg b.short { color: var(--color-down, #dc2626); }
+.bt-log-msg b.flat { color: var(--text-muted); }
+
+/* ── main viewer ── */
+.bt-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.bt-main-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.bt-run-picker {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.bt-run-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  text-align: left;
+  min-width: 118px;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+.bt-run-chip:hover { transform: translateY(-1px); }
+
+.bt-run-chip.active {
+  border-color: var(--accent-backtests, #ef4444);
+  box-shadow: 0 0 0 1px var(--accent-backtests, #ef4444) inset;
+}
+
+.bt-run-chip b { font-size: 12.5px; color: var(--text-primary); }
+.bt-run-chip span { font-size: 11px; color: var(--text-muted); }
+.bt-run-chip i { font-size: 12.5px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.bt-historical {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-primary);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bt-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+}
+
+.bt-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.bt-card-head h2 { margin: 0; font-size: 16px; color: var(--text-primary); }
+.bt-card-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-muted); }
+
+.bt-card-stats { text-align: right; }
+
+.bt-big {
+  display: block;
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.bt-big-sub { font-size: 12px; color: var(--text-muted); }
+
+.bt-equity {
+  width: 100%;
+  height: 170px;
+  display: block;
+}
+
+.bt-equity-line {
+  fill: none;
+  stroke: var(--accent-backtests, #ef4444);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.bt-equity-base {
+  stroke: var(--border-primary);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.bt-axis {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.bt-stat {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bt-stat-label { font-size: 11px; color: var(--text-muted); }
+.bt-stat-value { font-size: 15px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1100px) {
+  .bt-desk { grid-template-columns: minmax(0, 1fr); }
+  .bt-side { position: static; max-height: none; }
+}
+
+/* ── Account settings (personal details + deletion request) ────── */
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.account-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-card h3 {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--text-primary);
+}
+
+.account-card-danger {
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+.account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.account-field span {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.account-field input,
+.account-field textarea {
+  padding: 9px 11px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-primary, var(--bg-tertiary));
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.account-field input:focus,
+.account-field textarea:focus {
+  outline: none;
+  border-color: var(--border-focus, var(--accent-backtests, #ef4444));
+}
+
+.account-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.account-check input {
+  margin-top: 2px;
+  accent-color: var(--accent-backtests, #ef4444);
+}
+
+.account-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.account-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-down, #dc2626);
+}
+
+.account-ok {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-up, #16a34a);
+}
+
+.account-ok b {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Kronos installer popup (items 10 + 11) and local-model indicator (12)
+   ═══════════════════════════════════════════════════════════════ */
+.kronos-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(1, 4, 9, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(2px);
+}
+
+.kronos-modal {
+  width: min(640px, 100%);
+  max-height: min(88vh, 780px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.kronos-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.kronos-modal-head h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--text-primary);
+}
+
+.kronos-modal-head p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.kronos-modal-close {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 8px);
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.kronos-modal-close:hover {
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+.kronos-modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 220px;
+}
+
+.kronos-modal-body h3 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  color: var(--text-primary);
+}
+
+.kronos-modal-body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.kronos-reqs {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  font-size: 12.5px;
+}
+
+.kronos-reqs > div {
+  display: contents;
+}
+
+.kronos-reqs dt {
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.kronos-reqs dd {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.kronos-legal {
+  border-left: 3px solid var(--border-primary);
+  padding-left: 10px;
+}
+
+.kronos-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.kronos-consent input {
+  margin-top: 2px;
+  accent-color: var(--accent-backtests, #ef4444);
+}
+
+.kronos-path-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+.kronos-path-field span {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.kronos-path-field input {
+  padding: 9px 11px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-primary, var(--bg-tertiary));
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+
+.kronos-path-field input:focus {
+  outline: none;
+  border-color: var(--accent-backtests, #ef4444);
+}
+
+.kronos-path-hint {
+  margin-top: 8px !important;
+  font-size: 11.5px !important;
+}
+
+.kronos-install-state {
+  font-size: 13px !important;
+  color: var(--text-primary) !important;
+}
+
+.kronos-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--bg-tertiary, var(--bg-primary));
+}
+
+.kronos-wait {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.kronos-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Item 12 — which engine is serving predictions. */
+.kronos-engine {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.kronos-engine.connected {
+  color: var(--color-up, #16a34a);
+}
+
+/* ── AI Insights: Kronos forecast block (item 24) ── */
+.desk-kronos {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-tertiary, var(--bg-primary));
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.desk-kronos-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.desk-kronos-horizon {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.desk-kronos-live {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(22, 163, 74, 0.16);
+  color: var(--color-up, #16a34a);
+}
+
+.desk-kronos-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.desk-kronos-move {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-kronos-range,
+.desk-kronos-target {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-kronos-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kronos-reinstall {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.kronos-missing {
+  margin-top: 8px !important;
+  padding: 8px 10px;
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-md, 8px);
+  font-size: 12.5px !important;
+}
+
+.kronos-missing code {
+  color: var(--accent-backtests, #ef4444);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Trading desk: fixed (non-scrolling) page, per-panel scrolling,
+   chart Y-sizing, stacking order, and the settings idle screen.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* --- The trading page itself never scrolls; its panels do. --- */
+.center-canvas-inner.center-canvas-fixed {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.center-canvas-fixed > .canvas-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 12px;
+}
+
+.center-canvas-fixed > .canvas-view > .view-header {
+  flex: 0 0 auto;
+}
+
+/* The account summary shares the header row, preserving desk height. */
+
+.center-canvas-fixed .paper-trading {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.center-canvas-fixed .paper-desk {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+
+/* Every desk column is bounded and scrolls on its own.
+   NOTE: never set `display` here — the responsive rules below hide the
+   watchlist and shrink the template to 3/2 columns, and forcing `display`
+   would out-specify them while the narrow grid template still applied,
+   wrapping the ticket into a phantom second row. */
+.center-canvas-fixed .desk-rail,
+.center-canvas-fixed .desk-ticket {
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.center-canvas-fixed .desk-watchlist {
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.center-canvas-fixed .desk-wl-scroll {
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.center-canvas-fixed .desk-center {
+  min-height: 0;
+  align-self: stretch;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.center-canvas-fixed .desk-quotes-card {
+  overflow-y: auto;
+}
+
+/* The quote panel takes an explicit split share; the chart fills the
+   remaining center track and ends at the bottom of the visible desk. */
+.center-canvas-fixed .desk-center {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+}
+.center-canvas-fixed .desk-quotes-card {
+  flex: 0 0 auto;
+}
+.center-canvas-fixed .desk-chart-card {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 300px;
+  overflow: hidden;
+}
+.center-canvas-fixed .desk-chart-card > .desk-chart-body {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.center-canvas-fixed .desk-chart-card > .desk-chart-body > .main-chart {
+  height: 100% !important;
+}
+
+/* --- Stacking: panels that must stay reachable (and the consent overlay
+   inside the ticket) sit above the chart. --- */
+.desk-rail,
+.desk-watchlist {
+  z-index: 7;
+}
+
+.desk-ticket {
+  z-index: 10;
+}
+
+/* A consent overlay lives inside .desk-ticket, whose sticky positioning
+   creates a stacking context — without this the pinned chart (z-index 6)
+   paints over it and blocks the "place trade" consent controls. */
+.desk-ticket .journal-modal-overlay {
+  z-index: 400;
+}
+
+/* Account refresh text stays grouped with the equity metrics in the header. */
+.desk-status .last-updated {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Settings idle screen — 15s without input → blackout
+   ═══════════════════════════════════════════════════════════════ */
+.idle-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: idle-fade 0.25s ease;
+}
+
+@keyframes idle-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.idle-screen-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  max-width: 460px;
+}
+
+.idle-screen-clock {
+  font-size: clamp(48px, 12vw, 96px);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.idle-screen-idle {
+  margin: 0;
+  font-size: 13px;
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+}
+
+.idle-screen-prompt {
+  margin: 18px 0 4px;
+  font-size: 22px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.idle-screen-back {
+  margin-top: 6px;
+  padding: 12px 34px;
+  font-size: 15px;
+}
+
+.idle-screen-hint {
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: #484f58;
 }

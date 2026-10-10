@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { API_BASE, WS_BASE } from "../../lib/constants";
@@ -11,6 +11,11 @@ import { IndicatorsButton } from "../charts/IndicatorPanel";
 import { ProviderSelect } from "../charts/ProviderSelect";
 import { ResizeHandle } from "../layout/ResizeHandle";
 import { RightInspector } from "../layout/RightInspector";
+import {
+  readKronosSnapshot,
+  subscribeKronosSnapshot,
+  type KronosSnapshot,
+} from "../../lib/kronosCache";
 
 interface Position {
   instrument_id: string;
@@ -94,6 +99,7 @@ interface AnalysisData {
   direction?: string;
   overall_confidence?: number;
   rsi?: number;
+  price?: number;
 }
 
 /** Icon + friendly name per instrument (fallback: ticker itself). */
@@ -174,6 +180,214 @@ const TF_CHIPS: { label: string; tf: string; limit?: number }[] = [
 
 type DeskTicketTab = "overview" | "trade" | "info" | "insights";
 
+/** Derive a BUY/SELL/HOLD recommendation with a price point from live analysis. */
+function positionRecommendation(analysis?: { direction?: string; overall_confidence?: number; price?: number } | null) {
+  if (!analysis) return null;
+  const dir = (analysis.direction || "").toLowerCase();
+  const action = dir.includes("bull") ? "BUY" : dir.includes("bear") ? "SELL" : "HOLD";
+  const conf = Math.round((analysis.overall_confidence ?? 0) * 100);
+  const price = typeof analysis.price === "number" && analysis.price > 0 ? analysis.price : null;
+  return { action, conf, price };
+}
+
+function InsightRecommendation({
+  analysis,
+}: {
+  analysis?: { direction?: string; overall_confidence?: number; price?: number } | null;
+}) {
+  const rec = positionRecommendation(analysis);
+  if (!rec) return null;
+  return (
+    <div className="desk-rec">
+      <span className={`desk-rec-action ${rec.action.toLowerCase()}`}>{rec.action}</span>
+      <span className="desk-rec-price">{rec.price ? `at $${rec.price.toFixed(2)}` : "at market"}</span>
+      <span className="desk-rec-conf">{rec.conf}% confidence</span>
+    </div>
+  );
+}
+
+/**
+ * Kronos forecast folded into AI Insights (item 24).
+ *
+ * Reads the snapshot published by the Markets chart panel — the same model
+ * run, no second inference call. Renders nothing until a forecast exists for
+ * this exact symbol.
+ */
+function KronosInsight({ symbol }: { symbol: string }) {
+  const [snapshot, setSnapshot] = useState<KronosSnapshot | null>(() => readKronosSnapshot());
+
+  useEffect(() => subscribeKronosSnapshot(() => setSnapshot(readKronosSnapshot())), []);
+
+  if (!snapshot || snapshot.symbol !== symbol || snapshot.rows.length === 0) return null;
+
+  const finalClose = snapshot.rows[snapshot.rows.length - 1]?.close;
+  const low = Math.min(...snapshot.rows.map((row) => row.low));
+  const high = Math.max(...snapshot.rows.map((row) => row.high));
+  const base = snapshot.lastClose;
+  const movePct =
+    base && finalClose ? ((finalClose - base) / base) * 100 : undefined;
+  const tone = movePct === undefined ? "" : movePct >= 0 ? "up" : "down";
+
+  return (
+    <div className="desk-kronos" title="Zero-shot Kronos price projection">
+      <div className="desk-kronos-head">
+        <span aria-hidden="true">🔮</span>
+        <b>Kronos forecast</b>
+        <span className="desk-kronos-horizon">
+          next {snapshot.horizon} {snapshot.unit}
+        </span>
+        {snapshot.installed ? <span className="desk-kronos-live">installed</span> : null}
+      </div>
+      <div className="desk-kronos-stats">
+        <span className={`desk-kronos-move ${tone}`}>
+          {movePct === undefined ? "—" : `${movePct >= 0 ? "+" : ""}${movePct.toFixed(2)}%`}
+        </span>
+        <span className="desk-kronos-range">
+          {low.toFixed(2)} – {high.toFixed(2)}
+        </span>
+        <span className="desk-kronos-target">
+          target {finalClose !== undefined ? finalClose.toFixed(2) : "—"}
+        </span>
+      </div>
+      <p className="desk-kronos-note">
+        Model projection, not advice · updated {new Date(snapshot.updatedAt).toLocaleTimeString()}
+      </p>
+    </div>
+  );
+}
+
+/** Continuously-updating AI Buy/Sell panel with a consent + sizing flow. */
+function AutoTradePanel({
+  symbol,
+  buyingPower,
+  onPlaced,
+}: {
+  symbol: string;
+  buyingPower: number;
+  onPlaced: () => void;
+}) {
+  const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const [pct, setPct] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Auto-refresh every 15s without any user prompt.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/analysis/${encodeURIComponent(symbol)}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as AnalysisData;
+        if (!cancelled) setAnalysis(data);
+      } catch {
+        /* keep last signal */
+      }
+    };
+    void load();
+    const id = window.setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [symbol]);
+
+  const price = analysis && typeof analysis.price === "number" && analysis.price > 0 ? analysis.price : null;
+  const dir = (analysis?.direction || "").toLowerCase();
+  const action: "buy" | "sell" = dir.includes("bear") ? "sell" : "buy";
+  const confidence = Math.round((analysis?.overall_confidence ?? 0) * 100);
+  const chanceLoss = Math.max(0, Math.min(100, 100 - confidence));
+  const tp = price ? (action === "buy" ? price * 1.03 : price * 0.97) : null;
+  const sl = price ? (action === "buy" ? price * 0.97 : price * 1.03) : null;
+
+  const amount = (buyingPower * pct) / 100;
+  const qty = price ? Math.floor(amount / price) : 0;
+
+  const confirm = async () => {
+    if (qty < 1 || busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await submitOrder({
+        instrument: symbol.trim().toUpperCase(),
+        side: action,
+        order_type: "market",
+        quantity: qty,
+      });
+      try {
+        await simulateFill(result.order_id);
+      } catch {
+        /* market closed — order stays working */
+      }
+      setMsg(`Placed ${action.toUpperCase()} ${qty} ${symbol} · order ${result.order_id.slice(0, 8)}`);
+      setConsentOpen(false);
+      onPlaced();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Order failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!analysis) return <div className="auto-panel-empty">Watching {symbol} for a signal…</div>;
+
+  return (
+    <div className="auto-panel-wrap">
+      <button
+        type="button"
+        className={`auto-panel ${action}`}
+        onClick={() => setConsentOpen(true)}
+        title="AI trade suggestion — click to review and consent"
+      >
+        <span className={`auto-panel-side ${action}`}>{action === "buy" ? "BUY" : "SELL"}</span>
+        <span className="auto-panel-tp">TP {tp ? `$${tp.toFixed(2)}` : "—"}</span>
+        <span className="auto-panel-sl">SL {sl ? `$${sl.toFixed(2)}` : "—"}</span>
+        <span className="auto-panel-rr">R:R 1:1</span>
+      </button>
+      {msg && <div className="auto-panel-msg" role="status">{msg}</div>}
+
+      {consentOpen && (
+        <div className="journal-modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && setConsentOpen(false)}>
+          <div className="journal-modal" role="dialog" aria-modal="true" aria-label="Confirm AI trade">
+            <div className="journal-modal-header">
+              <h3>Confirm {action.toUpperCase()} {symbol}</h3>
+              <div className="journal-modal-header-actions">
+                <button className="btn-secondary" onClick={() => setConsentOpen(false)} disabled={busy}>Cancel</button>
+              </div>
+            </div>
+            <div className="auto-consent">
+              <div className="auto-consent-row"><span>Suggested action</span><strong className={action}>{action.toUpperCase()} @ {price ? `$${price.toFixed(2)}` : "market"}</strong></div>
+              <div className="auto-consent-row"><span>Take profit</span><strong className="tp">{tp ? `$${tp.toFixed(2)}` : "—"}</strong></div>
+              <div className="auto-consent-row"><span>Stop loss</span><strong className="sl">{sl ? `$${sl.toFixed(2)}` : "—"}</strong></div>
+              <div className="auto-consent-row"><span>Est. chance of losing money</span><strong className="loss">{chanceLoss}%</strong></div>
+              <label className="auto-slider">
+                <span>Size — {pct.toFixed(2)}% of buying power (${amount.toFixed(2)}) → {qty} share{qty === 1 ? "" : "s"}</span>
+                <input
+                  type="range"
+                  min={0.01}
+                  max={10}
+                  step={0.01}
+                  value={pct}
+                  onChange={(e) => setPct(Number(e.target.value))}
+                  aria-label="Percent of buying power to trade"
+                />
+              </label>
+              <div className="auto-consent-actions">
+                <button className="btn-secondary" onClick={() => setConsentOpen(false)} disabled={busy}>Cancel</button>
+                <button className={`btn-primary ${action}`} onClick={() => void confirm()} disabled={busy || qty < 1}>
+                  {busy ? "Placing…" : `Confirm ${action.toUpperCase()}`}
+                </button>
+              </div>
+              {qty < 1 && <p className="auto-consent-note">Buying power is too low for 1 share at this size — nudge the slider up.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TICKET_TABS: { id: DeskTicketTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "trade", label: "Trade" },
@@ -197,11 +411,19 @@ const DESK_LIMITS = {
   ticket: { min: 260, max: 560 },
 };
 
-/** Quote-list height (the panel above the chart) — dragged vertically. */
+/** Quote-list height — the single divider transfers space to/from the chart. */
 const DESK_QUOTES_H_KEY = "gateway_ui_desk_quotes_h";
 const QUOTES_H_MIN = 160;
-const quotesHMax = () => Math.max(QUOTES_H_MIN + 80, Math.floor(window.innerHeight * 0.7));
-const quotesHDefault = () => Math.floor(window.innerHeight * 0.4);
+const CHART_CARD_MIN_H = 300;
+const DESK_CENTER_GAP = 14;
+const DEFAULT_QUOTES_FRACTION = 0.34;
+const quotesHMax = (centerHeight = 0) => {
+  const available = centerHeight > 0
+    ? centerHeight - CHART_CARD_MIN_H - DESK_CENTER_GAP
+    : Math.floor(window.innerHeight * 0.7);
+  return Math.max(QUOTES_H_MIN, Math.min(Math.floor(window.innerHeight * 0.7), available));
+};
+const quotesHDefault = () => Math.floor(window.innerHeight * DEFAULT_QUOTES_FRACTION);
 
 function readDeskWidth(key: string, min: number, max: number): number | null {
   try {
@@ -495,11 +717,13 @@ export function PaperTrading({
   const [ticketW, setTicketW] = useState<number | null>(() =>
     readDeskWidth(DESK_WIDTH_KEYS.ticket, DESK_LIMITS.ticket.min, DESK_LIMITS.ticket.max),
   );
-  // Quote-list height: null → responsive CSS default (40vh).
-  const [quotesH, setQuotesH] = useState<number | null>(() => {
+  // Quote-list height defaults to roughly one-third of the center desk.
+  const [quotesH, setQuotesH] = useState(() => {
     const stored = readDeskWidth(DESK_QUOTES_H_KEY, QUOTES_H_MIN, 4000);
-    return stored === null ? null : Math.min(stored, quotesHMax());
+    return stored ?? quotesHDefault();
   });
+  const quotesHeightCustomizedRef = useRef(readDeskWidth(DESK_QUOTES_H_KEY, QUOTES_H_MIN, 4000) !== null);
+  const deskCenterRef = useRef<HTMLElement | null>(null);
 
   const deskRef = useRef<HTMLDivElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
@@ -530,9 +754,13 @@ export function PaperTrading({
     }
   };
 
-  /** Quote-list height: viewport-relative bounds, persisted. */
+  /** Instrument-list height: the chart takes the remaining space to the viewport bottom. */
   const applyQuotesHeight = (value: number) => {
-    const clamped = Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, value));
+    const clamped = Math.min(
+      quotesHMax(deskCenterRef.current?.clientHeight ?? 0),
+      Math.max(QUOTES_H_MIN, value),
+    );
+    quotesHeightCustomizedRef.current = true;
     setQuotesH(clamped);
     try {
       localStorage.setItem(DESK_QUOTES_H_KEY, String(clamped));
@@ -541,12 +769,27 @@ export function PaperTrading({
     }
   };
 
-  // Re-clamp the quote list when the window resizes (bounds are vh-based).
-  useEffect(() => {
-    const onResize = () =>
-      setQuotesH((h) => (h === null ? h : Math.min(quotesHMax(), Math.max(QUOTES_H_MIN, h))));
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+  // Keep the divider within the visible desk and preserve the list/chart split
+  // when the window or surrounding layout changes size.
+  useLayoutEffect(() => {
+    const center = deskCenterRef.current;
+    if (!center) return undefined;
+
+    const syncSplit = () => {
+      const available = center.clientHeight;
+      if (available <= 0) return;
+      setQuotesH((height) => {
+        const preferred = quotesHeightCustomizedRef.current
+          ? height
+          : Math.floor(available * DEFAULT_QUOTES_FRACTION);
+        return Math.min(quotesHMax(available), Math.max(QUOTES_H_MIN, preferred));
+      });
+    };
+
+    syncSplit();
+    const observer = new ResizeObserver(syncSplit);
+    observer.observe(center);
+    return () => observer.disconnect();
   }, []);
 
   /**
@@ -954,19 +1197,6 @@ export function PaperTrading({
         </div>
       )}
 
-      {/* Account status — directly under the page header/description */}
-      <div className={`desk-status ${isLive ? "live" : ""}`}>
-        <div className="desk-status-metrics">
-          <span><b>Equity</b> ${money(portfolio?.equity)}</span>
-          <span><b>Cash</b> ${money(portfolio?.cash)}</span>
-          <span><b>Buying power</b> ${money(portfolio?.buying_power)}</span>
-          <span><b>Positions</b> {positions.length}</span>
-          {isLive && portfolio?.portfolio_id ? (
-            <span className="desk-account-id"><b>Account</b> {portfolio.portfolio_id.replace("live:", "")}</span>
-          ) : null}
-        </div>
-      </div>
-
       <div className="paper-desk" style={deskStyle} ref={deskRef}>
         {/* Left icon rail */}
         <nav className="desk-rail" aria-label="Trading desk sections" ref={railRef}>
@@ -1029,13 +1259,13 @@ export function PaperTrading({
         </aside>
 
         {/* Center: quote list + chart (Trade) or account panels */}
-        <main className="desk-center">
+        <main className="desk-center" ref={deskCenterRef}>
           {section === "trade" && (
             <>
               <section
                 className="desk-card desk-quotes-card"
                 ref={quotesRef}
-                style={quotesH !== null ? { height: `${quotesH}px`, maxHeight: "none" } : undefined}
+                style={{ height: `${quotesH}px`, maxHeight: "none" }}
               >
                 <table className="desk-quotes">
                   <thead>
@@ -1111,21 +1341,23 @@ export function PaperTrading({
                 </table>
               </section>
 
-              {/* Drag vertically: more instruments vs. a taller chart */}
+              {/* Drag up to give the chart more room; drag down to give instruments more. */}
               <ResizeHandle
                 side="top"
                 orientation="horizontal"
                 mode="delta"
                 className="desk-handle-row"
                 measureRef={quotesRef}
-                width={quotesH ?? quotesHDefault()}
+                width={quotesH}
                 minWidth={QUOTES_H_MIN}
-                maxWidth={quotesHMax()}
+                maxWidth={quotesHMax(deskCenterRef.current?.clientHeight ?? 0)}
                 collapseBelow={QUOTES_H_MIN}
                 collapsedWidth={QUOTES_H_MIN}
-                defaultWidth={quotesHDefault()}
+                defaultWidth={Math.floor(
+                  (deskCenterRef.current?.clientHeight ?? window.innerHeight) * DEFAULT_QUOTES_FRACTION,
+                ) || quotesHDefault()}
                 storageKey={DESK_QUOTES_H_KEY}
-                ariaLabel="Resize quote list height"
+                ariaLabel="Resize instrument list and chart"
                 onChange={applyQuotesHeight}
               />
 
@@ -1170,6 +1402,7 @@ export function PaperTrading({
                     liveUpdate={liveUpdate}
                     indicators={chartIndicators}
                     nowSignal={nowSignal}
+                    fillContainer
                   />
                 </div>
                 <div className="desk-tf-row" role="group" aria-label="Chart timeframe">
@@ -1301,11 +1534,18 @@ export function PaperTrading({
                     <span>Confidence {Math.round((analysis.overall_confidence ?? 0) * 100)}%</span>
                     <span>RSI {analysis.rsi !== undefined ? analysis.rsi.toFixed(1) : "—"}</span>
                   </div>
+                  <InsightRecommendation analysis={analysis} />
+                  <KronosInsight symbol={symbol} />
                   <p className="paper-empty">Model read for {symbol}. Trade from the ticket — this is not advice.</p>
                 </div>
               ) : (
                 <p className="paper-empty">No analysis available for {symbol}.</p>
               )}
+              <AutoTradePanel
+                symbol={symbol}
+                buyingPower={portfolio?.buying_power ?? 0}
+                onPlaced={() => void refetch()}
+              />
             </section>
           )}
 
@@ -1408,8 +1648,8 @@ export function PaperTrading({
           </div>
 
           <div className="desk-bites">
-            <span className="desk-bites-label" title="Quick model take on the selected instrument">
-              <span aria-hidden="true">📊</span> +AI Bites
+            <span className="desk-bites-label" title="AI take on the selected instrument, from live analysis">
+              <span aria-hidden="true">📊</span> AI Insights
               <span className="desk-bites-info" aria-hidden="true">ⓘ</span>
             </span>
             <button className="desk-bites-cta" onClick={() => setTicketTab("insights")}>
@@ -1551,6 +1791,7 @@ export function PaperTrading({
             )}
 
             {ticketTab === "insights" && (
+              <>
               <div className="desk-insight">
                 {analysis ? (
                   <div className="desk-insight-dir">
@@ -1563,8 +1804,16 @@ export function PaperTrading({
                 ) : (
                   <p className="paper-empty">Loading analysis for {symbol}…</p>
                 )}
+                <InsightRecommendation analysis={analysis} />
+                <KronosInsight symbol={symbol} />
                 <p className="paper-empty">Model read only — not investment advice.</p>
               </div>
+                <AutoTradePanel
+                  symbol={symbol}
+                  buyingPower={portfolio?.buying_power ?? 0}
+                  onPlaced={() => void refetch()}
+                />
+              </>
             )}
           </div>
 

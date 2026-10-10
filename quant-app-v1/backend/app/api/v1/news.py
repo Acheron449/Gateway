@@ -55,11 +55,13 @@ class QuoteResponse(BaseModel):
 
 
 # Economic-calendar sources in preference order for provider="auto".
-_CALENDAR_CHAIN = ("JBlanked", "ForexFactory", "Bloomberg", "Finnhub")
+# EconomicCalendar is the default base feed; the rest layer events on top.
+_CALENDAR_CHAIN = ("EconomicCalendar", "FinancialModelingPrep", "JBlanked", "Bloomberg", "Finnhub")
 
 _CALENDAR_SOURCE_DETAILS = {
+    "EconomicCalendar": "Default economic-calendar-api feed (investing.com) · self-hosted · no API key",
+    "FinancialModelingPrep": "Financial Modeling Prep economics calendar · API key · FMP_API_KEY",
     "JBlanked": "Official JBlanked API · ForexFactory · MQL5 · FxStreet feeds · API key required",
-    "ForexFactory": "Direct forexfactory.com/calendar scrape · no API key · may be bot-walled",
     "Bloomberg": "bloomberg.com economic calendar (Investing.com widget) · no API key · may be bot-walled",
     "Finnhub": "Finnhub economic calendar · API key · premium-gated",
 }
@@ -176,26 +178,29 @@ async def news_sources() -> dict:
 @router.get("/calendar", response_model=CalendarResponse)
 async def get_calendar(
     limit: int = Query(20, ge=1, le=100, description="Maximum number of events"),
-    provider: str = Query("auto", description="Calendar source: 'auto' walks the source chain, or name one explicitly"),
+    provider: str = Query("auto", description="Calendar source: 'auto' merges the default + all sources, or name one explicitly"),
     response: Response = None,
 ) -> CalendarResponse:
-    """Fetch economic calendar events with multi-source fallback.
+    """Fetch economic calendar events with a merged multi-source feed.
 
-    ``provider=auto`` (the default) tries JBlanked → ForexFactory → Bloomberg →
-    Finnhub and returns the first source that answers with events, so one
-    blocked upstream never blanks the calendar. An explicitly named provider is
-    used strictly — its failure is reported instead of silently substituting.
-    Provenance always names the source that actually answered.
+    ``provider=auto`` (the default) uses the default EconomicCalendar feed as
+    the base and layers every other configured source's events on top,
+    de-duplicating by (title, time, currency). An explicitly named provider is
+    used strictly — its failure is reported instead of silently substituted.
+    Provenance names the base source plus any contributors.
     """
     requested = (provider or "auto").strip()
+    merged: dict[tuple[str, str, str], dict] = {}
+    reasons: list[str] = []
+    answered: list[str] = []
+    empty_source: Optional[str] = None
+    fail_name, fail_version = requested, "unknown"
+
     if requested.casefold() == "auto":
         order: list[str] = list(_CALENDAR_CHAIN)
     else:
         order = [requested]
 
-    reasons: list[str] = []
-    empty_source: Optional[str] = None
-    fail_name, fail_version = requested, "unknown"
     for candidate in order:
         instance = get_provider(candidate)
         if instance is None:
@@ -212,14 +217,27 @@ async def get_calendar(
             reasons.append(f"{instance.name}: {exc}")
             continue
         if events:
-            return CalendarResponse(
-                events=[event.model_dump(mode="json") for event in events],
-                provenance=await get_calendar_provenance(instance.name),
-                count=len(events),
-            )
-        reasons.append(f"{instance.name}: no events returned")
-        if empty_source is None:
-            empty_source = instance.name
+            answered.append(instance.name)
+            for event in events:
+                key = (
+                    event.title.strip().casefold(),
+                    event.scheduled_at.isoformat(),
+                    str(event.currency or "").upper(),
+                )
+                # Base (first in chain) wins; later sources only add new rows.
+                merged.setdefault(key, event.model_dump(mode="json"))
+        else:
+            reasons.append(f"{instance.name}: no events returned")
+            if empty_source is None:
+                empty_source = instance.name
+
+    if merged:
+        rows = sorted(merged.values(), key=lambda row: row.get("scheduled_at") or "")[: max(1, limit)]
+        base = answered[0] if answered else requested
+        provenance = await get_calendar_provenance(base)
+        if len(answered) > 1:
+            provenance["coverage"] = f"Merged economic calendar ({', '.join(answered)})"
+        return CalendarResponse(events=rows, provenance=provenance, count=len(rows), status="available")
 
     message = "; ".join(reasons) or "No calendar sources are configured"
     if empty_source is not None:

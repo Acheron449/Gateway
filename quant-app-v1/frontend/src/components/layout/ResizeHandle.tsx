@@ -101,14 +101,13 @@ export function ResizeHandle({
       if (mode === "delta") {
         const axisDelta =
           orientation === "horizontal" ? e.clientY - startYRef.current : e.clientX - startXRef.current;
-        const direction =
-          orientation === "horizontal"
-            ? side === "top"
-              ? 1
-              : -1
-            : side === "left"
-              ? 1
-              : -1;
+        const direction = orientation === "horizontal"
+          ? side === "top"
+            ? 1
+            : -1
+          : side === "left"
+            ? 1
+            : -1;
         const raw = startWidthRef.current + direction * axisDelta;
         onChange(Math.min(maxWidth, Math.max(minWidth, raw)));
         return;

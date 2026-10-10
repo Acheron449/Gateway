@@ -6,7 +6,7 @@ const routes = [
   { label: "Markets", key: "markets" },
   { label: "Calendar", key: "calendar" },
   { label: "Strategies", key: "strategies" },
-  { label: "Backtests", key: "backtests" },
+  { label: "Backtester", key: "backtests" },
   { label: "Paper Trading", key: "paper" },
   { label: "Journal", key: "journal" },
 ];
