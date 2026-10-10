@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { ChartContainer } from "../../components/ChartContainer";
 import { AssetSelector } from "../../components/features/AssetSelector";
 import { PaperTrading } from "../../components/features/PaperTrading";
+import { TradingAccountStatus } from "../../components/features/TradingAccountStatus";
 import { AiTrading } from "../../components/features/AiTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
@@ -105,6 +106,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
               <h1>Paper Trading</h1>
               <p className="view-description">Simulated portfolio and order management</p>
             </div>
+            <TradingAccountStatus mode="paper" />
           </div>
           <PaperTrading selectedSymbol={selectedSymbol} />
         </div>
@@ -121,6 +123,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
                 (UI patterned after professional terminals such as nautilus_trader).
               </p>
             </div>
+            <TradingAccountStatus mode="live" />
           </div>
           <PaperTrading selectedSymbol={selectedSymbol} mode="live" />
         </div>

@@ -2330,13 +2330,35 @@ body.panel-resizing .resize-handle {
   width: 100%;
 }
 
-.trading-view-header {
-  display: block;
+.view-header.trading-view-header {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   min-height: 0;
 }
 
 .trading-view-title {
+  flex: 1 1 220px;
   min-width: 0;
+}
+
+.trading-view-header > .desk-status {
+  flex: 1 1 360px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .view-header.trading-view-header {
+    align-items: flex-start;
+  }
+
+  .trading-view-header > .desk-status {
+    width: 100%;
+  }
 }
 
 /* The chart card fills the remaining desk height after the instrument list
@@ -6484,8 +6506,7 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   flex: 0 0 auto;
 }
 
-/* With the account status removed, the desk fills the area directly beneath
-   the normal trading view header. */
+/* The account summary shares the header row, preserving desk height. */
 
 .center-canvas-fixed .paper-trading {
   flex: 1 1 auto;
