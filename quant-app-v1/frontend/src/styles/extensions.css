@@ -2341,12 +2341,12 @@ body.panel-resizing .resize-handle {
 }
 
 .trading-view-title {
-  flex: 1 1 220px;
+  flex: 1 1 33%;
   min-width: 0;
 }
 
 .trading-view-header > .desk-status {
-  flex: 1 1 360px;
+  flex: 2 1 60%;
   min-width: 0;
   max-width: 100%;
 }
