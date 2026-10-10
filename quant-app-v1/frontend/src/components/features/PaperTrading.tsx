@@ -11,7 +11,6 @@ import { IndicatorsButton } from "../charts/IndicatorPanel";
 import { ProviderSelect } from "../charts/ProviderSelect";
 import { ResizeHandle } from "../layout/ResizeHandle";
 import { RightInspector } from "../layout/RightInspector";
-import { LastUpdated } from "../../lib/LastUpdated";
 import {
   readKronosSnapshot,
   subscribeKronosSnapshot,
@@ -1197,22 +1196,6 @@ export function PaperTrading({
           </button>
         </div>
       )}
-
-      {/* Account status — directly under the page header/description.
-          Last-refreshed sits on the LEFT of the equity box so page content
-          can never cover it. */}
-      <div className={`desk-status ${isLive ? "live" : ""}`}>
-        <LastUpdated />
-        <div className="desk-status-metrics">
-          <span><b>Equity</b> ${money(portfolio?.equity)}</span>
-          <span><b>Cash</b> ${money(portfolio?.cash)}</span>
-          <span><b>Buying power</b> ${money(portfolio?.buying_power)}</span>
-          <span><b>Positions</b> {positions.length}</span>
-          {isLive && portfolio?.portfolio_id ? (
-            <span className="desk-account-id"><b>Account</b> {portfolio.portfolio_id.replace("live:", "")}</span>
-          ) : null}
-        </div>
-      </div>
 
       <div className="paper-desk" style={deskStyle} ref={deskRef}>
         {/* Left icon rail */}

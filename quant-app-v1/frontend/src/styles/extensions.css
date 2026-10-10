@@ -2325,20 +2325,18 @@ body.panel-resizing .resize-handle {
   margin: -10.5px 0;
 }
 
-/* ── Trading layout tweaks ──────────────────────────────────────
-   Item 20: pull the equity/buying-power bar up onto the page-header line
-   (right-aligned) so the desk starts higher instead of stacking a whole
-   separate row under the title. Above 1600px the description is dropped
-   (see below), so the header band is the h1 alone (30px) plus the 12px
-   canvas gap → .paper-trading starts at 110px; -54px lands the bar at
-   56px beside the title and the desk at 105px, clear of the header. */
-.paper-trading > .desk-status {
-  margin-top: -54px;
-  align-self: flex-end;
-  flex-wrap: wrap;
-  row-gap: 6px;
-  padding: 6px 10px;
-  gap: 10px;
+/* ── Trading layout tweaks ────────────────────────────────────── */
+.canvas-view.canvas-view-trading {
+  width: 100%;
+}
+
+.trading-view-header {
+  display: block;
+  min-height: 0;
+}
+
+.trading-view-title {
+  min-width: 0;
 }
 
 /* The chart card fills the remaining desk height after the instrument list
@@ -6486,17 +6484,8 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   flex: 0 0 auto;
 }
 
-/* Above 1600px the status bar shares the title line, so the desk starts up
-   in the header band and would cover the description — whose text then
-   leaked through the gaps between the desk panels. Only views that actually
-   mount the desk overlap it; the description stays (and the status bar
-   drops into its own row below 1600px, where nothing overlaps). */
-@media (min-width: 1601px) {
-  .center-canvas-fixed:has(> .canvas-view > .paper-trading > .paper-desk)
-    > .canvas-view > .view-header .view-description {
-    display: none;
-  }
-}
+/* With the account status removed, the desk fills the area directly beneath
+   the normal trading view header. */
 
 .center-canvas-fixed .paper-trading {
   flex: 1 1 auto;
@@ -6584,20 +6573,10 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   z-index: 400;
 }
 
-/* --- Account status row: last-refreshed on the left of the equity box --- */
+/* Account refresh text stays grouped with the equity metrics in the header. */
 .desk-status .last-updated {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-/* The equity bar sits *beside* the page title only while there is room for
-   both. Below 1600px it drops into its own row so it can never paint over
-   the heading. */
-@media (max-width: 1600px) {
-  .paper-trading > .desk-status {
-    margin-top: 0;
-    align-self: stretch;
-  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
