@@ -4,26 +4,32 @@ import os
 from collections import deque
 
 import pandas as pd
-import pandas_ta as ta
 from loguru import logger
 
 
-def calculate_rsi(price_series: pd.Series, period: int = 14) -> pd.Series:
-    delta = price_series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+def calculate_wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """Return Wilder-smoothed RSI, matching pandas-ta's default RMA behavior."""
+    if period < 1:
+        raise ValueError("period must be positive")
+    close = close.astype(float)
+    delta = close.diff()
+    gains = delta.clip(lower=0.0)
+    losses = -delta.clip(upper=0.0)
+    average_gain = gains.ewm(alpha=1.0 / period, adjust=False, min_periods=1).mean()
+    average_loss = losses.ewm(alpha=1.0 / period, adjust=False, min_periods=1).mean()
+    total = average_gain + average_loss
+    rsi = 100.0 * average_gain / total.where(total != 0.0)
+    return rsi.clip(lower=0.0, upper=100.0)
 
-    avg_gain = gain.rolling(period, min_periods=period).mean()
-    avg_loss = loss.rolling(period, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50.0)
+
+def calculate_rsi(price_series: pd.Series, period: int = 14) -> pd.Series:
+    """Calculate Wilder RSI, using 50 as the neutral value until it is defined."""
+    return calculate_wilder_rsi(price_series, period).fillna(50.0)
 
 
 def calculate_rsi_pandas_ta(close: pd.Series, period: int = 14) -> pd.Series:
-    """RSI via pandas-ta (matches live-stream path)."""
-    out = ta.rsi(close.astype(float), length=period)
-    return out.fillna(50.0) if isinstance(out, pd.Series) else close * 0 + 50.0
+    """Compatibility wrapper for the app's former pandas-ta RSI helper."""
+    return calculate_wilder_rsi(close, period).fillna(50.0)
 
 
 def calculate_bollinger_bands(
@@ -84,7 +90,7 @@ def _bar_to_live_row(data) -> dict:
 
 class LiveRSIStrategy:
     """
-    Rolling deque of Alpaca minute bars + pandas-ta RSI and simple threshold signals.
+    Rolling deque of Alpaca minute bars + Wilder RSI and simple threshold signals.
     """
 
     def __init__(
@@ -122,7 +128,7 @@ class LiveRSIStrategy:
             return
 
         df = pd.DataFrame(list(self._bar_buffer))
-        rsi_series = ta.rsi(df["close"], length=self.rsi_period)
+        rsi_series = calculate_wilder_rsi(df["close"], period=self.rsi_period)
         current_rsi = rsi_series.iloc[-1]
 
         if pd.isna(current_rsi):
@@ -151,7 +157,7 @@ def start_quant_stream(
     buffer_size: int = 30,
 ) -> None:
     """
-    Blocking: Alpaca StockDataStream minute bars → rolling RSI (pandas-ta).
+    Blocking: Alpaca StockDataStream minute bars → rolling Wilder RSI.
 
     Credentials: ALPACA_API_KEY + ALPACA_SECRET_KEY (or APCA_* equivalents).
     Optional: ALPACA_STOCK_FEED=SIP.

@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
-import pandas_ta as ta
 import time
 import json
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request
@@ -47,6 +46,7 @@ from app.api.v1.layouts import router as layouts_router
 from app.api.v1.preferences import router as preferences_router
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
+from app.quant.technicals import calculate_wilder_rsi
 from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
@@ -133,7 +133,7 @@ async def lifespan(app: FastAPI):
             rsi_val = 0.0
             if len(buff) >= RSI_PERIOD:
                 df_rsi = pd.DataFrame(list(buff))
-                series = ta.rsi(df_rsi["close"], length=RSI_PERIOD)
+                series = calculate_wilder_rsi(df_rsi["close"], period=RSI_PERIOD)
                 last = series.iloc[-1]
                 if pd.notna(last):
                     rsi_val = float(last)
@@ -315,7 +315,7 @@ async def lifespan(app: FastAPI):
                         buff.append({"close": price})
                         rsi_val = 0.0
                         if len(buff) >= RSI_PERIOD:
-                            rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
+                            rsi_series = calculate_wilder_rsi(pd.DataFrame(list(buff))["close"], period=RSI_PERIOD)
                             last = rsi_series.iloc[-1]
                             if pd.notna(last):
                                 rsi_val = float(last)

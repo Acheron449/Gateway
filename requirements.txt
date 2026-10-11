@@ -25,8 +25,8 @@ slowapi==0.1.9
 pandas==2.3.2
 # High-performance numerical operations
 numpy==2.2.6
-# Professional technical analysis library (RSI, EMA, etc.)
-pandas-ta==0.4.71b0
+# RSI uses the app's local Wilder smoothing implementation; pandas-ta/numba
+# are intentionally omitted to keep backend image and Vercel bundles smaller.
 # Used for advanced statistics and signal processing
 scipy==1.15.1
 # Engle-Granger cointegration tests used by pairs backtests

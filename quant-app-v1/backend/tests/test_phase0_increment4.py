@@ -32,7 +32,12 @@ import pytest
 
 from app.models import BacktestRun, BacktestRunStatus
 from app.quant.risk_manager import RiskConfig, RiskManager
-from app.quant.technicals import calculate_bollinger_bands, calculate_rsi
+from app.quant.technicals import (
+    calculate_bollinger_bands,
+    calculate_rsi,
+    calculate_rsi_pandas_ta,
+    calculate_wilder_rsi,
+)
 
 RSI_PERIOD = 14          # shipped default
 BB_PERIOD = 20           # shipped default
@@ -71,6 +76,34 @@ def test_rsi_is_finite_bounded_and_warms_offline() -> None:
     warmed = [v for v in rsi if not math.isnan(v)]
     assert warmed, "64 bars at RSI(14) must warm at least one value"
     assert all(not math.isnan(v) for v in rsi[-1:]), "warm tail must be a value, not NaN-only"
+
+
+def test_wilder_rsi_matches_pandas_ta_reference_values() -> None:
+    # Golden values captured from pandas-ta RSI(14), its default RMA mode.
+    closes = pd.Series([100, 102, 101, 103, 102, 104, 103, 105, 104, 106, 105,
+                        107, 106, 108, 107, 109], dtype=float)
+
+    rsi = calculate_wilder_rsi(closes, period=14)
+
+    assert math.isnan(rsi.iloc[0])
+    assert rsi.iloc[1] == pytest.approx(100.0)
+    assert rsi.iloc[2] == pytest.approx(96.296296296296)
+    assert rsi.iloc[14] == pytest.approx(79.895093283154)
+    assert rsi.iloc[15] == pytest.approx(81.595459174686)
+
+
+def test_wilder_rsi_compatibility_helper_keeps_neutral_fill_for_flat_data() -> None:
+    flat = calculate_rsi_pandas_ta(pd.Series([10.0] * 20), period=14)
+
+    assert flat.tolist() == [50.0] * 20
+
+
+def test_rsi_returns_neutral_for_flat_series_and_short_input() -> None:
+    flat = calculate_rsi(pd.Series([10.0] * 20), period=14)
+    short = calculate_rsi(pd.Series([10.0, 11.0, 12.0]), period=14)
+
+    assert flat.iloc[-1] == pytest.approx(50.0)
+    assert short.tolist() == [50.0, 100.0, 100.0]
 
 
 def test_bollinger_envelope_never_inverts_offline() -> None:
