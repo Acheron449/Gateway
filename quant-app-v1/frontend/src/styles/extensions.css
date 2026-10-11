@@ -5751,6 +5751,48 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
 }
 
+/* Cointegration pair launcher and historical synthetic-book disclosures */
+.pairs-launcher {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+.pairs-launcher-head, .pairs-actions, .pairs-run-summary, .pairs-chart-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pairs-launcher-head h2 { margin: 0 0 4px; font-size: 16px; }
+.pairs-launcher-head p, .pairs-disclosure, .pairs-validation-note { margin: 0; color: var(--text-muted); font-size: 12px; }
+.pairs-badge { color: var(--accent-warning, #f59e0b); font-size: 11px; white-space: nowrap; }
+.pairs-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }
+.pairs-form-grid label { display: grid; gap: 5px; color: var(--text-muted); font-size: 11px; }
+.pairs-form-grid input, .pairs-form-grid select { min-width: 0; width: 100%; }
+.pairs-disclosure { line-height: 1.5; }
+.pairs-actions [role="status"] { color: var(--text-muted); font-size: 12px; }
+.pairs-series-chart { margin: 16px 0 8px; padding: 8px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); }
+.pairs-series-chart svg { display: block; width: 100%; height: 180px; }
+.pairs-entry-line { stroke: #f59e0b; stroke-dasharray: 5 4; stroke-width: 1; }
+.pairs-exit-line { stroke: #3b82f6; stroke-dasharray: 3 5; stroke-width: 1; }
+.pairs-zero-line { stroke: var(--border-primary); stroke-width: 1; }
+.pairs-z-line { fill: none; stroke: var(--accent-primary, #a78bfa); stroke-width: 2; }
+.pairs-chart-legend { justify-content: flex-start; color: var(--text-muted); font-size: 11px; }
+.pairs-run-details { display: grid; gap: 12px; margin: 12px 0; }
+.pairs-run-disclosure { display: grid; gap: 4px; padding: 10px; border-left: 3px solid var(--accent-warning, #f59e0b); background: var(--bg-tertiary, var(--bg-primary)); font-size: 12px; }
+.pairs-run-summary { justify-content: flex-start; color: var(--text-muted); font-size: 12px; }
+.pairs-run-summary span { padding: 6px 9px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); }
+.pairs-fills summary { cursor: pointer; padding: 8px 0; }
+.pairs-run-details .bt-table { display: block; max-width: 100%; overflow-x: auto; }
+@media (max-width: 700px) {
+  .pairs-launcher { padding: 12px; }
+  .pairs-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Backtester (paper layout, historical-only)
    Two-column desk: detail sidebar + run viewer.

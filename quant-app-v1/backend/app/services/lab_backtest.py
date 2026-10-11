@@ -17,6 +17,7 @@ Two strategy kinds run through the same simulator:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -258,9 +259,11 @@ async def fetch_bars(symbol: str, tf: str, limit: int) -> list[dict[str, Any]]:
                 open_ = float(row.get("open")) if isinstance(row, dict) else float(getattr(row, "open", value))
                 high = float(row.get("high")) if isinstance(row, dict) else float(getattr(row, "high", value))
                 low = float(row.get("low")) if isinstance(row, dict) else float(getattr(row, "low", value))
+                volume_raw = row.get("volume") if isinstance(row, dict) else getattr(row, "volume", None)
+                volume = float(volume_raw) if volume_raw is not None else None
             except (TypeError, ValueError):
-                open_, high, low = value, value, value
-            rows.append({"time": epoch, "open": open_, "high": high, "low": low, "close": value})
+                open_, high, low, volume = value, value, value, None
+            rows.append({"time": epoch, "open": open_, "high": high, "low": low, "close": value, "volume": volume})
         rows.sort(key=lambda c: c["time"])
 
     if not rows:
@@ -286,6 +289,7 @@ async def fetch_bars(symbol: str, tf: str, limit: int) -> list[dict[str, Any]]:
                     "high": float(row.get("High", close)),
                     "low": float(row.get("Low", close)),
                     "close": close,
+                    "volume": float(row.get("Volume", 0) or 0),
                 })
             out.sort(key=lambda c: c["time"])
             return out
@@ -843,6 +847,8 @@ async def run_backtest(
     spec: dict[str, Any],
     *,
     symbol: str,
+    symbol_b: Optional[str] = None,
+    pair_config: dict[str, Any] | None = None,
     tf: str = "1d",
     bars_limit: int = 260,
     capital: float = 10_000.0,
@@ -855,6 +861,23 @@ async def run_backtest(
 ) -> dict[str, Any]:
     """Run one lab backtest and persist the resulting run with full stats."""
     kind = spec.get("kind", "baseline")
+    if kind == "pairs":
+        from app.services.pairs_backtest import run_pairs_backtest
+
+        symbol_b = str(symbol_b or spec.get("symbol_b") or "").strip().upper()
+        pair_config = pair_config or spec.get("pair_config")
+        if not symbol_b or symbol_b == symbol.strip().upper():
+            raise ValueError("Pairs backtests need two distinct symbols")
+        bars_a, bars_b = await asyncio.gather(fetch_bars(symbol, tf, bars_limit), fetch_bars(symbol_b, tf, bars_limit))
+        run = run_pairs_backtest(bars_a, bars_b, symbol_a=symbol, symbol_b=symbol_b, tf=tf,
+                                 capital=capital, config=pair_config, fee_bps=fee_bps,
+                                 slippage_bps=slippage_bps)
+        run.update({"id": uuid.uuid4().hex[:12], "created_at": datetime.now(timezone.utc).isoformat(),
+                    "provider": None, "model": None, "prompt": None, "agent_id": agent_id,
+                    "fee_bps": fee_bps, "slippage_bps": slippage_bps, "decisions": [],
+                    "risk_events": [], "chart": {"points": [], "markers": []}})
+        _store_run(run)
+        return run
     bars = await fetch_bars(symbol, tf, bars_limit)
     if len(bars) < 40:
         raise ValueError(f"Not enough history for {symbol} ({len(bars)} bars) — try another symbol or timeframe")

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth import CurrentUser
 from app.services import job_store
@@ -66,8 +66,35 @@ class AgentRequest(BaseModel):
     tf: Optional[str] = "1d"
 
 
+class PairBacktestConfig(BaseModel):
+    lookback: int = Field(default=60, ge=30, le=250)
+    entry_z: float = Field(default=2.0, gt=0, le=5)
+    exit_z: float = Field(default=0.5, ge=0, le=4)
+    cointegration_pvalue: float = Field(default=0.05, gt=0, lt=1)
+    walk_forward_folds: int = Field(default=4, ge=1, le=10)
+    spread_floor_bps: float = Field(default=2.0, ge=0, le=100)
+    range_factor: float = Field(default=0.1, ge=0, le=2)
+    participation_rate: float = Field(default=0.1, gt=0, le=0.25)
+
+    @model_validator(mode="after")
+    def validate_threshold_order(self) -> "PairBacktestConfig":
+        if self.exit_z >= self.entry_z:
+            raise ValueError("exit_z must be less than entry_z")
+        return self
+
+
 class BacktestRequest(BaseModel):
-    kind: str = Field(default="baseline", description="llm | baseline")
+    @model_validator(mode="after")
+    def validate_pair_symbols(self) -> "BacktestRequest":
+        if self.kind == "pairs" and (not self.symbol_b or self.symbol.strip().upper() == self.symbol_b.strip().upper()):
+            raise ValueError("Pairs backtests need two distinct symbols")
+        if self.kind == "pairs" and self.pair_config is None:
+            raise ValueError("pair_config is required for pairs backtests")
+        return self
+
+    kind: str = Field(default="baseline", description="llm | baseline | pairs")
+    symbol_b: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    pair_config: Optional[PairBacktestConfig] = None
     baseline: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -186,10 +213,22 @@ async def start_backtest(request: BacktestRequest, user: CurrentUser) -> dict[st
         raise HTTPException(status_code=400, detail="A model strategy needs a provider and a model")
     if spec["kind"] == "baseline" and spec.get("baseline") not in lab.BASELINES:
         raise HTTPException(status_code=400, detail=f"Unknown baseline '{spec.get('baseline')}'")
+    if spec["kind"] not in ("llm", "baseline", "pairs"):
+        raise HTTPException(status_code=400, detail="kind must be llm, baseline, or pairs")
+    pair_config = None
+    if spec["kind"] == "pairs":
+        symbol_b = (request.symbol_b or "").strip().upper()
+        if not symbol_b or symbol_b == request.symbol.strip().upper():
+            raise HTTPException(status_code=422, detail="Pairs backtests need two distinct symbols")
+        if request.pair_config is None:
+            raise HTTPException(status_code=422, detail="pair_config is required for pairs backtests")
+        pair_config = request.pair_config.model_dump()
 
     meta = {
         "spec": spec,
         "symbol": request.symbol.strip().upper(),
+        "symbol_b": (request.symbol_b or "").strip().upper() or None,
+        "pair_config": pair_config,
         "tf": request.tf,
         "bars": request.bars,
         "capital": request.capital,
@@ -210,6 +249,8 @@ async def start_backtest(request: BacktestRequest, user: CurrentUser) -> dict[st
         run = await lab.run_backtest(
             spec,
             symbol=meta["symbol"],
+            symbol_b=meta.get("symbol_b"),
+            pair_config=meta.get("pair_config"),
             tf=meta["tf"],
             bars_limit=meta["bars"],
             capital=meta["capital"],

@@ -3,6 +3,7 @@ import { API_BASE } from "../../lib/constants";
 import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
+import { PairsBacktestLauncher } from "../../components/features/PairsBacktestLauncher";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -35,6 +36,9 @@ interface LabRun {
   strategy: string;
   agent_id: string | null;
   symbol: string;
+  symbol_b?: string | null;
+  pair_series?: { time: number; spread: number | null; zscore: number | null; beta: number | null; pvalue: number | null; cointegrated: boolean; signal: string }[];
+  walk_forward?: { folds?: { fold: number; test_start: number; test_end: number; cointegration_pvalue: number | null; cointegrated: boolean; metrics: Record<string, any> }[]; out_of_sample_metrics?: Record<string, any> };
   tf: string;
   bars: number;
   capital: number;
@@ -692,6 +696,8 @@ export function AgenticLab({ selectedSymbol }: AgenticLabProps) {
           </div>
         )}
       </div>
+
+      <PairsBacktestLauncher initialSymbol={selectedSymbol} onComplete={() => void refresh()} />
 
       <nav className="lab-tabs" role="tablist">
         {TABS.map((entry) => (

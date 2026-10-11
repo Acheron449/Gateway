@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE } from "../../lib/constants";
+import { PairsBacktestLauncher } from "../../components/features/PairsBacktestLauncher";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -37,7 +38,13 @@ interface BtRun {
   kind: string;
   strategy: string;
   symbol: string;
+  symbol_b?: string | null;
   tf: string;
+  pair_config?: Record<string, any>;
+  pair_series?: { time: number; spread: number | null; zscore: number | null; beta: number | null; pvalue: number | null; cointegrated: boolean; signal: string }[];
+  walk_forward?: { folds?: { fold: number; test_start: number; test_end: number; cointegration_pvalue: number | null; cointegrated: boolean; metrics: Record<string, any> }[]; out_of_sample_metrics?: Record<string, any> };
+  fills?: { status: string; fill_time?: number; legs?: { symbol_leg: string; side: string; filled_quantity: number; fill_price: number; modeled_spread_bps: number; fee: number; status: string }[] }[];
+  execution_model?: { warning?: string; participation_rate?: number; spread_floor_bps?: number; range_factor?: number };
   bars: number;
   capital: number;
   provider: string | null;
@@ -154,6 +161,57 @@ function EquityCurve({ curve, capital }: { curve: { time: number; equity: number
       <line x1="0" y1={baseline} x2={width} y2={baseline} className="bt-equity-base" />
       <polyline points={line} className="bt-equity-line" />
     </svg>
+  );
+}
+
+function PairSpreadChart({
+  series,
+  entryZ,
+  exitZ,
+}: {
+  series: NonNullable<BtRun["pair_series"]>;
+  entryZ: number;
+  exitZ: number;
+}) {
+  const points = series.filter((point) => Number.isFinite(point.zscore));
+  if (points.length < 2) return <p className="empty-state">No eligible pair spread points in the stored run.</p>;
+  const width = 720;
+  const height = 180;
+  const maxAbs = Math.max(entryZ * 1.2, ...points.map((point) => Math.abs(point.zscore ?? 0)));
+  const x = (index: number) => index / (points.length - 1) * width;
+  const y = (value: number) => height - (value + maxAbs) / (2 * maxAbs) * height;
+  const path = points.map((point, index) => `${x(index).toFixed(1)},${y(point.zscore ?? 0).toFixed(1)}`).join(" ");
+  return (
+    <div className="pairs-series-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Pair spread z-score with entry and exit thresholds">
+        <line x1="0" y1={y(entryZ)} x2={width} y2={y(entryZ)} className="pairs-entry-line" />
+        <line x1="0" y1={y(-entryZ)} x2={width} y2={y(-entryZ)} className="pairs-entry-line" />
+        <line x1="0" y1={y(exitZ)} x2={width} y2={y(exitZ)} className="pairs-exit-line" />
+        <line x1="0" y1={y(-exitZ)} x2={width} y2={y(-exitZ)} className="pairs-exit-line" />
+        <line x1="0" y1={y(0)} x2={width} y2={y(0)} className="pairs-zero-line" />
+        <polyline points={path} className="pairs-z-line" />
+      </svg>
+      <div className="pairs-chart-legend"><span>Spread z-score</span><span>Entry ±{entryZ}</span><span>Exit ±{exitZ}</span></div>
+    </div>
+  );
+}
+
+function PairsRunDetails({ run }: { run: BtRun }) {
+  const folds = run.walk_forward?.folds ?? [];
+  const fillRows = (run.fills ?? []).flatMap((fill) => (fill.legs ?? []).map((leg) => ({ fill, leg })));
+  return (
+    <section className="pairs-run-details">
+      <div className="pairs-run-disclosure"><b>Synthetic order book</b><span>{run.execution_model?.warning ?? "OHLCV-derived spread and capacity; not historical Level-2 replay."}</span></div>
+      <div className="pairs-run-summary">
+        <span>OOS return <b>{run.walk_forward?.out_of_sample_metrics?.total_return_pct ?? "—"}%</b></span>
+        <span>Folds <b>{folds.length}</b></span>
+        <span>Cointegrated folds <b>{folds.filter((fold) => fold.cointegrated).length}</b></span>
+        <span>Participation <b>{((run.execution_model?.participation_rate ?? 0) * 100).toFixed(1)}%</b></span>
+      </div>
+      {folds.length > 0 && <table className="bt-table"><thead><tr><th>Fold</th><th>Test window</th><th>EG p-value</th><th>Return</th><th>Trades</th></tr></thead><tbody>{folds.map((fold) => <tr key={fold.fold}><td>{fold.fold}</td><td>{fmtTime(fold.test_start)} – {fmtTime(fold.test_end)}</td><td>{fold.cointegration_pvalue?.toFixed(3) ?? "—"}</td><td>{pct(fold.metrics.total_return_pct)}</td><td>{fold.metrics.trades}</td></tr>)}</tbody></table>}
+      {fillRows.length > 0 && <details className="pairs-fills"><summary>Simulated leg fills ({fillRows.length})</summary><table className="bt-table"><thead><tr><th>Time</th><th>Leg</th><th>Side</th><th>Quantity</th><th>Price</th><th>Spread</th><th>Status</th></tr></thead><tbody>{fillRows.slice(0, 200).map(({ fill, leg }, index) => <tr key={`${fill.fill_time}-${index}`}><td>{fmtTime(fill.fill_time)}</td><td>{run.symbol && leg.symbol_leg === "a" ? run.symbol : run.symbol_b}</td><td>{leg.side}</td><td>{leg.filled_quantity.toFixed(4)}</td><td>{leg.fill_price.toFixed(4)}</td><td>{leg.modeled_spread_bps.toFixed(1)} bps</td><td>{leg.status}</td></tr>)}</tbody></table></details>}
+      <p className="pairs-validation-note">Walk-forward folds report historical out-of-sample performance; this is not a guarantee against overfitting or future loss.</p>
+    </section>
   );
 }
 
@@ -350,6 +408,7 @@ export default function Backtester() {
 
       {/* ── Main: historical run viewer ─────────────────────────── */}
       <main className="bt-main">
+        <PairsBacktestLauncher onComplete={() => void load()} />
         <div className="bt-main-head">
           <div className="bt-run-picker" role="group" aria-label="Select a backtest run">
             {runs.map((run) => (
@@ -359,7 +418,7 @@ export default function Backtester() {
                 onClick={() => setSelectedId(run.id)}
                 title={`${run.strategy} · ${run.created_at}`}
               >
-                <b>{run.symbol}</b>
+                <b>{run.symbol}{run.symbol_b ? `/${run.symbol_b}` : ""}</b>
                 <span>{run.strategy}</span>
                 <i className={(run.metrics?.total_return_pct ?? 0) >= 0 ? "up" : "down"}>
                   {pct(run.metrics?.total_return_pct)}
@@ -389,7 +448,7 @@ export default function Backtester() {
                 <div>
                   <h2>{selected.strategy}</h2>
                   <p>
-                    {selected.symbol} · {selected.tf} · {selected.bars} bars · capital {fmtMoney(selected.capital)}
+                    {selected.symbol}{selected.symbol_b ? ` / ${selected.symbol_b}` : ""} · {selected.tf} · {selected.bars} bars · capital {fmtMoney(selected.capital)}
                     {selected.model ? ` · ${selected.model}` : ""}
                   </p>
                 </div>
@@ -400,7 +459,8 @@ export default function Backtester() {
                   <span className="bt-big-sub">vs market {pct(metrics.benchmark_return_pct)}</span>
                 </div>
               </header>
-              <EquityCurve curve={selected.equity_curve ?? []} capital={selected.capital} />
+              {selected.kind === "pairs" ? <PairSpreadChart series={selected.pair_series ?? []} entryZ={selected.pair_config?.entry_z ?? 2} exitZ={selected.pair_config?.exit_z ?? 0.5} /> : <EquityCurve curve={selected.equity_curve ?? []} capital={selected.capital} />}
+              {selected.kind === "pairs" ? <PairsRunDetails run={selected} /> : null}
               <p className="bt-axis">
                 {fmtTime(selected.equity_curve?.[0]?.time)} → {fmtTime(selected.equity_curve?.at(-1)?.time)} (UTC)
               </p>

@@ -29,6 +29,8 @@ numpy==2.2.6
 pandas-ta==0.4.71b0
 # Used for advanced statistics and signal processing
 scipy==1.15.1
+# Engle-Granger cointegration tests used by pairs backtests
+statsmodels==0.15.0
 # For pattern recognition and regime detection (K-Means/Linear Regression)
 scikit-learn==1.6.1
 # Portfolio construction and risk-aware allocation (optional API module)

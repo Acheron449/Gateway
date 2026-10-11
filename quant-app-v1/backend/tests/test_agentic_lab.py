@@ -8,7 +8,9 @@ circuit breaker) and the run records what the guard changed.
 from __future__ import annotations
 
 import asyncio
+import math
 
+import numpy as np
 import pytest
 
 from app.services import lab_backtest as lab
@@ -145,6 +147,55 @@ def test_build_chart_has_series_and_markers():
     kinds = {marker["kind"] for marker in chart["markers"]}
     assert "open_long" in kinds and "close_long" in kinds
     assert all("label" in marker for marker in chart["markers"])
+
+
+def test_pair_request_schema_requires_distinct_symbols_and_ordered_z_thresholds():
+    from pydantic import ValidationError
+    from app.api.v1.agentic_lab import BacktestRequest, PairBacktestConfig
+
+    with pytest.raises(ValidationError):
+        BacktestRequest(kind="pairs", symbol="SPY", symbol_b="SPY", pair_config=PairBacktestConfig())
+    with pytest.raises(ValidationError):
+        PairBacktestConfig(entry_z=0.5, exit_z=1.0)
+
+
+def test_run_pairs_fetches_both_symbols_and_persists_pair_fields(monkeypatch):
+    rng = np.random.default_rng(55)
+    log_b = np.cumsum(rng.normal(0, 0.01, 160)) + math.log(100)
+    residual = np.zeros(160)
+    innovations = rng.normal(0, 0.02, 160)
+    for index in range(1, len(residual)):
+        residual[index] = 0.3 * residual[index - 1] + innovations[index]
+    log_a = 0.15 + 1.05 * log_b + residual
+    stamps = [1_700_000_000 + index * 86_400 for index in range(160)]
+    bars_a = _bars(160)
+    bars_b = _bars(160)
+    for index, stamp in enumerate(stamps):
+        bars_a[index].update(time=stamp, open=math.exp(log_a[index]), high=math.exp(log_a[index]) * 1.01,
+                             low=math.exp(log_a[index]) * 0.99, close=math.exp(log_a[index]))
+        bars_b[index].update(time=stamp, open=math.exp(log_b[index]), high=math.exp(log_b[index]) * 1.01,
+                             low=math.exp(log_b[index]) * 0.99, close=math.exp(log_b[index]))
+    fetched = []
+
+    async def fake_fetch(symbol, tf, limit):
+        fetched.append(symbol)
+        source = bars_a if symbol == "AAA" else bars_b
+        return [dict(bar, volume=100_000) for bar in source]
+
+    saved = []
+    monkeypatch.setattr(lab, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(lab, "_store_run", saved.append)
+
+    run = asyncio.run(lab.run_backtest(
+        {"kind": "pairs", "symbol_b": "BBB", "pair_config": {"lookback": 40, "walk_forward_folds": 2}},
+        symbol="AAA", symbol_b="BBB", pair_config={"lookback": 40, "walk_forward_folds": 2},
+        bars_limit=160, capital=10_000,
+    ))
+
+    assert sorted(fetched) == ["AAA", "BBB"]
+    assert run["kind"] == "pairs" and run["symbol_b"] == "BBB"
+    assert run["pair_series"] and run["walk_forward"]["folds"]
+    assert saved == [run]
 
 
 def test_run_backtest_persists_rules_chart_and_risk(monkeypatch, tmp_path):
