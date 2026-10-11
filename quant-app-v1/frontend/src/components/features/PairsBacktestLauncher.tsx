@@ -132,11 +132,11 @@ export function PairsBacktestLauncher({
         <label>Rolling lookback<input type="number" min={30} max={250} value={config.lookback} onChange={(event) => updateConfig("lookback", event.target.value)} /></label>
         <label>Entry z-score<input type="number" min={0.1} max={5} step={0.1} value={config.entry_z} onChange={(event) => updateConfig("entry_z", event.target.value)} /></label>
         <label>Exit z-score<input type="number" min={0} max={4} step={0.1} value={config.exit_z} onChange={(event) => updateConfig("exit_z", event.target.value)} /></label>
-        <label>Cointegration p-value<input type="number" min={0.001} max={0.999} step={0.01} value={config.cointegration_pvalue} onChange={(event) => updateConfig("cointegration_pvalue", event.target.value)} /></label>
+        <label>Cointegration p-value<input type="number" min={0.001} max={0.999} step={0.001} value={config.cointegration_pvalue} onChange={(event) => updateConfig("cointegration_pvalue", event.target.value)} /></label>
         <label>Walk-forward folds<input type="number" min={1} max={10} value={config.walk_forward_folds} onChange={(event) => updateConfig("walk_forward_folds", event.target.value)} /></label>
         <label>Spread floor (bps)<input type="number" min={0} max={100} step={0.5} value={config.spread_floor_bps} onChange={(event) => updateConfig("spread_floor_bps", event.target.value)} /></label>
         <label>Range factor<input type="number" min={0} max={2} step={0.05} value={config.range_factor} onChange={(event) => updateConfig("range_factor", event.target.value)} /></label>
-        <label>Volume participation<input type="number" min={0.001} max={0.25} step={0.01} value={config.participation_rate} onChange={(event) => updateConfig("participation_rate", event.target.value)} /></label>
+        <label>Volume participation<input type="number" min={0.001} max={0.25} step={0.001} value={config.participation_rate} onChange={(event) => updateConfig("participation_rate", event.target.value)} /></label>
       </div>
       <p className="pairs-disclosure">Order-book fills are synthetic OHLCV approximations, volume-capped paired legs—not historical Level-2 replay. Walk-forward results assess historical out-of-sample behavior; they do not guarantee profitability or eliminate overfitting.</p>
       <div className="pairs-actions"><button type="button" className="btn-primary" onClick={() => void run()} disabled={busy}>{busy ? "Running pairs…" : "Run pairs backtest"}</button>{message && <span role="status">{message}</span>}</div>
