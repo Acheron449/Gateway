@@ -248,6 +248,7 @@ async def start_backtest(request: BacktestRequest, user: CurrentUser) -> dict[st
         pair_config = request.pair_config.model_dump()
 
     meta = {
+        "owner_user_id": user.id,
         "spec": spec,
         "symbol": request.symbol.strip().upper(),
         "symbol_b": (request.symbol_b or "").strip().upper() or None,
@@ -282,21 +283,25 @@ async def start_backtest(request: BacktestRequest, user: CurrentUser) -> dict[st
             slippage_bps=meta["slippage_bps"],
             agent_id=meta["agent_id"],
             risk=meta.get("risk"),
+            owner_user_id=user.id,
             on_progress=progress,
         )
-        job_store.update(active_id, result=run, progress=1.0, message="Run complete")
+        public_run = dict(run)
+        public_run.pop("owner_user_id", None)
+        public_run.pop("research_job_id", None)
+        public_run.pop("research_iteration", None)
+        job_store.update(active_id, result=public_run, progress=1.0, message="Run complete")
 
     job_store.run_async_worker(job_id, worker)
     return {"job_id": job_id}
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(job_id: str) -> dict[str, Any]:
+async def get_job(job_id: str, user: CurrentUser) -> dict[str, Any]:
     job = job_store.get(job_id)
-    # Strategy-research jobs have a separate owner-checked, allowlisted polling route.
-    if job is None or job["kind"] != "lab-backtest":
+    if job is None or job["kind"] != "lab-backtest" or job.get("meta", {}).get("owner_user_id") != user.id:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return {key: job.get(key) for key in ("id", "status", "progress", "message", "result", "error")}
 
 
 # ---------------------------------------------------------------------------

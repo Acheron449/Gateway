@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from app.api.main import app
-from app.auth import User
+from app.auth import User, create_access_token
 from fastapi import HTTPException
 from app.api.v1 import agentic_lab as lab_api
 from app.services import job_store
@@ -225,6 +225,51 @@ async def test_private_collection_filters_and_monte_carlo_api(monkeypatch, tmp_p
     with pytest.raises(Exception): await lab_api.monte_carlo(lab_api.MonteCarloRequest(run_ids=["private"], simulations=100, horizon=20), User(id="bob", email="b@example.test"))
     result = await lab_api.monte_carlo(lab_api.MonteCarloRequest(run_ids=["private"], simulations=100, horizon=20), User(id="alice", email="a@example.test"))
     assert result["series"][0]["run_id"] == "private"
+
+
+@pytest.mark.asyncio
+async def test_backtest_job_polling_is_authenticated_and_owner_scoped(monkeypatch, tmp_path):
+    monkeypatch.setattr(lab, "_SETTINGS_FILE", tmp_path / "runs.json")
+    monkeypatch.setattr(lab, "fetch_bars", lambda *a, **k: _async_value(_bars(50)))
+    job_store._JOBS.clear()
+    job_store._CANCEL_EVENTS.clear()
+    owner = User(id="job-owner", email="owner@example.test")
+    other = User(id="job-other", email="other@example.test")
+
+    created = await lab_api.start_backtest(lab_api.BacktestRequest(kind="baseline", baseline="buy_hold", symbol="TEST"), owner)
+    job_id = created["job_id"]
+    for _ in range(200):
+        job = job_store.get(job_id)
+        if job and job["status"] in job_store.TERMINAL_STATUSES:
+            break
+        await asyncio.sleep(0.01)
+    assert job_store.get(job_id)["meta"]["owner_user_id"] == owner.id
+    assert (await lab_api.get_job(job_id, owner))["id"] == job_id
+    with pytest.raises(HTTPException) as error:
+        await lab_api.get_job(job_id, other)
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_llm_backtest_job_http_routes_reject_anonymous_and_hide_cross_owner(monkeypatch, tmp_path):
+    monkeypatch.setattr(lab, "_SETTINGS_FILE", tmp_path / "http-runs.json")
+    monkeypatch.setattr(lab, "fetch_bars", lambda *a, **k: _async_value(_bars(50)))
+    job_store._JOBS.clear()
+    job_store._CANCEL_EVENTS.clear()
+    alice = create_access_token({"sub": "alice-http", "email": "alice-http@example.test"})
+    bob = create_access_token({"sub": "bob-http", "email": "bob-http@example.test"})
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        payload = {"kind": "baseline", "baseline": "buy_hold", "symbol": "TEST"}
+        anonymous = await client.post("/agentic-lab/backtest", json=payload)
+        assert anonymous.status_code == 401
+        created = await client.post("/agentic-lab/backtest", headers={"Authorization": f"Bearer {alice}"}, json=payload)
+        assert created.status_code == 200, created.text
+        job_id = created.json()["job_id"]
+        foreign = await client.get(f"/agentic-lab/jobs/{job_id}", headers={"Authorization": f"Bearer {bob}"})
+        assert foreign.status_code == 404
+        owner = await client.get(f"/agentic-lab/jobs/{job_id}", headers={"Authorization": f"Bearer {alice}"})
+        assert owner.status_code == 200, owner.text
+        assert "meta" not in owner.json() and "owner_user_id" not in owner.text
 
 
 @pytest.mark.asyncio

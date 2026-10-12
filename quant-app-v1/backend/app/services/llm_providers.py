@@ -630,6 +630,7 @@ def _chat_payload(
     stream: bool,
     temperature: Optional[float],
     max_tokens: Optional[int],
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
     if temperature is not None:
@@ -638,6 +639,9 @@ def _chat_payload(
         payload["max_tokens"] = max_tokens
     if stream:
         payload["stream_options"] = {"include_usage": True}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     return payload
 
 
@@ -680,13 +684,14 @@ async def stream_chat(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     timeout: float = 300.0,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream a chat completion, yielding event dicts:
     {"type": "delta", "text": …} zero or more times, then exactly one
     {"type": "done", "usage": …} or {"type": "error", "message": …}.
     """
     base_url, api_key = resolve_endpoint(provider_id)
-    payload = _chat_payload(model, messages, stream=True, temperature=temperature, max_tokens=max_tokens)
+    payload = _chat_payload(model, messages, stream=True, temperature=temperature, max_tokens=max_tokens, tools=tools)
 
     try:
         async with _client(timeout, base_url) as client:
@@ -701,6 +706,8 @@ async def stream_chat(
                     yield {"type": "error", "message": _extract_error(response, body)}
                     return
                 usage: dict[str, Any] | None = None
+                tool_calls: dict[int, dict[str, Any]] = {}
+                finish_reason: str | None = None
                 async for line in response.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data:"):
@@ -712,19 +719,50 @@ async def stream_chat(
                         chunk = json.loads(data)
                     except ValueError:
                         continue
+                    if not isinstance(chunk, dict):
+                        continue
                     if isinstance(chunk.get("usage"), dict):
                         usage = chunk["usage"]
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
                     choice = choices[0] or {}
+                    if isinstance(choice.get("finish_reason"), str):
+                        finish_reason = choice["finish_reason"]
                     delta = choice.get("delta") or {}
                     text = delta.get("content")
-                    if not text:
-                        message = choice.get("message") or {}
-                        text = message.get("content")
-                    if text:
-                        yield {"type": "delta", "text": str(text)}
+                    if isinstance(text, str) and text:
+                        yield {"type": "delta", "text": text}
+                    for call in delta.get("tool_calls") or []:
+                        if not isinstance(call, dict):
+                            continue
+                        try:
+                            index = int(call.get("index", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        record = tool_calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if isinstance(call.get("id"), str):
+                            record["id"] += call["id"]
+                        function = call.get("function") or {}
+                        if isinstance(function.get("name"), str):
+                            record["name"] += function["name"]
+                        arguments = function.get("arguments")
+                        if isinstance(arguments, str):
+                            record["arguments"] += arguments
+                for index in sorted(tool_calls):
+                    call = tool_calls[index]
+                    try:
+                        arguments = json.loads(call["arguments"] or "{}")
+                    except (TypeError, ValueError):
+                        yield {"type": "error", "message": "Provider returned incomplete tool-call arguments"}
+                        return
+                    if not isinstance(arguments, dict) or not call["name"] or not call["id"]:
+                        yield {"type": "error", "message": "Provider returned an invalid tool call"}
+                        return
+                    yield {"type": "tool_call", "id": call["id"], "name": call["name"], "arguments": arguments}
+                if finish_reason == "tool_calls" and not tool_calls:
+                    yield {"type": "error", "message": "Provider ended with a missing tool call"}
+                    return
                 yield {"type": "done", "usage": usage}
     except LlmError as exc:
         yield {"type": "error", "message": str(exc)}

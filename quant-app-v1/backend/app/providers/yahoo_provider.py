@@ -14,13 +14,137 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from app.models import NewsItem
-from app.providers.base import MarketDataProvider, ProviderMeta
+from app.models import EconomicEvent, EventImportance, NewsItem
+from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
 
 # Yahoo's public search endpoint doubles as its news feed (the same one
 # yfinance uses under the hood for ``Ticker.news``).  It needs no API key.
 _YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
 _YF_NEWS_VERSION = "yf-news-v1"
+_YF_CALENDAR_VERSION = "yf-calendar-v1"
+
+_COUNTRY_CURRENCY = {
+    "US": ("US", "USD"), "USA": ("US", "USD"), "UNITED STATES": ("US", "USD"),
+    "GB": ("GB", "GBP"), "UK": ("GB", "GBP"), "UNITED KINGDOM": ("GB", "GBP"),
+    "CA": ("CA", "CAD"), "CANADA": ("CA", "CAD"),
+    "JP": ("JP", "JPY"), "JAPAN": ("JP", "JPY"),
+    "CN": ("CN", "CNY"), "CHINA": ("CN", "CNY"),
+    "AU": ("AU", "AUD"), "AUSTRALIA": ("AU", "AUD"),
+    "NZ": ("NZ", "NZD"), "NEW ZEALAND": ("NZ", "NZD"),
+    "CH": ("CH", "CHF"), "SWITZERLAND": ("CH", "CHF"),
+    "EU": ("EU", "EUR"), "EURO AREA": ("EU", "EUR"), "EUROZONE": ("EU", "EUR"),
+    "DE": ("DE", "EUR"), "GERMANY": ("DE", "EUR"),
+    "FR": ("FR", "EUR"), "FRANCE": ("FR", "EUR"),
+    "IT": ("IT", "EUR"), "ITALY": ("IT", "EUR"),
+    "ES": ("ES", "EUR"), "SPAIN": ("ES", "EUR"),
+    "IN": ("IN", "INR"), "INDIA": ("IN", "INR"),
+    "BR": ("BR", "BRL"), "BRAZIL": ("BR", "BRL"),
+    "MX": ("MX", "MXN"), "MEXICO": ("MX", "MXN"),
+    "KR": ("KR", "KRW"), "SOUTH KOREA": ("KR", "KRW"),
+    "ZA": ("ZA", "ZAR"), "SOUTH AFRICA": ("ZA", "ZAR"),
+    "TR": ("TR", "TRY"), "TURKEY": ("TR", "TRY"),
+    # Common ISO-3166 region codes returned directly by Yahoo's calendar feed.
+    "AE": ("AE", "AED"), "AR": ("AR", "ARS"), "BD": ("BD", "BDT"),
+    "BG": ("BG", "BGN"), "CL": ("CL", "CLP"), "CO": ("CO", "COP"),
+    "CZ": ("CZ", "CZK"), "DK": ("DK", "DKK"), "HK": ("HK", "HKD"),
+    "HU": ("HU", "HUF"), "ID": ("ID", "IDR"), "IS": ("IS", "ISK"),
+    "IL": ("IL", "ILS"), "KW": ("KW", "KWD"), "KZ": ("KZ", "KZT"),
+    "LK": ("LK", "LKR"), "MA": ("MA", "MAD"), "MY": ("MY", "MYR"),
+    "NG": ("NG", "NGN"), "NO": ("NO", "NOK"), "OM": ("OM", "OMR"),
+    "PE": ("PE", "PEN"), "PH": ("PH", "PHP"), "PK": ("PK", "PKR"),
+    "PL": ("PL", "PLN"), "PT": ("PT", "EUR"), "QA": ("QA", "QAR"),
+    "RO": ("RO", "RON"), "RU": ("RU", "RUB"), "SA": ("SA", "SAR"),
+    "SE": ("SE", "SEK"), "SG": ("SG", "SGD"), "TH": ("TH", "THB"),
+    "TW": ("TW", "TWD"), "UA": ("UA", "UAH"), "VN": ("VN", "VND"),
+    "EG": ("EG", "EGP"), "KE": ("KE", "KES"), "GH": ("GH", "GHS"),
+}
+
+
+def _finite_number(value: Any) -> float | None:
+    """Return finite numeric values, excluding pandas NA/NaN and placeholders."""
+    if value is None:
+        return None
+    try:
+        if value != value:  # NaN, including numpy/pandas scalar NaNs
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _calendar_time(value: Any) -> datetime | None:
+    """Parse a release timestamp; date-only values are not precise enough."""
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text or len(text) <= 10:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _region_country_currency(value: Any) -> tuple[str, str]:
+    region = str(value or "").strip()
+    known = _COUNTRY_CURRENCY.get(region.upper())
+    return known if known else (region, "")
+
+
+def _yahoo_calendar_events(frame: Any, limit: int) -> list[EconomicEvent]:
+    """Normalize yfinance's DataFrame calendar into canonical events."""
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    if not hasattr(frame, "iterrows"):
+        raise ValueError("Yahoo Finance calendar returned an invalid result")
+    events: list[EconomicEvent] = []
+    for event_name, row in frame.iterrows():
+        title = str(event_name or "").strip()
+        scheduled_at = _calendar_time(row.get("Event Time"))
+        if not title or scheduled_at is None:
+            continue
+        country, currency = _region_country_currency(row.get("Region"))
+        actual = _finite_number(row.get("Actual"))
+        forecast = _finite_number(row.get("Expected"))
+        prior = _finite_number(row.get("Last"))
+        revised = _finite_number(row.get("Revised"))
+        revisions = ([{"timestamp": scheduled_at.isoformat(), "value": revised}]
+                     if revised is not None and revised != prior else [])
+        natural_key = "|".join((title.casefold(), scheduled_at.isoformat(), country.casefold()))
+        event_id = "yf-cal-" + hashlib.sha256(natural_key.encode("utf-8")).hexdigest()[:24]
+        events.append(EconomicEvent(
+            id=event_id,
+            title=title,
+            country=country,
+            currency=currency,
+            importance=EventImportance.MEDIUM,
+            scheduled_at=scheduled_at,
+            actual=actual,
+            forecast=forecast,
+            prior=prior,
+            revisions=revisions,
+            related_symbols=[],
+            provider_version=_YF_CALENDAR_VERSION,
+            source="Yahoo Finance",
+            fetched_at=datetime.now(timezone.utc),
+            data_time=scheduled_at,
+            coverage="Global economic events (best effort)",
+            delay_seconds=None,
+            entitlement="public",
+        ))
+        if len(events) >= max(1, min(limit, 100)):
+            break
+    return events
 
 
 def _yfinance():
@@ -144,6 +268,10 @@ class YahooFinanceProvider(MarketDataProvider):
         }
 
     @property
+    def calendar_version(self) -> str:
+        return _YF_CALENDAR_VERSION
+
+    @property
     def is_configured(self) -> bool:
         return True
 
@@ -202,6 +330,26 @@ class YahooFinanceProvider(MarketDataProvider):
                 "change_pct": round((change / prev * 100.0) if prev > 0 else 0.0, 2),
                 "provider_version": "yf-v1",
             }
+
+        return await asyncio.to_thread(_fetch)
+
+    async def calendar(self, limit: int = 5) -> list[EconomicEvent]:
+        """Fetch best-effort public economic events from yfinance's calendar API."""
+        if limit <= 0:
+            return []
+
+        def _fetch() -> list[EconomicEvent]:
+            yf = _yfinance()
+            calendars = getattr(yf, "Calendars", None)
+            if not callable(calendars):
+                raise ProviderUnavailableError("Yahoo Finance calendar API is unavailable")
+            try:
+                frame = calendars().get_economic_events_calendar(limit=min(limit, 100))
+                return _yahoo_calendar_events(frame, limit)
+            except ProviderUnavailableError:
+                raise
+            except Exception as exc:
+                raise ProviderUnavailableError(f"Yahoo Finance calendar request failed: {exc}") from exc
 
         return await asyncio.to_thread(_fetch)
 

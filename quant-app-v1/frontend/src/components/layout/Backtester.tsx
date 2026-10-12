@@ -1,5 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE } from "../../lib/constants";
+import { ModelPicker } from "./ModelPicker";
+import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -119,9 +122,11 @@ function PairsRunDetails({ run }: { run: BtRun }) {
 
 interface MonteCarloPoint { step: number; median: number; lower: number; upper: number }
 interface MonteCarloSeries { run_id: string; strategy: string; symbol?: string; points: MonteCarloPoint[] }
-interface BacktesterProps { runs: BtRun[]; loading: boolean; error: string | null; onRefresh: () => void }
+interface BacktesterProps { runs: BtRun[]; loading: boolean; error: string | null; onRefresh: () => void; initialSymbol?: string }
 
-export default function Backtester({ runs, loading, error: runError, onRefresh }: BacktesterProps) {
+export default function Backtester({ runs, loading, error: runError, onRefresh, initialSymbol = "AAPL" }: BacktesterProps) {
+  const { isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<SideTab>("pnl");
   const [selectedMonteCarlo, setSelectedMonteCarlo] = useState<string[]>([]);
@@ -131,7 +136,30 @@ export default function Backtester({ runs, loading, error: runError, onRefresh }
   const [monteCarlo, setMonteCarlo] = useState<MonteCarloSeries[]>([]);
   const [mcError, setMcError] = useState<string | null>(null);
   const [mcBusy, setMcBusy] = useState(false);
+  const [strategyPrompt, setStrategyPrompt] = useState("");
+  const [strategySymbol, setStrategySymbol] = useState(initialSymbol.toUpperCase());
+  const [strategyProvider, setStrategyProvider] = useState("");
+  const [strategyModel, setStrategyModel] = useState("");
+  const [strategyTf, setStrategyTf] = useState("1d");
+  const [strategyBars, setStrategyBars] = useState(260);
+  const [strategyCapital, setStrategyCapital] = useState(10000);
+  const [strategyCallCap, setStrategyCallCap] = useState(12);
+  const [strategyProviders, setStrategyProviders] = useState<Array<{id: string; label: string; configured: boolean; default_model: string | null}>>([]);
+  const [strategyBusy, setStrategyBusy] = useState(false);
+  const [strategyJob, setStrategyJob] = useState<Record<string, any> | null>(null);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
   const load = onRefresh;
+  useEffect(() => { setStrategySymbol(initialSymbol.toUpperCase()); }, [initialSymbol]);
+  useEffect(() => {
+    let active = true;
+    void fetch(`${API_BASE}/llm/providers`).then((response) => response.ok ? response.json() : null).then((data: {providers?: typeof strategyProviders} | null) => {
+      if (!active || !data?.providers) return;
+      const ready = data.providers.filter((provider) => provider.configured);
+      setStrategyProviders(ready);
+      setStrategyProvider((current) => current || ready[0]?.id || "");
+    }).catch(() => { if (active) setStrategyProviders([]); });
+    return () => { active = false; };
+  }, []);
   const selected = useMemo(() => runs.find((run) => run.id === selectedId) ?? runs[0] ?? null, [runs, selectedId]);
   const positions = useMemo(() => selected ? derivePositions(selected.decisions ?? []) : [], [selected]);
   const metrics = selected?.metrics ?? {};
@@ -151,6 +179,29 @@ export default function Backtester({ runs, loading, error: runError, onRefresh }
       .sort()
       .map((runId, index) => [runId, COLORS[index] ?? COLORS[0]!]),
   ), [monteCarlo]);
+  const launchStrategy = useCallback(async () => {
+    if (!isAuthenticated) { openAuth("login"); return; }
+    if (strategyPrompt.trim().length < 1 || !strategyProvider || !strategyModel) return;
+    setStrategyBusy(true); setStrategyError(null); setStrategyJob(null);
+    try {
+      const response = await fetch(`${API_BASE}/agentic-lab/backtest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ kind: "llm", prompt: strategyPrompt.trim(), provider: strategyProvider, model: strategyModel, symbol: strategySymbol.trim().toUpperCase(), tf: strategyTf, bars: strategyBars, capital: strategyCapital, max_llm_calls: strategyCallCap, risk: { max_position_pct: 100, max_drawdown_pct: 0, allow_short: true } }),
+      });
+      if (!response.ok) throw new Error((await response.text()).slice(0, 300) || "Could not start backtest");
+      const { job_id } = await response.json() as {job_id: string};
+      const poll = async () => {
+        const result = await fetch(`${API_BASE}/agentic-lab/jobs/${job_id}`, { headers: authHeaders() });
+        if (!result.ok) throw new Error((await result.text()).slice(0, 300) || "Could not poll backtest");
+        const state = await result.json() as Record<string, any>;
+        setStrategyJob(state);
+        if (state.status === "queued" || state.status === "running") window.setTimeout(() => { void poll().catch((err: unknown) => { setStrategyError(err instanceof Error ? err.message : "Backtest polling failed"); setStrategyBusy(false); }); }, 1000);
+        else { setStrategyBusy(false); if (state.status === "succeeded") await onRefresh(); }
+      };
+      await poll();
+    } catch (err) { setStrategyError(err instanceof Error ? err.message : "Could not start backtest"); setStrategyBusy(false); }
+  }, [isAuthenticated, openAuth, strategyPrompt, strategyProvider, strategyModel, strategySymbol, strategyTf, strategyBars, strategyCapital, strategyCallCap, onRefresh]);
   const runMonteCarlo = useCallback(async () => {
     if (!selectedMonteCarlo.length || requestedWorkExceedsLimit) return;
     setMcBusy(true); setMcError(null);
@@ -163,6 +214,7 @@ export default function Backtester({ runs, loading, error: runError, onRefresh }
   }, [selectedMonteCarlo, simulations, horizon, confidence, capital, requestedWorkExceedsLimit]);
 
   return <div className="bt-workspace">
+    <section className="strategy-launcher" aria-label="Natural-language strategy backtest"><div className="strategy-launcher-head"><div><h2>Describe a strategy to backtest</h2><p>Model-generated signals are replayed against historical OHLCV only. No orders are placed.</p></div><span className="bt-historical">Historical only</span></div><label className="strategy-prompt-field"><span>Strategy instruction</span><textarea value={strategyPrompt} maxLength={2000} onChange={(event) => setStrategyPrompt(event.target.value)} placeholder="e.g. Go long when the 20-day moving average crosses above the 50-day average; exit when it crosses below." rows={3}/></label><div className="strategy-launcher-grid"><label><span>Symbol</span><input value={strategySymbol} maxLength={20} onChange={(event) => setStrategySymbol(event.target.value.toUpperCase())}/></label><label><span>Provider</span><select value={strategyProvider} onChange={(event) => { setStrategyProvider(event.target.value); setStrategyModel(""); }}><option value="">Choose configured provider…</option>{strategyProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label><div className="strategy-model-field"><span>Model</span><ModelPicker providerId={strategyProvider} configured={!!strategyProviders.find((provider) => provider.id === strategyProvider)?.configured} value={strategyModel} onChange={setStrategyModel}/></div><label><span>Timeframe</span><select value={strategyTf} onChange={(event) => setStrategyTf(event.target.value)}><option value="1d">Daily</option><option value="1h">Hourly</option><option value="1wk">Weekly</option></select></label><label><span>Bars (40–1000)</span><input type="number" min={40} max={1000} value={strategyBars} onChange={(event) => setStrategyBars(Math.min(1000, Math.max(40, Number(event.target.value) || 40)))}/></label><label><span>Capital ($100–$10m)</span><input type="number" min={100} max={10000000} value={strategyCapital} onChange={(event) => setStrategyCapital(Math.min(10000000, Math.max(100, Number(event.target.value) || 100)))}/></label><label><span>Model calls (1–40)</span><input type="number" min={1} max={40} value={strategyCallCap} onChange={(event) => setStrategyCallCap(Math.min(40, Math.max(1, Number(event.target.value) || 1)))}/></label></div><div className="strategy-review"><span>Review</span><p>{strategyPrompt.trim() || "Describe the rules the model should follow."} · {strategySymbol || "No symbol"} · {strategyTf} · {strategyBars} bars · ${strategyCapital.toLocaleString()} capital · up to {strategyCallCap} model calls</p></div><div className="action-buttons"><button type="button" className="btn-primary" disabled={strategyBusy || !strategyPrompt.trim() || !strategySymbol.trim() || !strategyProvider || !strategyModel} onClick={() => void launchStrategy()}>{strategyBusy ? "Running historical backtest…" : "Run backtest"}</button>{!isAuthenticated && <button type="button" className="btn-secondary" onClick={() => openAuth("login")}>Sign in to run</button>}</div>{strategyError && <p className="settings-error" role="alert">{strategyError}</p>}{strategyJob && <div className="strategy-job" role="status"><p>{strategyJob.message || strategyJob.status}</p>{(strategyJob.status === "queued" || strategyJob.status === "running") && <div className="progress-bar"><div className="progress-fill" style={{width:`${Math.round((strategyJob.progress ?? 0)*100)}%`}}/></div>}{strategyJob.error && <p className="settings-error">{strategyJob.error}</p>}{strategyJob.status === "succeeded" && <p>Backtest complete. <button type="button" className="btn-secondary" onClick={onRefresh}>Refresh results</button></p>}</div>}</section>
     <section className="mc-panel" aria-label="Monte Carlo comparison"><div className="mc-panel-head"><div><h2>Monte Carlo comparison</h2><p>Resample historical per-bar returns to compare selected single-strategy runs.</p></div><span>{eligible.length} eligible{excluded ? ` · ${excluded} excluded` : ""}</span></div>
       <div className="mc-controls"><label>Simulations<input type="number" min={100} max={1000} step={50} value={simulations} onChange={(event) => setSimulations(Number(event.target.value))}/></label><label>Horizon bars<input type="number" min={20} max={1000} step={10} value={horizon} onChange={(event) => setHorizon(Number(event.target.value))}/></label><label>Confidence<select value={confidence} onChange={(event) => setConfidence(Number(event.target.value))}><option value={0.8}>80%</option><option value={0.9}>90%</option><option value={0.95}>95%</option><option value={0.99}>99%</option></select></label><button type="button" className="btn-primary" disabled={mcBusy || !selectedMonteCarlo.length || requestedWorkExceedsLimit} onClick={() => void runMonteCarlo()}>{mcBusy ? "Simulating…" : "Compare selected"}</button></div>
       {requestedWorkExceedsLimit && <p className="mc-excluded" role="status">Reduce runs, simulations, or horizon to stay within the 4,000,000-point work limit.</p>}

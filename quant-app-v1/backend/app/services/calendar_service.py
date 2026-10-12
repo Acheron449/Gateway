@@ -50,7 +50,7 @@ async def fetch_and_store_economic_events(
     for event in events:
         event.tags = _event_tags(event)
         event.source = provider.name
-        event.provider_version = provider.meta["version"]
+        event.provider_version = getattr(provider, "calendar_version", provider.meta["version"])
         event.fetched_at = datetime.fromisoformat(fetched_at)
         event.entitlement = "finnhub-free-tier" if provider.name == "Finnhub" else event.entitlement
         event_dict = event.model_dump(mode="json")
@@ -106,9 +106,9 @@ async def get_calendar_provenance(provider_name: str = "Finnhub") -> dict[str, A
         }
     return {
         "source": provider.name,
-        "provider_version": provider.meta["version"],
-        "coverage": "US economic calendar",
-        "entitlement": "configured-provider" if provider.is_configured else "unavailable",
+        "provider_version": getattr(provider, "calendar_version", provider.meta["version"]),
+        "coverage": "Global economic events (best effort)" if provider.name == "Yahoo Finance" else "US economic calendar",
+        "entitlement": "public" if provider.name == "Yahoo Finance" and provider.is_configured else "configured-provider" if provider.is_configured else "unavailable",
     }
 
 

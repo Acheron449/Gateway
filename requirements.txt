@@ -45,8 +45,8 @@ skfolio==0.5.2
 httpx==0.28.1
 # For handling live market data streams
 websockets>=13.0
-# Easy access to Yahoo Finance historical data
-yfinance==0.2.65
+# Yahoo Finance history + best-effort economic calendar API (introduced in 1.0)
+yfinance>=1.0,<2.0
 # Backup market-data provider (public exchange OHLCV for crypto pairs)
 ccxt>=4.0.0
 # alpaca-trade-api==3.1.1       # (Removed: requires websockets<11, conflicts with yfinance>=13)

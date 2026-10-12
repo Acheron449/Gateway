@@ -12,11 +12,14 @@ Endpoints
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ConfigDict
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -108,17 +111,69 @@ async def test_llm_provider(provider_id: str, request: TestRequest, user: Curren
 # Chat harness (SSE)
 # ---------------------------------------------------------------------------
 
+class ChatRole(StrEnum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
 class ChatMessage(BaseModel):
-    role: str = Field(pattern="^(system|user|assistant)$")
-    content: str
+    model_config = ConfigDict(extra="forbid")
+    role: ChatRole
+    tool_call_id: Optional[str] = Field(default=None, max_length=200)
+    tool_calls: Optional[list[dict[str, Any]]] = Field(default=None, max_length=4)
+    content: Optional[str] = Field(default=None, max_length=100_000)
 
 
 class ChatRequest(BaseModel):
-    provider: str
-    model: str
-    messages: list[ChatMessage] = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=160)
+    messages: list[ChatMessage] = Field(min_length=1, max_length=80)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1, le=8192)
+    enable_tools: bool = False
+
+
+class MarketContextToolArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.^-]+$")
+    timeframe: str = Field(default="1d", pattern="^(1d|1h|1wk)$")
+
+
+class BacktestProposalToolArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy: str = Field(min_length=1, max_length=2000)
+    symbol: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.^-]+$")
+    timeframe: str = Field(default="1d", pattern="^(1d|1h|1wk)$")
+    bars: int = Field(default=260, ge=40, le=1000)
+    capital: float = Field(default=10_000, ge=100, le=10_000_000, allow_inf_nan=False)
+    max_llm_calls: int = Field(default=12, ge=1, le=40)
+
+
+CHAT_TOOLS = [
+    {"type": "function", "function": {
+        "name": "get_market_context",
+        "description": "Read public market context only. No portfolio, broker, account, or order data.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {
+            "symbol": {"type": "string", "minLength": 1, "maxLength": 12},
+            "timeframe": {"type": "string", "enum": ["1d", "1h", "1wk"]},
+        }, "required": ["symbol"]},
+    }},
+    {"type": "function", "function": {
+        "name": "propose_backtest",
+        "description": "Prepare a historical backtest proposal. This never starts a job; the user must confirm it.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {
+            "strategy": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "symbol": {"type": "string", "minLength": 1, "maxLength": 12},
+            "timeframe": {"type": "string", "enum": ["1d", "1h", "1wk"]},
+            "bars": {"type": "integer", "minimum": 40, "maximum": 1000},
+            "capital": {"type": "number", "minimum": 100, "maximum": 10000000},
+            "max_llm_calls": {"type": "integer", "minimum": 1, "maximum": 40},
+        }, "required": ["strategy", "symbol"]},
+    }},
+]
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -128,24 +183,77 @@ def _sse(event: dict[str, Any]) -> str:
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest) -> StreamingResponse:
+async def chat(request: ChatRequest, user: CurrentUser) -> StreamingResponse:
     """Stream a completion from the chosen provider as Server-Sent Events.
 
     Events: ``{"type":"delta","text":…}`` repeatedly, then one terminal
     ``{"type":"done","usage":…}`` or ``{"type":"error","message":…}``.
     """
+    del user  # Authentication is enforced by the dependency; no private data is read here.
 
     async def event_stream():
-        messages = [message.model_dump() for message in request.messages]
+        messages: list[dict[str, Any]] = []
+        for message in request.messages:
+            entry = message.model_dump(exclude_none=True)
+            if message.role == ChatRole.TOOL and not message.tool_call_id:
+                yield _sse({"type": "error", "message": "Tool messages require a matching tool-call ID"})
+                return
+            if message.role == ChatRole.ASSISTANT and message.tool_calls:
+                yield _sse({"type": "error", "message": "Client-supplied tool-call history is not accepted"})
+                return
+            if message.role == ChatRole.TOOL and not request.enable_tools:
+                yield _sse({"type": "error", "message": "Tool messages require tools to be enabled"})
+                return
+            messages.append(entry)
         try:
-            async for event in svc.stream_chat(
-                request.provider,
-                request.model,
-                messages,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-            ):
-                yield _sse(event)
+            tool_rounds = 0
+            while True:
+                collected: list[dict[str, Any]] = []
+                completion_event: dict[str, Any] | None = None
+                async for event in svc.stream_chat(
+                    request.provider,
+                    request.model,
+                    messages,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    tools=CHAT_TOOLS if request.enable_tools and tool_rounds == 0 else None,
+                ):
+                    if event.get("type") == "tool_call":
+                        collected.append(event)
+                    elif event.get("type") == "done":
+                        completion_event = event
+                    else:
+                        yield _sse(event)
+                if not collected:
+                    if completion_event is not None:
+                        yield _sse(completion_event)
+                    return
+                if not request.enable_tools or tool_rounds >= 1 or len(collected) > 4:
+                    yield _sse({"type": "error", "message": "Tool-call limit reached"})
+                    return
+                tool_rounds += 1
+                messages.append({"role": "assistant", "tool_calls": [
+                    {"id": call["id"], "type": "function", "function": {"name": call["name"], "arguments": json.dumps(call["arguments"], separators=(",", ":"))}}
+                    for call in collected
+                ]})
+                for call in collected:
+                    try:
+                        if call["name"] == "get_market_context":
+                            args = MarketContextToolArgs.model_validate(call["arguments"])
+                            context = await get_context(symbol=args.symbol, sections="quote,candles,indicators,news,calendar", tf=args.timeframe)
+                            public_context = "\n".join(block for block in context["context"].split("\n\n") if not block.startswith("## Portfolio"))
+                            result: dict[str, Any] = {"symbol": context["symbol"], "tf": context["tf"], "context": public_context}
+                            yield _sse({"type": "market_context", "symbol": context["symbol"], "tf": context["tf"]})
+                        elif call["name"] == "propose_backtest":
+                            proposal = BacktestProposalToolArgs.model_validate(call["arguments"])
+                            result = {"proposal": {"provider": request.provider, "model": request.model, "prompt": proposal.strategy, "symbol": proposal.symbol.upper(), "tf": proposal.timeframe, "bars": proposal.bars, "capital": proposal.capital, "max_llm_calls": proposal.max_llm_calls}}
+                            yield _sse({"type": "backtest_proposal", **result["proposal"]})
+                        else:
+                            raise ValueError("Tool is not allowlisted")
+                    except Exception as exc:
+                        yield _sse({"type": "error", "message": f"Tool request rejected: {str(exc)[:240]}"})
+                        return
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)[:12000]})
         except svc.LlmError as exc:
             yield _sse({"type": "error", "message": str(exc)})
 

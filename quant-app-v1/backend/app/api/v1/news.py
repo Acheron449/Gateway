@@ -55,8 +55,9 @@ class QuoteResponse(BaseModel):
 
 
 # Economic-calendar sources in preference order for provider="auto".
-# EconomicCalendar is the default base feed; the rest layer events on top.
-_CALENDAR_CHAIN = ("EconomicCalendar", "FinancialModelingPrep", "JBlanked", "Bloomberg", "Finnhub")
+# EconomicCalendar is the default base feed; other configured sources layer
+# events on top. Yahoo is a keyless, best-effort fallback/contributor.
+_CALENDAR_CHAIN = ("EconomicCalendar", "FinancialModelingPrep", "JBlanked", "Bloomberg", "Finnhub", "Yahoo Finance")
 
 _CALENDAR_SOURCE_DETAILS = {
     "EconomicCalendar": "Default economic-calendar-api feed (investing.com) · self-hosted · no API key",
@@ -64,6 +65,7 @@ _CALENDAR_SOURCE_DETAILS = {
     "JBlanked": "Official JBlanked API · ForexFactory · MQL5 · FxStreet feeds · API key required",
     "Bloomberg": "bloomberg.com economic calendar (Investing.com widget) · no API key · may be bot-walled",
     "Finnhub": "Finnhub economic calendar · API key · premium-gated",
+    "Yahoo Finance": "Yahoo Finance economic events via yfinance · no API key · best effort",
 }
 
 # News sources in preference order for provider="auto".  Finnhub answers when
