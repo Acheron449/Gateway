@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship deterministic cointegration-filtered pairs backtests using a transparent OHLCV-derived synthetic order book and chronological walk-forward evaluation, accessible from both Agentic Lab and Backtester.
+**Goal:** Ship deterministic cointegration-filtered pairs backtests using a transparent OHLCV-derived synthetic order book and chronological walk-forward evaluation, launched and inspected within Agentic Lab.
 
-**Architecture:** Extend the existing Agentic Lab run job path with a pairs strategy, retaining current baseline/LLM behavior. Put pair math and execution in a focused service module, fetch both histories with the current Yahoo/yfinance pipeline, serialize pair/walk-forward results into existing run storage, then add one shared launcher and conditional run-detail presentation in both UI surfaces.
+**Architecture:** Extend the existing Agentic Lab run job path with a pairs strategy, retaining current baseline/LLM behavior. Put pair math and execution in a focused service module, fetch both histories with the current Yahoo/yfinance pipeline, serialize pair/walk-forward results into existing run storage, then add one shared launcher in the Agentic Lab Cointegration Pairs tab and conditional run-detail presentation in its Backtests tab.
 
 **Tech Stack:** Python 3.11/FastAPI/Pydantic, existing async market provider service, statsmodels Engle–Granger test, pytest; React 18/TypeScript/Vite.
 
@@ -39,8 +39,8 @@
 - Create `quant-app-v1/backend/tests/test_pairs_backtest.py`: statistical causality, execution, alignment and folds.
 - Modify `quant-app-v1/backend/tests/test_agentic_lab.py` or create API-specific tests under `quant-app-v1/backend/tests/`: pair run persistence/API behavior and backwards compatibility.
 - Create `quant-app-v1/frontend/src/components/features/PairsBacktestLauncher.tsx`: shared configuration, submission, polling and refresh callback.
-- Modify `quant-app-v1/frontend/src/components/layout/AgenticLab.tsx`: mount shared launcher.
-- Modify `quant-app-v1/frontend/src/components/layout/Backtester.tsx`: mount shared launcher and render pair/fold/fill details.
+- Modify `quant-app-v1/frontend/src/components/layout/AgenticLab.tsx`: mount shared launcher in the Cointegration Pairs tab.
+- Modify `quant-app-v1/frontend/src/components/layout/Backtester.tsx`: render pair/fold/fill details in the Backtests tab.
 - Modify `quant-app-v1/frontend/src/styles/extensions.css`: responsive launcher/result styles.
 
 ## Interfaces
@@ -49,7 +49,7 @@
 - Pair request config keys are `lookback`, `entry_z`, `exit_z`, `cointegration_pvalue`, `walk_forward_folds`, `spread_floor_bps`, `range_factor`, and `participation_rate`.
 - Agentic Lab POST remains `/agentic-lab/backtest`; jobs continue polling `/agentic-lab/jobs/{id}`; runs continue loading from `/agentic-lab/runs`.
 - Pair run record uses `kind="pairs"`, symbols `symbol`/`symbol_b`, `pair_config`, and bounded `pair_series` plus fold/fill data.
-- Shared frontend launcher accepts `onComplete: () => void` and optional initial symbol; both mounts use the same API schema and job flow.
+- Shared frontend launcher accepts `onComplete: () => void` and optional initial symbol; the Agentic Lab mount uses the established API schema and job flow.
 
 ### Task 1: Verify statsmodels compatibility and add causal pair math with unit tests
 
@@ -105,11 +105,11 @@
 
 - [ ] Add or extend frontend tests if infrastructure is present; otherwise record an interface test checklist before coding.
 - [ ] Create a shared responsive launcher for two symbols, lookback/thresholds, fold count and synthetic-book assumptions, using the existing auth headers, API base, job polling and explicit error states.
-- [ ] Mount the launcher in Agentic Lab and Backtester and refresh each surface after a successful run without changing the run-list API.
+- [ ] Mount the launcher in Agentic Lab's Cointegration Pairs tab and refresh the shared run list after a successful run without changing the run-list API.
 - [ ] Extend `BtRun` with optional pair output so legacy records remain safe; add pair-specific title, spread/z-score chart with entry/exit reference levels, fold summary, paired fills and unavoidable synthetic-L2 caveat.
 - [ ] Add focused CSS and mobile layout behavior matching existing design conventions.
 - [ ] Run `npm run build` from `quant-app-v1/frontend`; expect TypeScript and Vite build to succeed.
-- [ ] Launch/reuse the local frontend and verify both entry points can submit/observe the same pair run, results render with all required disclosures, and old saved runs still render.
+- [ ] Launch/reuse the local frontend and verify the Agentic Lab entry point can submit a pair run, results render in Backtests with all required disclosures, and old saved runs still render.
 
 ### Task 5: Final integrated verification and spec review
 
@@ -118,5 +118,5 @@
 
 - [ ] Run all relevant backend pair/agentic tests and the frontend build.
 - [ ] Run `git diff --check` and inspect exact changed hunks.
-- [ ] Verify outputs against the design: causal beta and cointegration, synthetic volume-capped paired fills, chronological OOS folds, shared launcher on both surfaces, persisted run rendering, old run compatibility.
+- [ ] Verify outputs against the design: causal beta and cointegration, synthetic volume-capped paired fills, chronological OOS folds, shared launcher in Agentic Lab, persisted run rendering, old run compatibility.
 - [ ] Report limitations such as unavailable historical volume, unavailable providers, or blocked live interface checks; do not claim performance improvement without measured representative data.

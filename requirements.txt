@@ -40,10 +40,6 @@ skfolio==0.5.2
 # Kronos is installed from its upstream repository; set KRONOS_REPO_PATH to its checkout.
 # Its requirements include torch and Hugging Face model dependencies.
 
-# --- Agentic trading (Tauric Research TradingAgents) ---
-# Installed by the backend Dockerfile from GitHub (its pandas floor differs
-# from the pin above). For a local venv: pip install quant-app-v1/backend/vendor/TradingAgents
-
 # --- Data Fetching & Networking ---
 # Modern, async HTTP client (faster than 'requests' for APIs)
 httpx==0.28.1

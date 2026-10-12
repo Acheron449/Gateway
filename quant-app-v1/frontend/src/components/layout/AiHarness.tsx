@@ -21,6 +21,11 @@ interface LlmProvider {
   default_model: string | null;
 }
 
+interface ProviderModel {
+  id: string;
+  is_free: boolean;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -73,7 +78,7 @@ const SYSTEM_POLICY = [
   "1. Answer ONLY what the user asked. Be concise and do not volunteer extra analysis, metrics, or tangents they did not request.",
   "2. If the request is ambiguous, overly specific, or missing a symbol/ticker, timeframe, or key detail, ask a short clarifying question before answering instead of guessing.",
   "3. Never access, reveal, or act on the user's funds (real or simulated: cash, equity, buying power, balances, positions) unless the user explicitly requests it in this conversation.",
-  "4. You can deep-link into app features when useful. Available in-app routes: Strategy Studio /app/strategies, Backtester /app/backtests, Agentic Lab /app/agentic-lab, AI Chat /app/chat, Trading /app/trading, Overview /app/overview, Calendar /app/calendar, News /app/news, Trade Journal /app/journal, Providers /app/settings. To help the user create a strategy, link them to [Strategy Studio](/app/strategies). Use markdown links like [Strategy Studio](/app/strategies).",
+  "4. You can deep-link into app features when useful. Available in-app routes: Strategy Studio /app/strategies, Agentic Lab /app/agentic-lab?tab=backtests, AI Chat /app/chat, Trading /app/trading, Overview /app/overview, Calendar /app/calendar, News /app/news, Trade Journal /app/journal, Providers /app/settings. To help the user create a strategy, link them to [Strategy Studio](/app/strategies). Use markdown links like [Strategy Studio](/app/strategies).",
   "5. Format output with GitHub-flavored Markdown: headings, bold, bullet/numbered lists, tables for comparisons, and fenced code blocks for code.",
 ].join("\n");
 
@@ -150,6 +155,10 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
   const [providerId, setProviderId] = useState<string | null>(null);
   const [model, setModel] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelCatalogues, setModelCatalogues] = useState<Record<string, ProviderModel[]>>({});
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [freeModelsOnly, setFreeModelsOnly] = useState(false);
 
   const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions());
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -208,6 +217,54 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     if (cached?.providers?.length) applyProviders(cached);
     void fetchProviders();
   }, [fetchProviders, applyProviders]);
+
+  const selectedProviderId = selected?.id ?? null;
+  const selectedProviderConfigured = selected?.configured ?? false;
+
+  useEffect(() => {
+    if (!selectedProviderId || !selectedProviderConfigured) {
+      setModelsLoading(false);
+      setModelsError(null);
+      return;
+    }
+    if (modelCatalogues[selectedProviderId]) return;
+    let active = true;
+    setModelsLoading(true);
+    setModelsError(null);
+    void fetch(`${API_BASE}/llm/providers/${encodeURIComponent(selectedProviderId)}/models`, {
+      headers: authHeaders(),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await readError(response, "Failed to load models"));
+        const payload = (await response.json()) as { models?: unknown };
+        if (!Array.isArray(payload.models)) throw new Error("Provider returned an invalid model list");
+        const catalogue = payload.models
+          .filter((entry): entry is { id: string; is_free?: unknown } =>
+            !!entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string",
+          )
+          .map((entry) => ({ id: entry.id, is_free: entry.is_free === true }));
+        if (active) setModelCatalogues((current) => ({ ...current, [selectedProviderId]: catalogue }));
+      })
+      .catch((error: unknown) => {
+        if (active) setModelsError(error instanceof Error ? error.message : "Failed to load models");
+      })
+      .finally(() => {
+        if (active) setModelsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedProviderId, selectedProviderConfigured, modelCatalogues]);
+
+  useEffect(() => {
+    if (!freeModelsOnly || !selectedProviderId) return;
+    const catalogue = modelCatalogues[selectedProviderId];
+    if (!catalogue) return;
+    const freeChoices = catalogue.filter((entry) => entry.is_free);
+    if (!freeChoices.some((entry) => entry.id === model)) {
+      setModel(freeChoices[0]?.id ?? "");
+    }
+  }, [freeModelsOnly, selectedProviderId, modelCatalogues, model]);
 
   useEffect(() => {
     if (!selected) return;
@@ -497,6 +554,14 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     const foundation = providers.filter((p) => p.group === "foundation");
     return { compatible, foundation };
   }, [providers]);
+  const modelChoices = useMemo(() => {
+    if (!selected) return [];
+    return modelCatalogues[selected.id] ?? selected.models.map((id) => ({ id, is_free: false }));
+  }, [selected, modelCatalogues]);
+  const visibleModelChoices = useMemo(
+    () => (freeModelsOnly ? modelChoices.filter((entry) => entry.is_free) : modelChoices),
+    [freeModelsOnly, modelChoices],
+  );
 
   const composer = (
     <div className={`chat-composer-card ${panel === "context" ? "raised" : ""}`}>
@@ -604,34 +669,76 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
                         className="model-picker-item-main"
                         onClick={() => {
                           setProviderId(provider.id);
-                          setModel(provider.default_model ?? provider.models[0] ?? "");
+                          const choices = modelCatalogues[provider.id] ?? provider.models.map((id) => ({ id, is_free: false }));
+                          const eligible = freeModelsOnly ? choices.filter((entry) => entry.is_free) : choices;
+                          const defaultIsEligible = eligible.some((entry) => entry.id === provider.default_model);
+                          setModel(defaultIsEligible ? provider.default_model ?? "" : eligible[0]?.id ?? "");
                         }}
                       >
                         <span className={`status-dot ${provider.configured ? "on" : "off"}`} aria-hidden="true" />
                         <span>{provider.label}</span>
                         {!provider.configured && <span className="model-picker-note">not configured</span>}
                       </button>
-                      {providerId === provider.id && provider.models.length > 0 && (
-                        <select
-                          className="model-picker-select"
-                          value={model || provider.default_model || provider.models[0]}
-                          onChange={(event) => setModel(event.target.value)}
-                        >
-                          {provider.models.map((entry) => (
-                            <option key={entry} value={entry}>
-                              {entry}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      {providerId === provider.id && provider.models.length === 0 && (
-                        <input
-                          className="model-picker-input"
-                          type="text"
-                          value={model}
-                          placeholder="model id"
-                          onChange={(event) => setModel(event.target.value)}
-                        />
+                      {providerId === provider.id && (
+                        <>
+                          <label className="model-picker-free-filter" title="Unknown models are excluded when this filter is enabled.">
+                            <input
+                              type="checkbox"
+                              checked={freeModelsOnly}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFreeModelsOnly(enabled);
+                                const choices = modelCatalogues[provider.id] ?? provider.models.map((id) => ({ id, is_free: false }));
+                                const filtered = enabled ? choices.filter((entry) => entry.is_free) : choices;
+                                if (!filtered.some((entry) => entry.id === model)) {
+                                  const defaultIsEligible = filtered.some((entry) => entry.id === provider.default_model);
+                                  setModel(
+                                    enabled
+                                      ? filtered[0]?.id ?? ""
+                                      : defaultIsEligible
+                                        ? provider.default_model ?? ""
+                                        : filtered[0]?.id ?? "",
+                                  );
+                                }
+                              }}
+                            />
+                            Free models only
+                          </label>
+                          {modelsLoading && <div className="model-picker-note model-picker-message">Loading provider models…</div>}
+                          {modelsError && <div className="model-picker-error" role="status">{modelsError}</div>}
+                          {modelChoices.length > 0 ? (
+                            visibleModelChoices.length > 0 ? (
+                              <select
+                                className="model-picker-select"
+                                value={visibleModelChoices.some((entry) => entry.id === model) ? model : ""}
+                                onChange={(event) => setModel(event.target.value)}
+                              >
+                                <option value="">Select a model</option>
+                                {visibleModelChoices.map((entry) => (
+                                  <option key={entry.id} value={entry.id}>
+                                    {entry.id}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="model-picker-note model-picker-message">
+                                No models explicitly marked free by this provider.
+                              </div>
+                            )
+                          ) : freeModelsOnly ? (
+                            <div className="model-picker-note model-picker-message">
+                              No provider-tagged free models are available.
+                            </div>
+                          ) : (
+                            <input
+                              className="model-picker-input"
+                              type="text"
+                              value={model}
+                              placeholder="model id"
+                              onChange={(event) => setModel(event.target.value)}
+                            />
+                          )}
+                        </>
                       )}
                     </div>
                   ))}

@@ -18,9 +18,11 @@ Two strategy kinds run through the same simulator:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
+import random
 import re
 import tempfile
 import time
@@ -199,15 +201,122 @@ def list_runs(limit: int = 20) -> list[dict[str, Any]]:
     return list(_load().get("runs", []))[:limit]
 
 
-def delete_run(run_id: str) -> bool:
+def visible_runs(user_id: str | None, limit: int = MAX_RUNS) -> list[dict[str, Any]]:
+    """Return shared legacy runs plus private runs owned by the verified user."""
+    runs = _load().get("runs", [])
+    visible = [run for run in runs if not run.get("owner_user_id") or run.get("owner_user_id") == user_id]
+    return visible[:limit]
+
+
+def get_run_for_user(run_id: str, user_id: str | None) -> dict[str, Any] | None:
+    return next((run for run in _load().get("runs", []) if run.get("id") == run_id and (not run.get("owner_user_id") or run.get("owner_user_id") == user_id)), None)
+
+
+def delete_run(run_id: str, owner_user_id: str | None = None) -> bool:
     data = _load()
     runs = data.get("runs", [])
-    remaining = [r for r in runs if r.get("id") != run_id]
-    if len(remaining) == len(runs):
+    target = next((run for run in runs if run.get("id") == run_id), None)
+    if target is None or (target.get("owner_user_id") and target.get("owner_user_id") != owner_user_id):
         return False
-    data["runs"] = remaining
+    data["runs"] = [run for run in runs if run.get("id") != run_id]
     _save(data)
     return True
+
+
+def bootstrap_monte_carlo(
+    runs: list[dict[str, Any]],
+    *,
+    simulations: int,
+    horizon: int,
+    confidence: float,
+    seed: int,
+    start_capital: float,
+) -> dict[str, Any]:
+    """Bootstrap bounded full-resolution per-bar returns into deterministic paths."""
+    if not 1 <= len(runs) <= 8:
+        raise ValueError("Select between 1 and 8 runs")
+    if not 100 <= simulations <= 1000:
+        raise ValueError("simulations must be between 100 and 1000")
+    if not 20 <= horizon <= 1000:
+        raise ValueError("horizon must be between 20 and 1000 bars")
+    if not math.isfinite(confidence) or not 0.5 <= confidence <= 0.99:
+        raise ValueError("confidence must be between 0.5 and 0.99")
+    if not 0 <= seed <= 2**32 - 1:
+        raise ValueError("seed must be between 0 and 4294967295")
+    if not math.isfinite(start_capital) or start_capital < 100:
+        raise ValueError("start_capital must be finite and at least 100")
+    if simulations * horizon * len(runs) > 4_000_000:
+        raise ValueError("Requested Monte Carlo work exceeds the 4,000,000-point limit")
+
+    alpha = (1.0 - confidence) / 2.0
+    chart_stride = max(1, math.ceil(horizon / 120))
+    outputs: list[dict[str, Any]] = []
+    for run in runs:
+        if run.get("kind") == "pairs" or run.get("symbol_b") or run.get("pair_series"):
+            raise ValueError(f"Run {run.get('id', 'unknown')} is a pairs run and is unsupported")
+        returns = run.get("bar_returns")
+        if not isinstance(returns, list) or not returns or len(returns) > 1000:
+            raise ValueError(f"Run {run.get('id', 'unknown')} has no supported full-resolution return history")
+        if not any(isinstance(value, (int, float)) and math.isfinite(value) and value != 0 for value in returns):
+            raise ValueError(f"Run {run.get('id', 'unknown')} has no non-zero return history")
+        normalized: list[float] = []
+        for value in returns:
+            try:
+                ret = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("bar_returns must contain finite numbers greater than -1") from exc
+            if not math.isfinite(ret) or ret <= -1:
+                raise ValueError("bar_returns must contain finite numbers greater than -1")
+            normalized.append(ret)
+
+        identity = str(run.get("id") or run.get("symbol") or "run")
+        digest = hashlib.sha256(f"{seed}:{identity}".encode("utf-8")).digest()
+        rng = random.Random(int.from_bytes(digest[:8], "big"))
+        paths: list[list[float]] = []
+        for _ in range(simulations):
+            equity = start_capital
+            path = [equity]
+            for _step in range(horizon):
+                equity *= 1.0 + normalized[rng.randrange(len(normalized))]
+                if not math.isfinite(equity):
+                    raise ValueError("Bootstrapped equity became non-finite")
+                path.append(equity)
+            paths.append(path)
+
+        low_idx = max(0, int(math.floor(alpha * (simulations - 1))))
+        high_idx = min(simulations - 1, int(math.ceil((1.0 - alpha) * (simulations - 1))))
+        points: list[dict[str, float | int]] = []
+        for step in range(0, horizon + 1, chart_stride):
+            values = sorted(path[step] for path in paths)
+            points.append({
+                "step": step,
+                "median": values[(simulations - 1) // 2] if simulations % 2 else (values[simulations // 2 - 1] + values[simulations // 2]) / 2,
+                "lower": values[low_idx],
+                "upper": values[high_idx],
+            })
+        if points[-1]["step"] != horizon:
+            values = sorted(path[horizon] for path in paths)
+            points.append({
+                "step": horizon,
+                "median": values[(simulations - 1) // 2] if simulations % 2 else (values[simulations // 2 - 1] + values[simulations // 2]) / 2,
+                "lower": values[low_idx],
+                "upper": values[high_idx],
+            })
+        outputs.append({
+            "run_id": run.get("id"),
+            "strategy": str(run.get("strategy") or run.get("baseline") or run.get("kind") or "Strategy")[:120],
+            "symbol": run.get("symbol"),
+            "points": points,
+        })
+    return {
+        "simulations": simulations,
+        "horizon": horizon,
+        "confidence": confidence,
+        "seed": seed,
+        "start_capital": start_capital,
+        "method": "historical_return_bootstrap",
+        "series": outputs,
+    }
 
 
 def _store_run(run: dict[str, Any]) -> None:
@@ -456,6 +565,7 @@ async def llm_targets(
     tf: str,
     capital: float,
     on_progress: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
+    reserve_model_call: Callable[[], None] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Ask the model for a decision every ``step`` bars; returns (targets, decisions)."""
     closes = [float(b["close"]) for b in bars]
@@ -481,6 +591,8 @@ async def llm_targets(
             "Only ever answer with the JSON object."
         )
         user = f"{market}\n\nDecide the next position (long/flat/short) as JSON."
+        if reserve_model_call is not None:
+            reserve_model_call()
         reply = await llm_svc.chat_once(
             provider,
             model,
@@ -858,6 +970,11 @@ async def run_backtest(
     agent_id: Optional[str] = None,
     risk: dict[str, Any] | None = None,
     on_progress: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
+    research_context: str | None = None,
+    reserve_model_call: Callable[[], None] | None = None,
+    owner_user_id: str | None = None,
+    research_job_id: str | None = None,
+    research_iteration: int | None = None,
 ) -> dict[str, Any]:
     """Run one lab backtest and persist the resulting run with full stats."""
     kind = spec.get("kind", "baseline")
@@ -892,14 +1009,18 @@ async def run_backtest(
         llm_svc.resolve_endpoint(provider)
         step = max(2, math.ceil((len(bars) - 30) / max(1, int(max_llm_calls))))
         prompt_text = str(spec.get("prompt") or DEFAULT_PROMPT)
-        try:
-            from app.services import research_store as research
+        if research_context is not None:
+            if research_context.strip():
+                prompt_text = f"{prompt_text}\n\nUse this saved research as background:\n{research_context[:20_000]}"
+        else:
+            try:
+                from app.services import research_store as research
 
-            library = research.combined_context(symbol)
-            if library:
-                prompt_text = f"{prompt_text}\n\nUse this saved research as background:\n{library}"
-        except Exception:  # noqa: BLE001 - research context is optional enrichment
-            pass
+                library = research.combined_context(symbol)
+                if library:
+                    prompt_text = f"{prompt_text}\n\nUse this saved research as background:\n{library}"
+            except Exception:  # noqa: BLE001 - research context is optional enrichment
+                pass
         targets, decisions = await llm_targets(
             bars,
             provider=provider,
@@ -910,6 +1031,7 @@ async def run_backtest(
             tf=tf,
             capital=capital,
             on_progress=on_progress,
+            reserve_model_call=reserve_model_call,
         )
         strategy_label = f"{llm_svc.CATALOG_BY_ID.get(provider, {}).get('label', provider)} · {model}"
     else:
@@ -944,6 +1066,17 @@ async def run_backtest(
             }
     chart = build_chart(bars, simulation["trades"], simulation.get("risk_events", []))
 
+    full_equity = simulation["equity_curve"]
+    bar_returns = [
+        (float(after["equity"]) / float(before["equity"])) - 1.0
+        for before, after in zip(full_equity, full_equity[1:])
+        if float(before["equity"]) > 0
+    ]
+    if len(bar_returns) > 1000 or any(not math.isfinite(value) or value <= -1 for value in bar_returns):
+        raise ValueError("Simulator produced invalid full-resolution equity returns")
+    if any(float(point["equity"]) <= 0 for point in full_equity):
+        raise ValueError("Simulator produced invalid full-resolution equity returns")
+
     run = {
         "id": uuid.uuid4().hex[:12],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -962,11 +1095,15 @@ async def run_backtest(
         "slippage_bps": slippage_bps,
         "decisions": decisions[-40:],
         "trades": simulation["trades"][-30:],
-        "equity_curve": downsample(simulation["equity_curve"]),
+        "equity_curve": downsample(full_equity),
+        "bar_returns": bar_returns,
         "chart": chart,
         "risk_rules": simulation["rules"],
         "risk_events": simulation.get("risk_events", [])[:20],
         "metrics": metrics,
+        "owner_user_id": owner_user_id,
+        "research_job_id": research_job_id,
+        "research_iteration": research_iteration,
     }
     _store_run(run)
     return run

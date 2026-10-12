@@ -6,7 +6,6 @@ export type View =
   | "harness"
   | "strategies"
   | "agentic-lab"
-  | "backtests"
   | "paper-trading"
   | "live-trading"
   | "ai-trading"
@@ -28,7 +27,6 @@ export const VIEWS: ViewDef[] = [
   { id: "harness", label: "AI Chat", icon: "🤖", group: "workspace" },
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
   { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
-  { id: "backtests", label: "Backtester", icon: "📊", group: "myWork" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝", group: "myWork" },
   { id: "live-trading", label: "Live Trading", icon: "💸", group: "myWork" },
   { id: "ai-trading", label: "AI Trading", icon: "🧠", group: "myWork" },

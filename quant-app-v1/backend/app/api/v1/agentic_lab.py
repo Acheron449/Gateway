@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel, Field, model_validator
 
-from app.auth import CurrentUser
+from app.auth import CurrentUser, User, get_current_user_optional
 from app.services import job_store
 from app.services import lab_backtest as lab
 from app.services import llm_providers as llm_svc
@@ -118,6 +118,29 @@ class ResearchRequest(BaseModel):
     content: str = Field(min_length=1, max_length=200_000)
     source: str = Field(default="typed")
     symbol: Optional[str] = Field(default=None, max_length=20)
+
+
+class MonteCarloRequest(BaseModel):
+    run_ids: list[str] = Field(min_length=1, max_length=8)
+    simulations: int = Field(default=500, ge=100, le=1000)
+    horizon: int = Field(default=252, ge=20, le=1000)
+    confidence: float = Field(default=0.9, ge=0.5, le=0.99, allow_inf_nan=False)
+    seed: int = Field(default=1, ge=0, le=4_294_967_295)
+    start_capital: float = Field(default=10_000, ge=100, le=10_000_000, allow_inf_nan=False)
+
+
+class ResearchJobRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=160)
+    symbol: str = Field(min_length=1, max_length=20)
+    tf: str = Field(default="1d", pattern="^(1d|1h|1wk)$")
+    bars: int = Field(default=260, ge=40, le=1000)
+    objective: str = Field(min_length=3, max_length=400)
+    max_iterations: int = Field(default=3, ge=1, le=10)
+    max_model_calls: int = Field(default=8, ge=2, le=40)
+    capital: float = Field(default=10_000, ge=100, le=10_000_000, allow_inf_nan=False)
+    fee_bps: float = Field(default=5, ge=0, le=100, allow_inf_nan=False)
+    slippage_bps: float = Field(default=5, ge=0, le=100, allow_inf_nan=False)
 
 
 class ResearchGenerateRequest(BaseModel):
@@ -270,6 +293,7 @@ async def start_backtest(request: BacktestRequest, user: CurrentUser) -> dict[st
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str) -> dict[str, Any]:
     job = job_store.get(job_id)
+    # Strategy-research jobs have a separate owner-checked, allowlisted polling route.
     if job is None or job["kind"] != "lab-backtest":
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -280,17 +304,241 @@ async def get_job(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/runs")
-async def get_runs(limit: int = 20) -> dict[str, Any]:
-    """Stored runs with full metrics plus plain-language header stats."""
-    runs = lab.list_runs(limit=min(max(limit, 1), lab.MAX_RUNS))
+async def get_runs(limit: int = 20, user: User | None = Depends(get_current_user_optional)) -> dict[str, Any]:
+    """Stored shared runs and runs private to the authenticated caller."""
+    runs = lab.visible_runs(user.id if user else None, limit=min(max(limit, 1), lab.MAX_RUNS))
+    for run in runs:
+        run.pop("owner_user_id", None)
+        run.pop("research_job_id", None)
+        run.pop("research_iteration", None)
     return {"runs": runs, "summary": lab.runs_summary(runs)}
 
 
 @router.delete("/runs/{run_id}")
 async def remove_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
-    if not lab.delete_run(run_id):
+    if not lab.delete_run(run_id, owner_user_id=user.id):
         raise HTTPException(status_code=404, detail="Run not found")
     return {"deleted": True}
+
+
+@router.post("/monte-carlo")
+async def monte_carlo(request: MonteCarloRequest, user: CurrentUser) -> dict[str, Any]:
+    if len(set(request.run_ids)) != len(request.run_ids):
+        raise HTTPException(status_code=422, detail="run_ids must be unique")
+    visible = {run.get("id"): run for run in lab.visible_runs(user.id, lab.MAX_RUNS)}
+    if any(run_id not in visible for run_id in request.run_ids):
+        raise HTTPException(status_code=404, detail="Run not found")
+    selected = [visible[run_id] for run_id in request.run_ids]
+    try:
+        return lab.bootstrap_monte_carlo(
+            selected,
+            simulations=request.simulations,
+            horizon=request.horizon,
+            confidence=request.confidence,
+            seed=request.seed,
+            start_capital=request.start_capital,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/research-jobs")
+async def create_research_job(request: ResearchJobRequest, user: CurrentUser) -> dict[str, str]:
+    provider = llm_svc.canonical_provider(request.provider)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Unknown LLM provider")
+    try:
+        llm_svc.resolve_endpoint(request.provider)
+    except llm_svc.LlmError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings = llm_svc.stored_settings(request.provider)
+    configured_models = settings.get("models") or []
+    default_model = settings.get("default_model")
+    if configured_models and request.model not in configured_models and request.model != default_model:
+        raise HTTPException(status_code=400, detail="Choose a configured model for this provider")
+
+    job_meta = {
+        "owner_user_id": user.id,
+        "provider": request.provider,
+        "model": request.model,
+        "symbol": request.symbol.strip().upper(),
+        "tf": request.tf,
+        "bars": request.bars,
+        "max_iterations": request.max_iterations,
+        "max_model_calls": request.max_model_calls,
+        "capital": request.capital,
+        "fee_bps": request.fee_bps,
+        "slippage_bps": request.slippage_bps,
+    }
+    job_id = job_store.create("strategy-research", job_meta)
+    job_store.update(
+        job_id,
+        message="Queued research",
+        iteration=0,
+        iterations=request.max_iterations,
+        model_calls=0,
+        max_model_calls=request.max_model_calls,
+    )
+
+    async def worker(active_id: str) -> None:
+        calls = 0
+
+        def checkpoint() -> None:
+            if job_store.is_cancelled(active_id):
+                raise ResearchCancelled()
+
+        def reserve_model_call() -> None:
+            nonlocal calls
+            checkpoint()
+            if calls >= request.max_model_calls:
+                raise ModelCallLimitReached()
+            calls += 1
+            job_store.update(active_id, model_calls=calls)
+
+        try:
+            checkpoint()
+            bars = await lab.fetch_bars(request.symbol.strip().upper(), request.tf, request.bars)
+            checkpoint()
+            if len(bars) < 40:
+                raise ValueError(f"Not enough history for {request.symbol} ({len(bars)} bars)")
+            completed: list[dict[str, Any]] = []
+            for iteration in range(1, request.max_iterations + 1):
+                checkpoint()
+                remaining = request.max_model_calls - calls
+                if remaining < 2:
+                    break
+                owner_context = research.owner_context(user.id, symbol=request.symbol)
+                prior_results = "\n".join(
+                    f"Iteration {index + 1}: {item['hypothesis'][:1200]} — return {item['run']['metrics'].get('total_return_pct', 0):.2f}%"
+                    for index, item in enumerate(completed)
+                )
+                proposal_prompt = [
+                    {"role": "system", "content": (
+                        "Design a bounded historical strategy instruction from the public OHLCV context. "
+                        "Return only a concise instruction (maximum 2000 characters); do not request accounts, secrets, tools, or trading actions."
+                    )},
+                    {"role": "user", "content": (
+                        f"Objective: {request.objective[:400]}\nSymbol: {request.symbol.upper()}\n"
+                        f"Timeframe: {request.tf}; bars: {len(bars)}\n"
+                        f"Public market sample: {lab._window_summary(bars, len(bars) - 1)}\n"
+                        f"My research: {owner_context[:8000]}\nPrior iterations from this job: {prior_results[:6000]}"
+                    )},
+                ]
+                reserve_model_call()
+                hypothesis = (await llm_svc.chat_once(
+                    request.provider,
+                    request.model,
+                    proposal_prompt,
+                    max_tokens=700,
+                    timeout=90.0,
+                )).strip()[:2000]
+                checkpoint()
+                decision_budget = request.max_model_calls - calls
+                if decision_budget < 1:
+                    break
+                reserve_decision_call = reserve_model_call
+                iteration_decisions = 0
+
+                def reserve_iteration_decision() -> None:
+                    nonlocal iteration_decisions
+                    if iteration_decisions >= decision_budget:
+                        raise ModelCallLimitReached()
+                    reserve_decision_call()
+                    iteration_decisions += 1
+
+                async def progress(done: int, total: int, message: str) -> None:
+                    checkpoint()
+                    job_store.update(
+                        active_id,
+                        iteration=iteration,
+                        progress=min(0.98, ((iteration - 1) + done / max(1, total)) / request.max_iterations),
+                        message=f"Iteration {iteration}/{request.max_iterations}: {message}",
+                        model_calls=calls,
+                    )
+
+                run = await lab.run_backtest(
+                    {"kind": "llm", "provider": request.provider, "model": request.model, "prompt": hypothesis},
+                    symbol=request.symbol.strip().upper(),
+                    tf=request.tf,
+                    bars_limit=request.bars,
+                    capital=request.capital,
+                    max_llm_calls=decision_budget,
+                    fee_bps=request.fee_bps,
+                    slippage_bps=request.slippage_bps,
+                    on_progress=progress,
+                    research_context=f"{owner_context}\n{prior_results}"[:20_000],
+                    reserve_model_call=reserve_iteration_decision,
+                    owner_user_id=user.id,
+                    research_job_id=active_id,
+                    research_iteration=iteration,
+                )
+                checkpoint()
+                doc = research.save_doc(
+                    title=f"{request.symbol.upper()} research iteration {iteration}",
+                    content=f"Objective: {request.objective}\n\nHypothesis:\n{hypothesis}",
+                    source="model",
+                    symbol=request.symbol,
+                    provider=request.provider,
+                    model=request.model,
+                    owner_user_id=user.id,
+                    research_job_id=active_id,
+                    research_iteration=iteration,
+                )
+                completed.append({"hypothesis": hypothesis, "run": run, "research_id": doc["id"]})
+                job_store.update(
+                    active_id,
+                    result={"iterations": [
+                        {"run_id": item["run"]["id"], "research_id": item["research_id"], "hypothesis": item["hypothesis"]}
+                        for item in completed
+                    ]},
+                    iteration=iteration,
+                    model_calls=calls,
+                    progress=iteration / request.max_iterations,
+                    message=f"Completed iteration {iteration}/{request.max_iterations}",
+                )
+                if calls >= request.max_model_calls:
+                    break
+            checkpoint()
+            job_store.update(active_id, status="succeeded", progress=1.0, message="Research complete")
+        except ResearchCancelled:
+            job_store.mark_cancelled(active_id)
+        except Exception:  # noqa: BLE001 - job_store records the worker failure
+            if job_store.is_cancelled(active_id):
+                job_store.mark_cancelled(active_id)
+            else:
+                raise
+
+    job_store.run_async_worker(job_id, worker)
+    return {"job_id": job_id}
+
+
+class ResearchCancelled(Exception):
+    pass
+
+
+class ModelCallLimitReached(Exception):
+    pass
+
+
+@router.get("/research-jobs/{job_id}")
+async def get_research_job(job_id: str, user: CurrentUser) -> dict[str, Any]:
+    job = job_store.get(job_id)
+    if job is None or job.get("kind") != "strategy-research" or job.get("meta", {}).get("owner_user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        key: job.get(key)
+        for key in ("id", "status", "progress", "message", "result", "error", "iteration", "iterations", "model_calls", "max_model_calls")
+    }
+
+
+@router.post("/research-jobs/{job_id}/cancel")
+async def cancel_research_job(job_id: str, user: CurrentUser) -> dict[str, Any]:
+    job = job_store.get(job_id)
+    if job is None or job.get("kind") != "strategy-research" or job.get("meta", {}).get("owner_user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") not in job_store.TERMINAL_STATUSES:
+        job_store.cancel(job_id)
+    return {"cancelled": True}
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +546,7 @@ async def remove_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/trading-log")
-async def get_trading_log(days: int = 30, symbol: Optional[str] = None) -> dict[str, Any]:
+async def get_trading_log(days: int = 30, symbol: Optional[str] = None, user: User | None = Depends(get_current_user_optional)) -> dict[str, Any]:
     """Every recorded model decision inside the window, newest first."""
     from datetime import datetime, timedelta, timezone
 
@@ -308,7 +556,8 @@ async def get_trading_log(days: int = 30, symbol: Optional[str] = None) -> dict[
 
     entries: list[dict[str, Any]] = []
     runs_seen = 0
-    for run in lab.list_runs(limit=lab.MAX_RUNS):
+    visible = lab.visible_runs(user.id if user else None, limit=lab.MAX_RUNS)
+    for run in visible:
         if wanted and run.get("symbol") != wanted:
             continue
         decisions = run.get("decisions") or []
@@ -361,8 +610,13 @@ async def get_trading_log(days: int = 30, symbol: Optional[str] = None) -> dict[
 # ---------------------------------------------------------------------------
 
 @router.get("/research")
-async def get_research() -> dict[str, Any]:
-    return {"research": research.list_docs()}
+async def get_research(user: User | None = Depends(get_current_user_optional)) -> dict[str, Any]:
+    docs = research.list_docs(user.id if user else None)
+    for doc in docs:
+        doc.pop("owner_user_id", None)
+        doc.pop("research_job_id", None)
+        doc.pop("research_iteration", None)
+    return {"research": docs}
 
 
 @router.post("/research")
@@ -402,7 +656,7 @@ async def upload_research(file: "UploadFile", user: CurrentUser) -> dict[str, An
 
 @router.delete("/research/{doc_id}")
 async def remove_research(doc_id: str, user: CurrentUser) -> dict[str, Any]:
-    if not research.delete_doc(doc_id):
+    if not research.delete_doc(doc_id, owner_user_id=user.id):
         raise HTTPException(status_code=404, detail="Research not found")
     return {"deleted": True}
 

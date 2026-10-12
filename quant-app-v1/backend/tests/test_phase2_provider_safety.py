@@ -10,12 +10,16 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import httpx
 
 # Ensure JWT secret is set before any auth imports
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 from app.providers.finnhub_provider import FinnhubProvider
 from app.providers.base import ProviderUnavailableError
+from app.services.llm_providers import normalize_model_catalogue
+from app.api.main import app
+from app.auth import create_access_token
 
 
 class FakeResponse:
@@ -25,6 +29,76 @@ class FakeResponse:
 
     def json(self):
         return self._payload
+
+
+def test_model_catalogue_marks_only_explicit_free_metadata():
+    models = normalize_model_catalogue(
+        "custom-openai",
+        [
+            {"id": "paid"},
+            {"id": "tagged-free", "is_free": True},
+            {"id": "string-truthy", "free": "true"},
+            {"id": "duplicate", "is_free": False},
+            {"id": "duplicate", "is_free": True},
+            {"id": ""},
+            {"name": "missing-id", "free": True},
+            None,
+        ],
+    )
+    assert models == [
+        {"id": "duplicate", "is_free": False},
+        {"id": "paid", "is_free": False},
+        {"id": "string-truthy", "is_free": False},
+        {"id": "tagged-free", "is_free": True},
+    ]
+
+
+def test_openrouter_free_variant_requires_free_id_and_zero_text_pricing():
+    models = normalize_model_catalogue(
+        "openrouter",
+        [
+            {"id": "paid-model", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "free-model:free", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "unknown-model:free", "pricing": {"prompt": "0", "completion": None}},
+            {"id": "invalid-price:free", "pricing": {"prompt": "free", "completion": "0"}},
+            {"id": "duplicate:free", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "duplicate:free", "pricing": {"prompt": "0", "completion": None}},
+        ],
+    )
+    assert models == [
+        {"id": "duplicate:free", "is_free": False},
+        {"id": "free-model:free", "is_free": True},
+        {"id": "invalid-price:free", "is_free": False},
+        {"id": "paid-model", "is_free": False},
+        {"id": "unknown-model:free", "is_free": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_llm_model_route_requires_auth_and_returns_free_markers(monkeypatch):
+    async def fake_catalogue(provider_id, *, use_cache=True):
+        assert provider_id == "openrouter"
+        assert use_cache is False
+        return [{"id": "vendor/free:free", "is_free": True}, {"id": "vendor/paid", "is_free": False}]
+
+    monkeypatch.setattr("app.api.v1.llm.svc.fetch_model_catalogue", fake_catalogue)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        anonymous = await client.get("/llm/providers/openrouter/models")
+        assert anonymous.status_code == 401
+
+        token = create_access_token({"sub": "model-catalogue-test", "email": "model-catalogue@local.test"})
+        response = await client.get(
+            "/llm/providers/openrouter/models",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "provider": "openrouter",
+        "models": [
+            {"id": "vendor/free:free", "is_free": True},
+            {"id": "vendor/paid", "is_free": False},
+        ],
+    }
 
 
 def test_finnhub_header_no_token_in_url(monkeypatch):

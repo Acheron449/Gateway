@@ -11,7 +11,7 @@ A trader opens Gateway and lands in a single focused workspace: left navigation 
 
 **Deliverables**
 - `quant-app-v1/frontend/src/components/layout/Shell.tsx` — persistent 3-zone layout (Left: Navigation, Center: Canvas, Right: Inspector); responsive: drawer on <1024px, fixed panels on desktop
-- `quant-app-v1/frontend/src/components/layout/Navigation.tsx` — collapsible left rail with routes: Overview, Scanner, Markets, Calendar, Strategies, Backtests, Paper Trading, Journal
+- `quant-app-v1/frontend/src/components/layout/Navigation.tsx` — collapsible left rail with routes: Overview, Scanner, Markets, Calendar, Strategies, Agentic Lab, Paper Trading, Journal. Backtest history and Cointegration Pairs are sections inside Agentic Lab; legacy `/app/backtests` redirects there.
 - `quant-app-v1/frontend/src/components/layout/CommandPalette.tsx` — ⌘K palette for navigation, symbol lookup, common actions (keyboard-first)
 - Update `quant-app-v1/frontend/src/App.tsx` — routes wrapped in Shell; legacy `/dashboard`, `/main` deprecated/redirected
 - CSS: near-black canvas, layered charcoal panels, hairline borders, one primary action colour per view (per ROADMAP.md visual principles)

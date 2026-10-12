@@ -177,6 +177,7 @@ _SETTINGS_FILE = _SETTINGS_DIR / "llm_providers.json"
 
 _MODELS_CACHE_TTL = 60.0
 _models_cache: dict[str, tuple[float, list[str]]] = {}
+_model_catalogue_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
 class LlmError(RuntimeError):
@@ -540,12 +541,57 @@ def provider_hint(response: httpx.Response) -> str:
     return "The provider"
 
 
-async def fetch_models(provider_id: str, *, use_cache: bool = True) -> list[str]:
-    """GET {base}/models and return sorted model ids."""
+def normalize_model_catalogue(provider_id: str, raw: Any) -> list[dict[str, Any]]:
+    """Keep model IDs and only explicit provider-declared free markers.
+
+    OpenRouter's public models API exposes free offerings as distinct IDs
+    ending in ``:free``; it does not expose the provider-feed ``is_free`` tag.
+    Other compatible APIs may explicitly return a boolean ``free`` or
+    ``is_free`` field. Pricing is intentionally not inferred here.
+    """
+    if not isinstance(raw, list):
+        return []
+    catalogue: dict[str, bool] = {}
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()
+        is_free = item.get("free") is True or item.get("is_free") is True
+        if provider_id == "openrouter":
+            # The public OpenRouter catalogue has no is_free tag. Treat the
+            # exact :free variant as free only when both text-generation
+            # prices are explicitly present and zero; missing/invalid pricing
+            # must never silently pass the filter.
+            is_free = False
+            pricing = item.get("pricing")
+            if model_id.endswith(":free") and isinstance(pricing, dict):
+                prompt = pricing.get("prompt")
+                completion = pricing.get("completion")
+                if (
+                    isinstance(prompt, (str, int, float))
+                    and not isinstance(prompt, bool)
+                    and isinstance(completion, (str, int, float))
+                    and not isinstance(completion, bool)
+                ):
+                    try:
+                        is_free = float(prompt) == 0 and float(completion) == 0
+                    except (TypeError, ValueError, OverflowError):
+                        is_free = False
+        catalogue[model_id] = (catalogue[model_id] and is_free) if model_id in seen else is_free
+        seen.add(model_id)
+    return [{"id": model_id, "is_free": catalogue[model_id]} for model_id in sorted(catalogue)]
+
+
+async def fetch_model_catalogue(provider_id: str, *, use_cache: bool = True) -> list[dict[str, Any]]:
+    """GET {base}/models and return model ids plus explicit free markers."""
     entry = canonical_provider(provider_id)
     if entry is None:
         raise LlmError(f"Unknown LLM provider '{provider_id}'")
-    cached = _models_cache.get(entry["id"])
+    cached = _model_catalogue_cache.get(entry["id"])
     if use_cache and cached and time.time() - cached[0] < _MODELS_CACHE_TTL:
         return cached[1]
 
@@ -560,19 +606,21 @@ async def fetch_models(provider_id: str, *, use_cache: bool = True) -> list[str]
     try:
         payload = response.json()
         raw = payload.get("data", []) if isinstance(payload, dict) else []
-        models = sorted(
-            {
-                str(item.get("id")).strip()
-                for item in raw
-                if isinstance(item, dict) and item.get("id")
-            }
-        )
+        models = normalize_model_catalogue(entry["id"], raw)
     except Exception as exc:
         raise LlmError(f"{entry['label']} returned an unreadable model list") from exc
     if not models:
         raise LlmError(f"{entry['label']} returned no models")
-    _models_cache[entry["id"]] = (time.time(), models)
+    model_ids = [model["id"] for model in models]
+    fetched_at = time.time()
+    _model_catalogue_cache[entry["id"]] = (fetched_at, models)
+    _models_cache[entry["id"]] = (fetched_at, model_ids)
     return models
+
+
+async def fetch_models(provider_id: str, *, use_cache: bool = True) -> list[str]:
+    """Compatibility wrapper returning only model IDs."""
+    return [model["id"] for model in await fetch_model_catalogue(provider_id, use_cache=use_cache)]
 
 
 def _chat_payload(

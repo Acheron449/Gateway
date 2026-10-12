@@ -20,7 +20,6 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.analysis import router as analysis_router
-from app.api.v1.agents import router as agents_router
 from app.api.v1.agentic_lab import router as agentic_lab_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.backtest import router as backtest_router
@@ -436,7 +435,6 @@ app.include_router(backtest_router, dependencies=[Depends(get_current_user_optio
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router)
 app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
-app.include_router(agents_router, dependencies=[Depends(get_current_user_optional)])  # TradingAgents multi-agent runs
 
 
 @app.get("/")

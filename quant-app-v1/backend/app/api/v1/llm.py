@@ -90,9 +90,9 @@ async def delete_llm_key(provider_id: str, user: CurrentUser) -> dict[str, Any]:
 
 @router.get("/providers/{provider_id}/models")
 async def get_llm_models(provider_id: str, user: CurrentUser) -> dict[str, Any]:
-    """Fetch the model list from the provider's /models endpoint."""
+    """Fetch model IDs and explicit free markers from the provider."""
     try:
-        models = await svc.fetch_models(provider_id, use_cache=False)
+        models = await svc.fetch_model_catalogue(provider_id, use_cache=False)
     except svc.LlmError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"provider": provider_id, "models": models}

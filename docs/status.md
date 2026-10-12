@@ -1,6 +1,6 @@
 # Gateway — Completion Status
 
-> Last updated: 2026-10-04. Companion to the phase plans (`phase-N-plan.md`):
+> Last updated: 2026-10-12. Companion to the phase plans (`phase-N-plan.md`):
 > those documents describe *intent and gates*; this file records what has
 > actually been **built and verified** versus what remains.
 
@@ -33,17 +33,30 @@
 - **2026-10-04:** decorative "gateway" watermark removed from the empty-state
   hero; the two guidance lines are preserved.
 
-### Agentic Trading Lab — *completed*
+### Agentic Trading Lab — *core features completed; consolidation verified 2026-10-12*
 - LLM/agent dashboard, backtest jobs with model decisions, baselines,
   metrics in plain language, runs persistence (≤50), research documents
-  (typed/uploaded/model-generated), trading log, performance cards.
+  (typed/uploaded/model-generated), and owner-filtered trading log.
+- **Unified Agentic Lab:** the five tabs are LLMs, Research, Trading Log,
+  Backtests, and Cointegration Pairs. Standalone Backtester navigation and
+  duplicate pair-launch locations are removed; legacy `/app/backtests`
+  links redirect to the Backtests tab. Backtests owns run history/detail,
+  including pair folds/fills and multi-strategy Monte Carlo comparison.
+- **Monte Carlo:** seeded historical-return bootstrap compares up to eight
+  eligible single-strategy runs with deterministic strategy colors and an
+  explicit non-forecast/overfitting disclaimer. Pair and legacy runs without
+  full-resolution return data are excluded, not approximated.
+- **Iterative research:** authenticated, owner-scoped, cooperative-cancel
+  jobs use bounded model-call and iteration caps. Public historical prices,
+  the caller's research, and outputs from that job are the only research
+  context; the loop cannot read portfolio/account details or place orders.
+- **Tauric Research TradingAgents** dedicated API/service/UI and remote
+  Docker installation removed. Shared LLM providers and Agentic Lab remain.
 - **RiskGuard port** from `kweinmeister/agentic-trading`: max-position cap,
   drawdown circuit breaker, short filter; every decision annotated
   approved/blocked/halted; `Risk guard` stat row, log column and badges.
 - **Reference results chart**: price + SMA 10/30 with open/close/risk
   markers (`build_chart` → `RunChart`).
-- **TradingAgents (Tauric Research)** integration: analyst selection,
-  progress via job polling, report sections; one run at a time.
 
 ### Overview redesign — *completed (2026-10-04)*
 - Reference-style dashboard (`OverviewDashboard.tsx`): market-overview
@@ -82,7 +95,29 @@
   (public SEC/EDGAR feed), 10-minute TTL cache, newest-first merge; degrades
   to an empty feed on yfinance pins that predate the API.
 
-### Verification status (2026-10-04)
+### Verification status (2026-10-12 consolidation)
+- Focused backend suite: **61 passed** across Agentic Lab, job store, deploy
+  hardening, auth preferences, and journal/vault.
+- Frontend `npm run build` (TypeScript + Vite): passed; Vite emitted its
+  existing >500 kB chunk-size advisory.
+- Full backend `pytest -q` did **not** pass collection (65 collection errors).
+  Failures include a local SciPy `_propack._spropack` loader error for pairs,
+  Pydantic `NameError: Any` while collecting the strategy regression test,
+  and missing/incompatible optional dependencies while pytest discovers vendored
+  Kronos/TradingAgents tests. A retry excluding the pairs test still stopped
+  on the strategy regression collection error. These are reported as blocked
+  checks, not passing tests; the focused suite above ran independently.
+- Browser smoke test with local frontend/backend: all five Agentic Lab tabs
+  render; Backtests displays run history and Monte Carlo controls/disclaimer;
+  Cointegration Pairs contains the launcher; `/app/backtests` redirects to
+  `/app/agentic-lab?tab=backtests`. `/health`, `/openapi.json`, provider,
+  research, agent and run-list APIs returned 200; Monte Carlo/research routes
+  are registered and the removed `/agents/trading-agents` route returns 404.
+  Some external quote/calendar provider requests returned 503 during the
+  smoke test; no real provider-backed LLM job was submitted.
+- Docker build not run (Docker CLI unavailable).
+
+### Previous verification status (2026-10-04)
 - `tsc --noEmit`: 0 errors.
 - Backend `py_compile`: clean; app imports and serves all new routes.
 - `pytest`: 11 new tests in `tests/test_data_sources.py` (news chain,
@@ -100,9 +135,9 @@
 ## Remaining / not done
 
 ### This iteration
+- **Model discovery/free-only filtering, yfinance calendar source, Financial Modeling Prep provider removal, and scanner-to-command-bar migration** remain unimplemented follow-up work; these systems were inspected but not changed in the consolidation increment.
 - **Docker build not run here** (no docker CLI): run `docker compose build`
-  locally — it installs TradingAgents from git and picks up the new
-  `ccxt` requirement.
+  locally to verify the backend image and current pinned dependencies.
 - **Real LLM API keys untested**: model behavior verified only against the
   local fake OpenAI-compatible server (`127.0.0.1:9099`); wire a real key
   for a live smoke test.

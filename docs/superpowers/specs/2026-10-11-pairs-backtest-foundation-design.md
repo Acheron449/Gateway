@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide a reproducible, deterministic pairs-trading backtest based on rolling cointegration and spread reversion, with a transparent OHLCV-derived synthetic order book and chronological out-of-sample walk-forward evaluation. Launch the shared flow from Agentic Lab and Backtester, and persist the results in the existing run history for user and LLM inspection/training.
+Provide a reproducible, deterministic pairs-trading backtest based on rolling cointegration and spread reversion, with a transparent OHLCV-derived synthetic order book and chronological out-of-sample walk-forward evaluation. Launch the shared flow from the Cointegration Pairs tab in Agentic Lab, and persist results in Agentic Lab run history for user inspection.
 
 ## Scope
 
@@ -16,8 +16,8 @@ Provide a reproducible, deterministic pairs-trading backtest based on rolling co
 - Dollar-neutral pair legs: high spread => short A / long B; low spread => long A / short B.
 - Synthetic OHLCV-derived limit-order-book execution: estimate spread from a configurable floor plus candle range contribution; cap order size by a configurable portion of bar volume; execute on the next bar's open; apply existing per-leg fees and slippage. Record filled/partial/unfilled status, modeled spread, capacity and fill prices. Label results synthetic and do not represent them as historical Level-2 data.
 - Walk-forward evaluation with chronological folds. Each fold uses its training partition to estimate hedge ratio and model settings and evaluates signals/execution on a later held-out partition. No future values may influence training estimates. Record fold dates, cointegration p-value/status, observations, and out-of-sample metrics.
-- Persist the run in existing Agentic Lab run storage and expose it in the existing Backtester results view.
-- Shared pairs-run launcher reachable from both Agentic Lab and Backtester, using the same API/job path.
+- Persist the run in existing Agentic Lab run storage and expose it in the Agentic Lab Backtests tab.
+- Shared pairs-run launcher reachable from the Agentic Lab Cointegration Pairs tab, using the existing API/job path. The former standalone Backtester route is retired; saved pair runs are inspected in the Agentic Lab Backtests tab.
 
 ### Deferred
 
@@ -55,9 +55,9 @@ The existing run/list/job endpoints remain the interface; the shared UI launcher
 
 ## UI
 
-- Add a shared component for pair-run parameters/status, mount it in Agentic Lab and Backtester.
+- Add a shared component for pair-run parameters/status and mount it in the Agentic Lab Cointegration Pairs tab.
 - For usability, present pair selection, signal parameters, walk-forward count, and synthetic-book assumptions with explanatory text and safe defaults.
-- Backtester displays pair identity, OOS fold summary, cointegration/z-score series (with threshold reference lines), pair fills/trades, and synthetic book methodology/capacity in the selected run detail. Existing single-symbol result rendering remains intact.
+- The Agentic Lab Backtests tab displays pair identity, OOS fold summary, cointegration/z-score series (with threshold reference lines), pair fills/trades, and synthetic book methodology/capacity in the selected run detail. Existing single-symbol result rendering remains intact.
 - Display unavailable/insufficient-data cases as explicit errors or empty-state explanations, never as apparently valid zero-return runs.
 
 ## Dependencies and risks
@@ -73,5 +73,5 @@ The existing run/list/job endpoints remain the interface; the shared UI launcher
 - Unit tests: OLS beta/intercept, Engle–Granger gate on cointegrated vs independent series, no lookahead in beta/z-score, crossed entry/exit thresholds, pair-leg direction, alignment, missing/zero volumes, partial paired capacity, costs, fold chronology and state reset.
 - Service tests: fetch two symbols; fail clearly for identical symbols or insufficient common bars; store serializable pair runs with OOS outputs and synthetic-book caveat.
 - API tests: valid pairs request creates/polls a job; malformed thresholds/symbol pair/fold counts produce HTTP 422/400; baseline/LLM API behavior remains backward compatible.
-- Frontend typecheck/build and component/UI verification: launch form available in Agentic Lab and Backtester; new run appears in saved history with pair series, fills, synthetic caveat and walk-forward data; existing run selection still works.
+- Frontend typecheck/build and component/UI verification: launch form available in Agentic Lab; new run appears in saved history with pair series, fills, synthetic caveat and walk-forward data; existing run selection still works.
 - No claims that the strategy optimizes returns, that cointegration guarantees convergence, or that walk-forward eliminates overfitting.

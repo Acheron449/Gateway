@@ -307,11 +307,12 @@ export function LlmProviderSettings() {
         headers: authHeaders(),
       });
       if (!response.ok) throw new Error(await readError(response, "Model list failed"));
-      const payload = (await response.json()) as { models: string[] };
+      const payload = (await response.json()) as { models: Array<string | { id: string; is_free?: boolean }> };
+      const models = payload.models.map((entry) => (typeof entry === "string" ? entry : entry.id));
       return {
         ...state,
-        defaultModel: state.defaultModel || payload.models[0] || "",
-        message: { ok: true, text: `Found ${payload.models.length} models.` },
+        defaultModel: state.defaultModel || models[0] || "",
+        message: { ok: true, text: `Found ${models.length} models.` },
       };
     });
 

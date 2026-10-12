@@ -4,10 +4,9 @@ FROM python:3.12-slim as builder
 
 WORKDIR /tmp
 
-# Install build dependencies (git: TradingAgents is fetched from GitHub)
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --upgrade pip setuptools wheel
 
@@ -16,11 +15,6 @@ COPY requirements.txt .
 RUN pip install --user --no-cache-dir --upgrade pip && \
     pip install --user --no-cache-dir -r requirements.txt && \
     pip install --user --no-cache-dir 'packaging>=20.0' 'passlib>=1.7'
-
-# Tauric Research TradingAgents (multi-agent LLM trading framework) — the
-# agentic features of the app. Installed separately because its dependency
-# floor (pandas>=3) differs from requirements.txt; pip upgrades pandas here.
-RUN pip install --user --no-cache-dir 'tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git'
 
 # Stage 2: Runtime
 FROM python:3.12-slim
