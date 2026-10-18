@@ -15,6 +15,7 @@ import httpx
 
 from app.models import Candle, EconomicEvent, EventImportance, Instrument, NewsItem, Quote
 from app.providers.base import MarketDataProvider, ProviderMeta
+from app.services.as_of import filter_timestamped_rows, normalize_as_of
 from app.models import provenance_now
 
 
@@ -116,6 +117,8 @@ class AlpacaProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]] | None:
         if not self.is_configured:
             return None
@@ -129,7 +132,7 @@ class AlpacaProvider(MarketDataProvider):
             timeframe = timeframe_map.get(interval, "1Day")
 
             # Map range to start/end
-            end = datetime.now(timezone.utc)
+            end = normalize_as_of(as_of) or datetime.now(timezone.utc)
             range_map = {
                 "1d": "1 day ago", "5d": "5 days ago", "1mo": "1 month ago",
                 "3mo": "3 months ago", "6mo": "6 months ago", "1y": "1 year ago",
@@ -175,7 +178,7 @@ class AlpacaProvider(MarketDataProvider):
                         data_time=datetime.fromisoformat(bar["t"].replace("Z", "+00:00")),
                     ).model_dump(),
                 })
-            return candles
+            return filter_timestamped_rows(candles, as_of=as_of)
         except Exception:
             return None
 
@@ -219,12 +222,17 @@ class AlpacaProvider(MarketDataProvider):
         self,
         symbol: str | None = None,
         limit: int = 5,
+        *,
+        as_of: datetime | None = None,
     ) -> list[NewsItem]:
         if not self.is_configured:
             return []
 
         try:
+            cutoff = normalize_as_of(as_of)
             params = {"limit": limit}
+            if cutoff:
+                params["end"] = cutoff.isoformat().replace("+00:00", "Z")
             if symbol:
                 params["symbols"] = symbol.upper()
 
@@ -248,7 +256,10 @@ class AlpacaProvider(MarketDataProvider):
                     provider_version="alpaca-data-v2",
                     coverage="US equities / news",
                 ))
-            return items
+            return [
+                item for item in items
+                if as_of is None or item.published_at <= cutoff
+            ]
         except Exception:
             return []
 

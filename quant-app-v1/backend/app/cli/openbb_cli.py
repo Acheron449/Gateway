@@ -7,7 +7,6 @@ Feature-gated via ENABLE_OPENBB_DATA (default: false).
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Optional
 
 import typer
@@ -24,64 +23,6 @@ def get_provider() -> OpenBBProvider:
         typer.echo("Error: OpenBB data integration is disabled. Set ENABLE_OPENBB_DATA=true to enable.", err=True)
         raise typer.Exit(1)
     return OpenBBProvider(OpenBBConfig())
-
-
-@app.command()
-def equity(
-    symbol: str = typer.Argument(..., help="Stock symbol (e.g., AAPL)"),
-    interval: str = typer.Option("1d", help="Interval (1d, 1h, 5m, 1m)"),
-    period: str = typer.Option("1y", help="Period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
-    limit: int = typer.Option(500, help="Max number of rows"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Get historical equity data."""
-    async def _run():
-        provider = get_provider()
-        data = await provider.history(symbol=symbol.upper(), interval=interval, range=period)
-        if data is None:
-            typer.echo(f"No data found for {symbol.upper()}", err=True)
-            raise typer.Exit(1)
-        
-        if limit:
-            data = data[:limit]
-        
-        if json_output:
-            import json
-            typer.echo(json.dumps(data, indent=2))
-        else:
-            for row in data:
-                typer.echo(f"{row['time']} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f} C:{row['close']:.2f} V:{row['volume']:.0f}")
-    
-    asyncio.run(_run())
-
-
-@app.command()
-def crypto(
-    symbol: str = typer.Argument(..., help="Crypto symbol (e.g., BTC-USD)"),
-    interval: str = typer.Option("1d", help="Interval (1d, 1h, 5m, 1m)"),
-    period: str = typer.Option("1y", help="Period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
-    limit: int = typer.Option(500, help="Max number of rows"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """Get historical crypto data."""
-    async def _run():
-        provider = get_provider()
-        data = await provider.history(symbol=symbol.upper(), interval=interval, range=period)
-        if data is None:
-            typer.echo(f"No data found for {symbol.upper()}", err=True)
-            raise typer.Exit(1)
-        
-        if limit:
-            data = data[:limit]
-        
-        if json_output:
-            import json
-            typer.echo(json.dumps(data, indent=2))
-        else:
-            for row in data:
-                typer.echo(f"{row['time']} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f} C:{row['close']:.2f} V:{row['volume']:.0f}")
-    
-    asyncio.run(_run())
 
 
 @app.command()

@@ -1,6 +1,6 @@
 # Gateway — Completion Status
 
-> Last updated: 2026-10-12. Companion to the phase plans (`phase-N-plan.md`):
+> Last updated: 2026-10-18. Companion to the phase plans (`phase-N-plan.md`):
 > those documents describe *intent and gates*; this file records what has
 > actually been **built and verified** versus what remains.
 
@@ -10,10 +10,11 @@
 - Provider layer with encrypted API-key store, registry, and canonical
   `MarketDataProvider` contract (`app/providers/`); Yahoo Finance via
   `yfinance` is the keyless default.
-- Market data: `/history/{sym}` with a selectable provider chain
-  (Yahoo → TradingView → AllTick → Alpaca → OpenBB), candle resampling,
-  provenance on every row; batch `/quotes` for the ticker strip (45s merge
-  cache).
+- Market data: `/history/{sym}` with selectable historical sources (Yahoo
+  Finance, TradingView, AllTick, Alpaca, Finnhub, CCXT, and LSE), Yahoo as
+  the default, and CCXT as a crypto backup; candle resampling and provenance
+  on every row. OpenBB is not a historical source. Batch `/quotes` powers
+  the ticker strip (45s merge cache).
 - News/calendar/quote endpoints with **multi-source fallback chains**
   (`provider=auto`), provenance, and persistence (`news_service`,
   `calendar_service`).

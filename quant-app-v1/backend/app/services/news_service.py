@@ -9,6 +9,7 @@ from typing import Any
 from app.models import NewsItem
 from app.providers import get_provider
 from app.providers.base import ProviderUnavailableError
+from app.services.as_of import normalize_as_of, supports_keyword_argument
 from app.services.database import (
     get_news_item as db_get_news_item,
     get_news_items as db_get_news_items,
@@ -46,8 +47,11 @@ async def fetch_and_store_news(
     provider_name: str = "Finnhub",
     symbol: str | None = None,
     limit: int = 20,
+    *,
+    as_of: datetime | None = None,
 ) -> list[NewsItem]:
     """Fetch, tag, snapshot, and persist news from a configured provider."""
+    as_of = normalize_as_of(as_of)
     provider = get_provider(provider_name)
     if not provider or not provider.is_configured:
         return []
@@ -59,25 +63,51 @@ async def fetch_and_store_news(
         if now - _general_fetch_state["at"] < _GENERAL_FETCH_TTL_SECONDS:
             stored = await get_news_items(limit=limit)
             if stored:
-                return stored
+                if as_of is None:
+                    return stored
+                return [
+                    item
+                    for item in stored
+                    if item.published_at is not None
+                    and item.published_at.tzinfo is not None
+                    and item.published_at.astimezone(timezone.utc) <= as_of
+                ]
 
         merged: dict[str, NewsItem] = {}
         per_symbol = max(3, limit // len(GENERAL_NEWS_SYMBOLS) + 1)
         for sym in GENERAL_NEWS_SYMBOLS:
             try:
-                fetched = await provider.news(symbol=sym, limit=per_symbol)
+                news = provider.news
+                kwargs = {"symbol": sym, "limit": per_symbol}
+                if as_of is not None and supports_keyword_argument(news, "as_of"):
+                    kwargs["as_of"] = as_of
+                fetched = await news(**kwargs)
             except ProviderUnavailableError:
                 continue
             except Exception:
                 continue
             for item in fetched:
-                merged.setdefault(item.id, item)
+                if as_of is None or item.published_at is not None:
+                    merged.setdefault(item.id, item)
             if len(merged) >= limit:
                 break
         items = list(merged.values())[:limit]
         _general_fetch_state["at"] = time.time()
     else:
-        items = await provider.news(symbol=symbol, limit=limit)
+        news = provider.news
+        kwargs = {"symbol": symbol, "limit": limit}
+        if as_of is not None and supports_keyword_argument(news, "as_of"):
+            kwargs["as_of"] = as_of
+        items = await news(**kwargs)
+
+    if as_of is not None:
+        items = [
+            item
+            for item in items
+            if item.published_at is not None
+            and item.published_at.tzinfo is not None
+            and item.published_at.astimezone(timezone.utc) <= as_of
+        ]
 
     fetched_at = datetime.now(timezone.utc).isoformat()
     stored_items: list[NewsItem] = []

@@ -49,6 +49,7 @@ from app.quant.technicals import calculate_wilder_rsi
 from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
+from app.services.as_of import filter_timestamped_rows, normalize_as_of, parse_data_timestamp
 from app.auth import get_current_user_optional, OptionalUser, warm_auth0_jwks
 
 
@@ -501,7 +502,12 @@ YF_TF_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
+def _fetch_history_yfinance_sync(
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     """Credentials-free historical bars via yfinance (Gateway dependency).
 
     Used when Alpaca credentials are absent so the native chart keeps working
@@ -510,7 +516,13 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
     yf = _yf()
 
     interval, period = YF_TF_MAP.get((tf or '1h').lower(), YF_TF_MAP['1h'])
-    frame = yf.Ticker(ticker.upper()).history(period=period, interval=interval, auto_adjust=False)
+    cutoff = normalize_as_of(as_of)
+    frame = yf.Ticker(ticker.upper()).history(
+        period=period,
+        interval=interval,
+        end=cutoff.replace(tzinfo=None) if cutoff else None,
+        auto_adjust=False,
+    )
     if frame is None or frame.empty:
         raise HTTPException(status_code=502, detail=f"No history data available for {ticker.upper()}")
 
@@ -532,7 +544,7 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
             }
         )
     candles.sort(key=lambda c: c['time'])
-    return candles
+    return filter_timestamped_rows(candles, as_of=as_of)
 
 
 # Chart data providers selectable by the UI (`?provider=`).
@@ -604,7 +616,12 @@ def _finnhub_available() -> bool:
         return False
 
 
-def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | None:
+def _ccxt_history_backup_sync(
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]] | None:
     """CCXT fallback used when yfinance fails on a crypto symbol.
 
     Returns None (instead of raising) for non-crypto symbols or any ccxt
@@ -615,8 +632,10 @@ def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | No
         if instance is None or not instance.is_configured:
             return None
         interval, period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
-        rows = asyncio.run(instance.history(ticker.upper(), interval, period))
-        return _normalize_history_rows(rows) or None
+        rows = asyncio.run(
+            instance.history(ticker.upper(), interval, period, **({"as_of": as_of} if as_of else {}))
+        )
+        return filter_timestamped_rows(_normalize_history_rows(rows, as_of=as_of), as_of=as_of) or None
     except Exception as exc:
         logger.warning(f"ccxt history backup failed for {ticker.upper()}: {exc}")
         return None
@@ -702,8 +721,13 @@ def _history_time_to_epoch(value: Any) -> int | None:
         return None
 
 
-def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
-    """Normalize provider candle rows (dicts or dataclasses) to chart candles."""
+def _normalize_history_rows(
+    rows: Any,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize provider candle rows, rejecting unknown times in cutoff mode."""
+    cutoff = normalize_as_of(as_of)
     candles: list[dict[str, Any]] = []
     for row in rows or []:
         if isinstance(row, dict):
@@ -714,7 +738,13 @@ def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
             raw_time = getattr(row, "time", None)
             raw_ohlc = tuple(getattr(row, key, None) for key in ("open", "high", "low", "close"))
             raw_volume = getattr(row, "volume", 0)
-        epoch = _history_time_to_epoch(raw_time)
+        if cutoff is not None:
+            parsed_time = parse_data_timestamp(raw_time)
+            if parsed_time is None or parsed_time > cutoff:
+                continue
+            epoch = int(parsed_time.timestamp())
+        else:
+            epoch = _history_time_to_epoch(raw_time)
         try:
             open_, high, low, close = (float(value) for value in raw_ohlc)
         except (TypeError, ValueError):
@@ -736,22 +766,35 @@ def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
 
 
 async def _fetch_history_alt_provider_sync(
-    provider: str, ticker: str, tf: str
+    provider: str,
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]] | None:
     """Fetch bars from a non-Yahoo provider; None when unavailable/empty."""
     if provider == "Alpaca":
         creds = _alpaca_credentials()
         if not creds:
             return None
-        return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+        if as_of is None:
+            return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+        return await asyncio.to_thread(
+            _fetch_history_chart_sync, creds[0], creds[1], ticker.upper(), as_of=as_of
+        )
 
     if provider in ("Finnhub", "TradingView", "AllTick", "CCXT", "London Strategic Edge"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None
         interval, _period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
-        rows = await instance.history(ticker.upper(), interval, "1y")
-        return _normalize_history_rows(rows)
+        rows = await instance.history(
+            ticker.upper(),
+            interval,
+            "1y",
+            **({"as_of": as_of} if as_of is not None else {}),
+        )
+        return filter_timestamped_rows(_normalize_history_rows(rows, as_of=as_of), as_of=as_of)
 
     return None
 
@@ -762,6 +805,7 @@ async def get_history(
     tf: str = "1h",
     limit: int = 500,
     provider: str = "Yahoo Finance",
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Return historical bars for the chart from the selected provider.
 
@@ -769,13 +813,18 @@ async def get_history(
     default. Any other provider falls back to Yahoo Finance when it is not
     configured, unreachable, or returns no data.
     """
+    try:
+        as_of = normalize_as_of(as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     chosen = _canonical_history_provider(provider)
     chart_data: list[dict[str, Any]] | None = None
     source = "yfinance"
 
     if chosen != "Yahoo Finance":
         try:
-            chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf)
+            chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf, as_of=as_of)
         except HTTPException:
             chart_data = None
         except Exception as exc:
@@ -787,7 +836,12 @@ async def get_history(
     if not chart_data:
         # Primary path: yfinance (keyless Yahoo Finance bars).
         try:
-            chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+            if as_of is None:
+                chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+            else:
+                chart_data = await asyncio.to_thread(
+                    _fetch_history_yfinance_sync, ticker.upper(), tf, as_of=as_of
+                )
             source = "yfinance"
         except HTTPException:
             chart_data = None
@@ -799,7 +853,12 @@ async def get_history(
         # Backup path: CCXT public exchange data (crypto pairs only).  This
         # keeps charts alive when Yahoo is down/rate-limited or the user
         # explicitly switched to CCXT and Yahoo could not answer either.
-        chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, ticker.upper(), tf)
+        if as_of is None:
+            chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, ticker.upper(), tf)
+        else:
+            chart_data = await asyncio.to_thread(
+                _ccxt_history_backup_sync, ticker.upper(), tf, as_of=as_of
+            )
         if chart_data:
             source = "ccxt"
 
@@ -809,7 +868,8 @@ async def get_history(
             detail=f"No history data available for {ticker.upper()} (yfinance and ccxt backup both failed)",
         )
 
-    resampled = _resample_candles(chart_data, tf)
+    chart_data = filter_timestamped_rows(chart_data, as_of=as_of)
+    resampled = filter_timestamped_rows(_resample_candles(chart_data, tf), as_of=as_of)
     if limit and len(resampled) > 0:
         resampled = resampled[-max(10, min(int(limit), 2000)):]
     return [
@@ -831,8 +891,9 @@ async def get_market_history(
     tf: str = "1h",
     limit: int = 500,
     provider: str = "Yahoo Finance",
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    return await get_history(ticker=ticker, tf=tf, limit=limit, provider=provider)
+    return await get_history(ticker=ticker, tf=tf, limit=limit, provider=provider, as_of=as_of)
 
 
 _quotes_cache: dict[str, Any] = {"at": 0.0, "rows": []}
@@ -905,13 +966,19 @@ async def get_quotes(symbols: str = "") -> dict[str, Any]:
     }
 
 
-def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> list[dict[str, Any]]:
+def _fetch_history_chart_sync(
+    api_key: str,
+    secret_key: str,
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
     client = StockHistoricalDataClient(api_key, secret_key)
-    end = datetime.now(timezone.utc)
+    end = normalize_as_of(as_of) or datetime.now(timezone.utc)
     start = end - timedelta(days=30)
     request_params = StockBarsRequest(
         symbol_or_symbols=ticker,
@@ -953,7 +1020,7 @@ def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> lis
             }
         )
     chart_data.sort(key=lambda c: c["time"])
-    return chart_data
+    return filter_timestamped_rows(chart_data, as_of=as_of)
 
 
 @app.websocket("/ws/trading")

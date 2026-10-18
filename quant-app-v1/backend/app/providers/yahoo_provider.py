@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from app.models import EconomicEvent, EventImportance, NewsItem
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows, normalize_as_of
 
 # Yahoo's public search endpoint doubles as its news feed (the same one
 # yfinance uses under the hood for ``Ticker.news``).  It needs no API key.
@@ -280,13 +281,19 @@ class YahooFinanceProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> Optional[list[dict[str, Any]]]:
         """Fetch historical OHLCV bars from Yahoo Finance."""
 
         def _fetch() -> list[dict[str, Any]]:
             yf = _yfinance()
+            cutoff = normalize_as_of(as_of)
             frame = yf.Ticker(instrument.upper()).history(
-                period=range, interval=interval, auto_adjust=False
+                period=range,
+                interval=interval,
+                end=cutoff.replace(tzinfo=None) if cutoff else None,
+                auto_adjust=False,
             )
             if frame is None or frame.empty:
                 return []
@@ -307,7 +314,7 @@ class YahooFinanceProvider(MarketDataProvider):
                     }
                 )
             candles.sort(key=lambda c: c["time"])
-            return candles
+            return filter_timestamped_rows(candles, as_of=as_of)
 
         return await asyncio.to_thread(_fetch)
 
@@ -333,7 +340,12 @@ class YahooFinanceProvider(MarketDataProvider):
 
         return await asyncio.to_thread(_fetch)
 
-    async def calendar(self, limit: int = 5) -> list[EconomicEvent]:
+    async def calendar(
+        self,
+        limit: int = 5,
+        *,
+        as_of: datetime | None = None,
+    ) -> list[EconomicEvent]:
         """Fetch best-effort public economic events from yfinance's calendar API."""
         if limit <= 0:
             return []
@@ -345,7 +357,11 @@ class YahooFinanceProvider(MarketDataProvider):
                 raise ProviderUnavailableError("Yahoo Finance calendar API is unavailable")
             try:
                 frame = calendars().get_economic_events_calendar(limit=min(limit, 100))
-                return _yahoo_calendar_events(frame, limit)
+                events = _yahoo_calendar_events(frame, 100 if as_of is not None else limit)
+                cutoff = normalize_as_of(as_of)
+                if cutoff is not None:
+                    events = [event for event in events if event.scheduled_at <= cutoff]
+                return events[:limit]
             except ProviderUnavailableError:
                 raise
             except Exception as exc:
@@ -357,6 +373,8 @@ class YahooFinanceProvider(MarketDataProvider):
         self,
         symbol: str | None = None,
         limit: int = 5,
+        *,
+        as_of: datetime | None = None,
     ) -> list[NewsItem]:
         """Headlines from Yahoo Finance via the yfinance data layer.
 
@@ -381,7 +399,7 @@ class YahooFinanceProvider(MarketDataProvider):
             items: list[NewsItem] = []
             for article in articles:
                 record = _article_to_news_item(article, related)
-                if record is not None:
+                if record is not None and (as_of is None or record.published_at <= normalize_as_of(as_of)):
                     items.append(record)
             return items
 

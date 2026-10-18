@@ -14,7 +14,7 @@ import pandas as pd
 from datetime import datetime, timezone
 
 from app.config import get_settings
-from app.models import Candle, NewsItem, EconomicEvent, EventImportance, Provenance
+from app.models import NewsItem, EconomicEvent, EventImportance
 from app.providers.base import MarketDataProvider, ProviderMeta
 
 logger = logging.getLogger(__name__)
@@ -67,45 +67,6 @@ class OpenBBServerProvider(MarketDataProvider):
         except Exception as e:
             logger.error(f"OpenBB server request failed: {e}")
             return None
-
-    async def history(
-        self, symbol: str, interval: str = "1d", range: str = "1y"
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Fetch historical OHLCV data from OpenBB server."""
-        if not self.is_configured:
-            return None
-
-        # Map interval/period to OpenBB API format
-        params = {
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "period": range,
-        }
-
-        data = await self._request("GET", "/api/v1/equity/historical", params)
-        if data is None:
-            return None
-
-        # Transform server response to Gateway format
-        candles = []
-        for row in data:
-            candles.append({
-                "time": row.get("timestamp"),
-                "open": row.get("open"),
-                "high": row.get("high"),
-                "low": row.get("low"),
-                "close": row.get("close"),
-                "volume": row.get("volume"),
-                "provenance": {
-                    "source": "openbb-server",
-                    "provider_version": "openbb-api-v1",
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                    "coverage": "US equities / daily",
-                    "delay_seconds": 86400,
-                    "entitlement": "public",
-                }
-            })
-        return candles
 
     async def quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch real-time quote from OpenBB server."""

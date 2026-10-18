@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows
 
 
 def _httpx():
@@ -152,12 +154,15 @@ class AllTickProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> Optional[list[dict[str, Any]]]:
         if not self.is_configured:
             return None
 
         kline_type = _KLINE_TYPE_MAP.get(str(interval).lower(), 8)
         try:
-            return await self._kline(instrument, kline_type, _MAX_BARS)
+            rows = await self._kline(instrument, kline_type, _MAX_BARS)
+            return filter_timestamped_rows(rows, as_of=as_of)
         except ProviderUnavailableError:
             return None
