@@ -5,11 +5,11 @@
 ```markdown
 # Phase 5 — Controlled Live Execution (30+ weeks)
 
-> Status: **Blocked / not started.** All prerequisites (Phase 4 paper reconciliation ≥1000 trades <0.1%, security review, legal/compliance, written user authorization) unverified. `GATEWAY_EXECUTION_MODE=paper` remains default; `alpaca_live.py` is 3-line draft only. Reconciliation script `verify_paper_trade_reconciliation.py` created and tested with 1000 trades sample.
+> Status: **Blocked.** Live execution is not enabled. This increment added exact paper-origin host guards to both broker adapters, disabled broker order placement pending durable intent/recovery, blocked indirect AI order paths, and deliberately unmounted the `/live` API router. It did not implement durable order-intent/recovery, broker-origin fill ingestion, or a broker-fill comparator. The Phase 4 criterion of ≥1,000 settled real paper fills with <0.1% discrepancy remains **insufficient evidence**; a 1,000-row sample-script test is not broker evidence. Security/legal review, account ownership/authentication, and written authorization also remain outstanding. Evidence: `quant-app-v1/backend/tests/test_broker_service_safety.py`, `test_broker_paper_safety.py`, and `.superpowers/sdd/2026-10-18-paper-safety-roadmap/progress.md`.
 
 ## Prerequisites (ALL must be complete before starting)
 
-- [ ] Phase 4 paper reconciliation proven over ≥1000 paper trades with <0.1% discrepancy
+- [ ] Phase 4 reconciliation proven with ≥1,000 settled real broker-origin paper fills and <0.1% discrepancy using the accepted independent comparator; simulated/sample rows do not count
 - [ ] Security review completed (pen test, dependency audit, secrets management)
 - [ ] Legal/compliance review for target jurisdiction (US: FINRA/SEC considerations)
 - [ ] User explicitly authorizes live trading scope in writing
@@ -21,24 +21,24 @@
 **Focus:** One broker (Alpaca live), single asset class (US equities), documented capabilities/limitations
 
 **Deliverables**
-- `quant-app-v1/backend/app/providers/alpaca_live.py` — extends `alpaca_provider.py` with live endpoints
-- Idempotency: every order gets `client_order_id` (UUID v7); broker dedup on retry
+- Future broker adapter path only after independent design/review; current legacy-named adapters in `quant-app-v1/backend/app/services/` are guarded and fail closed, not a live-enabled adapter.
+- Durable order intent and crash recovery before any broker POST; ambiguous POST outcomes are looked up by exact client order ID and never blindly resubmitted.
 - Partial fill handling: `Fill` events with `liquidity` flag; position updates incremental
-- Reconciliation job: `cron` every 5 min — compare local `orders`/`fills`/`positions` vs broker API; alert on drift > threshold
-- Account sync: `GET /api/v1/live/account` — cash, buying power, positions from broker
+- Separate broker-origin fill ingestion and reviewed reconciliation comparator; do not treat simulated portfolio `orders`/`fills`/`positions` as broker-origin facts.
+- Account sync only after authenticated account ownership and route authorization exist; `/live` routes are currently unmounted.
 - Feature flag: `ENABLE_LIVE_ALPACA` (default false)
 
 **Acceptance criteria**
-- Live order submitted → acknowledged → filled → reconciled within 5 min
-- Idempotent retry on network failure (test: kill network mid-submit, retry → single fill)
-- Reconciliation alerts on position drift > 1 share
+- Any future broker order is persisted before submission, recoverable without duplicate POST, then traced to broker-origin fills and independent reconciliation.
+- Ambiguous network outcome never triggers a blind retry; exact client-ID lookup/recovery resolves identity or retains an explicit unknown state.
+- Independent reconciliation reports settled evidence windows and flags discrepancies; evidence threshold remains ≥1,000 settled fills and <0.1%.
 
 ### Slice 5.2: Live Eligibility Gates (Week 6–10)
 **Focus:** No account eligible without proven paper history, acknowledgement, limits, monitoring
 
 **Deliverables**
 - `quant-app-v1/backend/app/services/live_gates.py`:
-  - **Paper history gate**: min 500 trades OR 90 days paper trading (configurable)
+  - **Paper history gate**: Phase 4 acceptance requires ≥1,000 settled real broker-origin paper fills and <0.1% discrepancy; no simulator/sample shortcut.
   - **User acknowledgement**: signed digital agreement (stored in `user_agreements` table)
   - **Account-level limits**: max position size, max daily volume, max open orders
   - **Monitoring dashboard**: `GET /api/v1/live/monitoring` — latency, fill rate, error rate, risk utilization
@@ -46,7 +46,7 @@
 - `quant-app-v1/frontend/src/components/features/LiveActivation.tsx` — wizard: paper stats → agreement → limits → activate
 
 **Acceptance criteria**
-- Account with <500 paper trades cannot activate live (test)
+- No account can activate live while the real-evidence, ownership, security/legal, durable recovery or explicit written-authorization gates remain unmet.
 - Kill switch blocks new live orders in <100ms (load test)
 - Monitoring shows live latency <500ms p99
 

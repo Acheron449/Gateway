@@ -123,16 +123,17 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
         <div className="canvas-view canvas-view-wide canvas-view-trading">
           <div className="trading-view-header view-header">
             <div className="trading-view-title">
-              <h1>Live Trading</h1>
+              <h1>Live execution unavailable</h1>
               <p className="view-description">
-                Real-money orders through your broker — the same desk as paper trading,
-                with account, positions, orders and fills fed by the live account
-                (UI patterned after professional terminals such as nautilus_trader).
+                Broker account and order routes are disabled until authenticated account ownership
+                and durable order recovery are implemented. Use the separately labeled simulated-paper desk.
               </p>
             </div>
-            <TradingAccountStatus mode="live" />
           </div>
-          <PaperTrading selectedSymbol={selectedSymbol} mode="live" />
+          <section className="desk-card" role="status" aria-label="Broker execution unavailable">
+            <h2>Live execution unavailable</h2>
+            <p>No broker account data or order actions are available in this build.</p>
+          </section>
         </div>
       );
     case "ai-trading":

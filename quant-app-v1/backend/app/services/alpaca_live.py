@@ -6,6 +6,18 @@ import hmac
 import os
 import time
 import uuid
+from urllib.parse import urlsplit
+
+from app.services.broker_service import (
+    Order,
+    OrderSide,
+    OrderStatus,
+    ExecutionReport,
+    _BaseProvider,
+    _PAPER_TRADING_ORIGIN,
+    _map_alpaca_order_status,
+    _validate_paper_trading_origin,
+)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -14,8 +26,6 @@ from typing import Optional
 from uuid import UUID
 
 import aiohttp
-
-from app.services.broker_service import Order, OrderSide, OrderStatus, ExecutionReport, _BaseProvider, _AlpacaProvider
 
 
 class LiveOrderStatus(str, Enum):
@@ -197,19 +207,21 @@ _idempotency_store = IdempotencyStore()
 
 
 class AlpacaLiveProvider(_BaseProvider):
-    """Alpaca live trading provider with idempotency, partial fills, and reconciliation."""
+    """Legacy-named, paper-only Alpaca broker adapter; never uses live execution."""
 
     def __init__(
         self,
         api_key: str,
         api_secret: str,
-        base_url: str = "https://api.alpaca.markets",
-        paper: bool = False,
+        base_url: str = _PAPER_TRADING_ORIGIN,
+        paper: bool = True,
     ):
+        if not paper:
+            raise ValueError("Broker execution requires paper mode")
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = base_url.rstrip('/')
-        self.paper = paper
+        self.base_url = _validate_paper_trading_origin(base_url)
+        self.paper = True
         self._session: Optional[aiohttp.ClientSession] = None
         self._rate_limit_remaining = 200
         self._rate_limit_reset = 0
@@ -231,27 +243,41 @@ class AlpacaLiveProvider(_BaseProvider):
             'Content-Type': 'application/json',
         }
 
+    def _url(self, path: str) -> str:
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "#" in path:
+            raise ValueError("Broker request path must be an absolute API path")
+        url = f"{self.base_url}{path}"
+        try:
+            parts = urlsplit(url)
+            origin = parts._replace(path="", query="", fragment="").geturl()
+        except ValueError as exc:
+            raise ValueError("Invalid broker request URL") from exc
+        _validate_paper_trading_origin(origin)
+        return url
+
     async def _request(
         self,
         method: str,
         path: str,
         json: dict | None = None,
         idempotency_key: str | None = None,
+        params: dict | None = None,
     ) -> dict:
+        url = self._url(path)
         session = await self._get_session()
         headers = self._headers()
         if idempotency_key:
             headers['Idempotency-Key'] = idempotency_key
 
-        url = f"{self.base_url}{path}"
-
         for attempt in range(3):
             try:
-                async with session.request(method, url, headers=headers, json=json) as resp:
+                async with session.request(method, url, headers=headers, json=json, params=params, allow_redirects=False) as resp:
                     self._rate_limit_remaining = int(resp.headers.get('X-RateLimit-Remaining', '200'))
                     self._rate_limit_reset = int(resp.headers.get('X-RateLimit-Reset', '0'))
 
                     text = await resp.text()
+                    if 300 <= resp.status < 400:
+                        raise RuntimeError(f"Alpaca API redirect refused ({resp.status})")
                     if resp.status >= 400:
                         if resp.status == 429:
                             await asyncio.sleep(1 * (attempt + 1))
@@ -275,44 +301,13 @@ class AlpacaLiveProvider(_BaseProvider):
         idempotency_key: str | None = None,
         extended_hours: bool = False,
     ) -> Optional[str]:
-        """Place a live order with idempotency key."""
-        if idempotency_key is None:
-            idempotency_key = _idempotency_store.generate_key()
-
-        existing = _idempotency_store.get(idempotency_key)
-        if existing and existing.used:
-            return existing.broker_order_id
-
-        payload = {
-            'symbol': order.symbol,
-            'qty': order.quantity,
-            'side': order.side.value.lower(),
-            'type': order.order_type.lower(),
-            'time_in_force': 'day',
-            'extended_hours': extended_hours,
-        }
-
-        if order.order_type in ('limit', 'stop_limit') and order.limit_price:
-            payload['limit_price'] = round(order.limit_price, 2)
-        if order.order_type in ('stop', 'stop_limit') and order.stop_price:
-            payload['stop_price'] = round(order.stop_price, 2)
-
-        data = await self._request('POST', '/v2/orders', json=payload, idempotency_key=idempotency_key)
-        broker_order_id = data.get('id')
-
-        if broker_order_id:
-            _idempotency_store.mark_used(idempotency_key, broker_order_id)
-
-        return broker_order_id
+        """Refuse submission until durable broker-order intent recovery is integrated."""
+        raise RuntimeError("Broker order submission is unavailable until durable intent and recovery are integrated")
 
     async def get_order_status(self, broker_order_id: str) -> ExecutionReport:
         data = await self._request('GET', f'/v2/orders/{broker_order_id}')
 
-        status_str = data.get('status', 'unknown').lower()
-        try:
-            status = OrderStatus[status_str.upper()]
-        except KeyError:
-            status = OrderStatus.PENDING_NEW
+        status = _map_alpaca_order_status(data.get("status"))
 
         executed_qty = float(data.get('filled_qty', 0) or 0)
         avg_price = float(data.get('filled_avg_price', 0) or 0)
@@ -358,8 +353,7 @@ class AlpacaLiveProvider(_BaseProvider):
         if until:
             params['until'] = until.isoformat()
 
-        query = '&'.join(f"{k}={v}" for k, v in params.items())
-        data = await self._request('GET', f'/v2/orders?{query}')
+        data = await self._request('GET', '/v2/orders', params=params)
 
         return [self._parse_order(o) for o in data] if isinstance(data, list) else []
 
@@ -389,8 +383,7 @@ class AlpacaLiveProvider(_BaseProvider):
         if until:
             params['until'] = until.isoformat()
 
-        query = '&'.join(f"{k}={v}" for k, v in params.items())
-        data = await self._request('GET', f'/v2/account/activities?{query}')
+        data = await self._request('GET', '/v2/account/activities', params=params)
         return data if isinstance(data, list) else []
 
     def _parse_order(self, data: dict) -> LiveOrder:

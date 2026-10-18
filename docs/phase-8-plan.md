@@ -3,14 +3,14 @@
 ```markdown
 # Phase 8 — External Service Integration Layer (plan-only, 2026-09-20)
 
-> Status: **Plan document only — NO build authorization.** Phase 7 (SEO/discovery/404/cookie/terms/analytics/CTA + sitemap/robots/llms) must complete; Phase 5 live-broker prerequisites remain BLOCKED and gate Stripe live payments / auth-to-broker linkage. All 7 services planned (Supabase, Stripe, Vercel, Resend, Auth0, Cloudflare, Sentry); starter env/config templates proposed; no deploy, no secrets.
+> Status: **Plan document only — no current build/deployment authorization.** The historical plan describes seven vendor integrations; no integration is certified by this document. Phase 7 hosted acceptance remains unverified. Phase 5 evidence, identity, security/legal and written-authorization gates remain blocked; live payments and broker linkage are unavailable. Check current repository state before treating any proposed starter as absent or present.
 >
 > Source: user clarification — Phase 8 plan-only, all 7 services, wait for Phase 7, build later.
 
 ## Prerequisites (ALL must complete before ANY build of this layer)
 
-- [ ] Phase 7 complete — sitemap + robots + llms + canonical/noindex + meta/alt/schema + links + broken links + HTTPS + slugs + backlink + analytics/CTA + cookie/terms
-- [ ] Phase 5 prerequisites met — paper reconciliation ≥1000 <0.1%, pen test / dependency audit / secrets, legal/compliance (FINRA/SEC if US), written authorization, `GATEWAY_EXECUTION_MODE=paper`, `ENABLE_LIVE_ALPACA` false, `alpaca_live.py` draft → production adapter
+- [ ] Phase 7 production acceptance proven — starter files alone are insufficient; confirm canonical/noindex, meta/alt/schema, link crawl, HTTPS, slugs, backlinks and analytics/cookie/terms behavior on an authorized host
+- [ ] Phase 5 prerequisites met — ≥1,000 settled real broker-origin fills with <0.1% independently measured discrepancy; durable broker-order recovery; security/legal/account-ownership review; written scope authorization. Paper-only guards do not satisfy these gates.
 - [ ] Security / legal / compliance review for all 7 vendors; secrets plan (Vault/KMS/env-only); feature flags (`ENABLE_*`) all default false; `config.py` confirmed
 - [ ] Dependency audit: `requirements.txt` / `docker-compose.yml` updated (proposed pins for `supabase`, `stripe`, `resend`, `authlib`, `sentry-sdk`); NO live keys
 - [ ] Frontend build pipeline verified (`frontend/src/`); Vercel preview-deploy workflow proposed; env injection (`VITE_*`) planned
@@ -22,7 +22,7 @@
 
 - Phase: 8 | Mode: **Plan only — NO build** | Released: 2026-09-20 | Build target: not committed
 - Live-payment / live-broker gates: **Intentionally unavailable** (Stripe blocked by Phase 5; all `ENABLE_*` false)
-- Prior phases preserved: Phase 5 (blocked), Phase 6 (OpenBB proposed), Phase 7 (build-transition completed)
+- Prior phases: Phase 5 blocked; Phase 6 retained OpenBB context only (historical OHLCV retired; AGPLv3 review open); Phase 7 starter artifacts exist but hosted acceptance is unverified.
 
 ## Slices (7 services — 3 groups: A Foundation, B Payments+Deploy, C Auth+Integration)
 
@@ -101,7 +101,7 @@
 - Phase 7 prerequisite confirmed; Phase 6 preserved; Phase 5 preserved (blocked)
 
 ## Intentionally Unavailable
-- Stripe live payments / webshop / subscription — Phase 5 gates required (`alpaca_live.py` draft; no paper reconciliation; no pen test; no legal; `ENABLE_LIVE_ALPACA` false); webhook skeleton only
+- Stripe live payments / webshop / subscription — Phase 5 real-evidence, security/legal, ownership and explicit-authorization gates remain unmet; broker adapters are fail-closed and `/live` is unmounted; webhook skeleton only
 - Auth0 production SSO — `ENABLE_AUTH0` false; existing auth unchanged
 - Supabase production DB — `ENABLE_SUPABASE` false; `quant_app.db` preserved; dry-run migration only
 - Resend live email — `ENABLE_RESEND` false; console/log only

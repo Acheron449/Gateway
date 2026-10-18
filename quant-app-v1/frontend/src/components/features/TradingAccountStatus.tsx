@@ -19,6 +19,7 @@ function money(value: number | undefined): string {
 }
 
 async function fetchAccountSummary(mode: "paper" | "live"): Promise<AccountSummary> {
+  if (mode === "live") throw new Error("Live execution unavailable");
   if (mode === "paper") {
     const token = localStorage.getItem("gateway_auth_token");
     const response = await fetch(`${API_BASE}/portfolio`, {
@@ -56,7 +57,7 @@ export function TradingAccountStatus({ mode }: { mode: "paper" | "live" }) {
 
   return (
     <section className={`desk-status ${mode === "live" ? "live" : ""}`} aria-label={`${mode} account summary`}>
-      <LastUpdated at={dataUpdatedAt || undefined} />
+      {mode === "live" ? <strong>Live execution unavailable</strong> : <LastUpdated at={dataUpdatedAt || undefined} />}
       <div className="desk-status-metrics" aria-live="polite">
         <span><b>Equity</b> ${money(data?.equity)}</span>
         <span><b>Cash</b> ${money(data?.cash)}</span>

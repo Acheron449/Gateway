@@ -435,7 +435,9 @@ app.include_router(backtest_router, dependencies=[Depends(get_current_user_optio
 # do not provide). The stream authenticates its own token query param.
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router)
-app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
+# Fail closed: live/broker account routes remain deliberately unmounted until
+# authenticated account ownership and durable intent recovery are implemented.
+# Keep the router module importable for tests and legacy internal references.
 
 
 @app.get("/")

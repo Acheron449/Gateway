@@ -15,7 +15,7 @@ class AiTradingConfigUpdate(BaseModel):
     """Partial update — omitted fields keep their current values."""
 
     enabled: Optional[bool] = None
-    route: Optional[str] = Field(None, pattern="^(paper|live)$")
+    route: Optional[str] = Field(None, pattern="^paper$")
     symbols: Optional[List[str]] = None
     strategy: Optional[str] = Field(None, pattern="^(momentum|mean_reversion)$")
     max_position_notional: Optional[float] = Field(None, gt=0)

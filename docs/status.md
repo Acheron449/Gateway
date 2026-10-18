@@ -2,11 +2,11 @@
 
 > Last updated: 2026-10-18. Companion to the phase plans (`phase-N-plan.md`):
 > those documents describe *intent and gates*; this file records what has
-> actually been **built and verified** versus what remains.
+> actually been **built and verified** versus what remains. This note reconciles the 2026-10-18 paper-safety increment; checks below are scoped and do not imply Phase 4/5 readiness.
 
 ## Completed (built and verified)
 
-### Core platform (Phases 0–4)
+### Core platform (Phases 0–4) — mixed completion; Phase 4 evidence gate remains open
 - Provider layer with encrypted API-key store, registry, and canonical
   `MarketDataProvider` contract (`app/providers/`); Yahoo Finance via
   `yfinance` is the keyless default.
@@ -19,8 +19,25 @@
   (`provider=auto`), provenance, and persistence (`news_service`,
   `calendar_service`).
 - Auth (JWT), watchlists, layouts, preferences, symbol search, analysis,
-  risk dashboard, divergence scorecards, strategy studio, paper trading
-  (portfolio/orders/fills/kill-switch), journal.
+  risk dashboard, divergence scorecards, strategy specs/version storage,
+  simulated paper portfolio/orders/fills/kill-switch, journal. This does not
+  establish Phase 4 broker reconciliation: broker-origin fill ingestion and
+  independent comparator are not implemented; ≥1,000 settled real fills /
+  <0.1% discrepancy remains unverified.
+- **2026-10-18 paper safety:** both direct broker order-placement paths fail
+  closed pending durable intent/recovery; execution requests validate the
+  exact paper trading origin; `/live` account/mutation router is unmounted;
+  indirect AI live submission is disabled. UI calls the portfolio order path
+  simulated paper and labels live execution unavailable. Evidence: focused
+  backend suites (45 passed in the recorded checkpoint), frontend build and
+  two focused Playwright tests (see
+  `.superpowers/sdd/2026-10-18-paper-safety-roadmap/progress.md`). No broker
+  requests/orders were sent.
+- **StrategySpec content hash/version safety:** canonical content hash is
+  stored separately in nullable `strategy_versions.content_hash`, with
+  `BEGIN IMMEDIATE` version allocation; focused hash + regression tests passed
+  (13 in the recorded checkpoint). This is not full Phase 3 backtest/OOS
+  completion.
 - Frontend shell: sidebar views, top-bar ticker marquee, right inspector,
   charts, scanner, markets, calendar.
 
@@ -163,9 +180,23 @@
   therefore uses the `YfData` search endpoint. If yfinance fixes
   `Ticker.news`, the provider can switch back.
 
-### Project-level gates (see phase plans; intentionally untouched)
-- **Phase 5** live broker: gated on reconciliation ≥1000 trades <0.1%, pen
-  test, legal sign-off, written authorization; `ENABLE_LIVE_ALPACA=false`.
+### Project-level gates (see phase plans)
+- **Phase 4 reconciliation / Phase 5 live execution:** insufficient evidence.
+  No broker-origin fill ledger or reviewed comparator; ≥1,000 settled real
+  paper fills and <0.1% discrepancy are unproven. Durable order intent and
+  crash recovery are not implemented. Both broker order-placement paths
+  fail closed, `/live` routes are not mounted, and no live trading is enabled.
+  Security/legal review, account ownership and written authorization remain
+  required. No statement in this status report authorizes broker calls/orders.
 - **Phase 8** external services (Supabase/Stripe/Vercel/Resend/Auth0/
   Cloudflare/Sentry): plan-only, all `ENABLE_*` false.
-- **Phase 9** AI agent interface / MCP: planned, `ENABLE_AI_AGENT` false.
+- **Phase 9** AI agent interface / MCP: planned, `ENABLE_AI_AGENT` false; historical build-transition wording is not current authorization.
+
+### Evidence record (2026-10-18 paper-safety increment)
+- Focused tests from `quant-app-v1/backend`: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_broker_service_safety.py tests/test_broker_paper_safety.py tests/test_phase0_safety.py tests/test_phase4_paper_portfolio.py` → 45 passed (recorded in the plan ledger).
+- Strategy hash tests: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_strategy_content_hash.py app/tests/test_strategy_spec_regression.py` → 13 passed (recorded in the plan ledger).
+- Current resumed run: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_broker_paper_safety.py tests/test_broker_service_safety.py tests/test_strategy_content_hash.py` → 37 passed.
+- Frontend rerun after reconciliation: `npm run build` passed (Vite emitted the existing >500 kB chunk advisory); `npm run test:e2e -- --grep 'paper desk discloses simulator mode|live execution view'` → 2 passed.
+- Changed Python modules compiled successfully with `PYTHONPATH=. ./.venv/bin/python -m py_compile` (working directory `quant-app-v1/backend`); the exact argument list is recorded in `.superpowers/sdd/2026-10-18-paper-safety-roadmap/progress.md`.
+- Broader backend selection hit an unrelated fixture incompatibility in `test_phase0_catalogue.py::test_stocks_metadata_includes_catalogue_fields` (`fetch_ohlcv` mock rejects the new `as_of=` kwarg). Full `PYTHONPATH=. ./.venv/bin/pytest -q` was blocked during collection with 64 errors: local SciPy `_spropack` loader failure, vendored optional dependencies missing/incompatible (e.g. matplotlib, langchain_core/langgraph/typer/stockstats) and vendored yfinance `config` API mismatch. These are blockers, not passes.
+- Read-only secret-pattern scan across changed source/docs: 0 matching files (matching values suppressed). `git diff --check` passed at final review. The root [ROADMAP.md](../ROADMAP.md) is ignored by `.gitignore` and untracked in HEAD; it was locally reconciled but is not part of the normal diff.

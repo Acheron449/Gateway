@@ -3,14 +3,14 @@
 ```markdown
 # Phase 7 — SEO / Crawlability / Discovery Layer + llms.txt + Backlinks (build transition, 2026-09-20)
 
-> Status: Build-mode authorizations active (user: "create a 7th phase where..."). Build-mode only — implementing the plan document and starter artifacts (sitemap.xml skeleton, robots.txt, llms.txt, canonical/noindex/alt/meta specs); full site crawl, HTTPS enforcement, Core Web Vitals tuning, slug cleanup, backlink execution = subsequent slices requiring hosting access / external outreach.
+> Status: **Partially implemented; production/deployment acceptance not verified (reconciled 2026-10-18).** Starter files exist, but this plan's hosting-dependent checks (HTTPS redirect/HSTS, crawl/link validation, canonical/meta coverage, Core Web Vitals, slug redirects and backlink verification) remain open. Historical build authorization for starter artifacts is not deployment authorization. Phase 5 live trading remains separately blocked.
 >
 > Source: user request (sitemap.xml + robots.txt + noindex removal + canonical + meta title/description + alt + schema + internal links + broken-link fix + Core Web Vitals + HTTPS + URL slug cleanup + llms.txt + backlink strategy).
 
 ## Prerequisites (must complete before production deployment of this layer)
 
-- [ ] Phase 6 OpenBB integration design finalized (`docs/phase-6-plan.md` emitted; source edits pending user confirmation of scope)
-- [ ] Phase 5 live-execution prerequisites met (currently BLOCKED: `alpaca_live.py` = 3-line draft; `ENABLE_LIVE_ALPACA` false) — Phase 7 does NOT depend on live broker but should not ship before Phase 5 security/legal gates if this site handles trades
+- [ ] Phase 6 retained quote/news/calendar scope finalized and legal review complete (`docs/phase-6-plan.md` documents that historical OHLCV support is retired; AGPLv3 review remains outstanding)
+- [ ] Phase 5 remains blocked: direct broker order-placement paths fail closed and `/live` is unmounted; real reconciliation, durable order recovery, identity/security/legal and written-authorization gates remain open. Phase 7 does not itself unlock broker access; apply host-specific security/legal gates if the site handles trading data.
 - [ ] Hosting / domain configured: HTTPS certificate active; HTTP→HTTPS redirect enforced; clean URL pipeline (slug normalization)
 - [ ] Existing site inventory: crawl baseline (`/robots.txt`, any existing `sitemap.xml`, `llms.txt`, meta tags) — use `curl` / `wget --spider` / `screaming-frog` equivalent
 - [ ] Backlink source list compiled (partners, docs references, GitHub repos, data-source citations from OpenBB)
@@ -185,16 +185,16 @@
 
 ## Intentionally Unavailable (until explicitly authorized / until prerequisites met)
 
-- Phase 5 live broker activation (still BLOCKED — `alpaca_live.py` draft); Phase 7 does NOT unlock it
+- Phase 5 live broker activation (blocked: broker order placement fails closed; `/live` routes unmounted; evidence and authorization gates unmet); Phase 7 does NOT unlock it
 - Production deployment of Phase 7 on a live trading domain until Phase 5 legal/security gates complete (if domain handles trading data)
 - Paid backlink / SEO agency execution (plan defines strategy; execution is user-authorized separately)
 - Removal of AGPLv3 attribution for OpenBB references (must remain)
 
 ## Build / Transition Notes
 
-- Mode shifted from plan → build (system reminder, 2026-09-20). This document is the phase plan; starter artifacts (sitemap skeleton, robots.txt, llms.txt skeleton) will be emitted as separate file operations if user confirms.
+- Historical mode note: starter artifacts were created under the 2026-09-20 build transition. Their presence does not prove hosted acceptance or authorize deployment; production hosting checks remain open as of 2026-10-18.
 - All 8 prior clarifications (scope/filename/dependency) from Phase 6 do NOT apply here — Phase 7 is self-contained (SEO/discovery) with only Phase 5/6 prerequisites noted.
-- User request: "create a 7th phase where..." — all listed items covered in slices 7.1–7.7. If any item needs deeper spec (e.g., exact schema markup JSON), ask; otherwise proceed with starter artifacts.
+- Historical request text describes the original starter scope; no current hosting, deployment, or external-outreach authorization is inferred from it. Acceptance status is listed above and remains open pending environment access and verification.
 
 ---
 

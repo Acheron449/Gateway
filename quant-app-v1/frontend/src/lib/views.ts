@@ -28,7 +28,7 @@ export const VIEWS: ViewDef[] = [
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
   { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝", group: "myWork" },
-  { id: "live-trading", label: "Live Trading", icon: "💸", group: "myWork" },
+  { id: "live-trading", label: "Live execution unavailable", icon: "⛔", group: "myWork" },
   { id: "ai-trading", label: "AI Trading", icon: "🧠", group: "myWork" },
   { id: "journal", label: "Journal", icon: "📓", group: "myWork" },
   { id: "settings", label: "Providers", icon: "🔧", group: "settings" },

@@ -5,7 +5,7 @@
 ```markdown
 # Phase 3 — Strategy Studio & Credible Backtesting (14–22 weeks)
 
-> Status: **Not started.** Planning only; prerequisites (Phase 2 provider layer + Phase 1 workspace) not met. See `docs/phase-5-prerequisites.md` (priority 3).
+> Status: **Partially verified (2026-10-18).** Strategy specifications and versioned storage exist; canonical versioned content hashing and atomic SQLite version allocation were implemented and focused-tested in this increment. The plan's full Strategy Studio, reproducible backtest receipts, OOS validation, and promotion lifecycle are not thereby complete. Evidence: `quant-app-v1/backend/app/models/__init__.py`, `app/api/v1/strategies.py`, and `quant-app-v1/backend/tests/test_strategy_content_hash.py`.
 
 ## User outcome
 

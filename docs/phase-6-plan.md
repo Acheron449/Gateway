@@ -13,7 +13,7 @@
 |---|---------------|----------------|------|
 | 1 | Scope: package / server / both | **Context only** | Quote/news/calendar context retained; history is not supported |
 | 2 | Filename | **`docs/phase-6-plan.md`** | Matches phase-0..5 sequence |
-| 3 | Phase 5 dependency | **Parallel allowed** | Data feed independent from live-broker gates (`alpaca_live.py` draft = 3 lines) |
+| 3 | Phase 5 dependency | **Parallel allowed for retained context development** | Quote/news/calendar context does not require broker order access; broker execution remains blocked by separate evidence/security/legal/authorization gates |
 | 4 | Slices / order | **3 retained slices (see below)** | Context provider → context API/CLI → Optional context server |
 | 5 | Feature flag | **`ENABLE_OPENBB_DATA` (default false)** | Mirrors `ENABLE_LIVE_ALPACA` |
 | 6 | Acceptance criteria | **Proposed below** — revise if needed |
@@ -23,7 +23,7 @@
 ## Context (verified from repo + OpenBB)
 
 - OpenBB context adapters may provide quote, news, and calendar data. Its historical OHLCV compatibility layer is obsolete and is excluded; chart/history retrieval uses the existing provider adapters. The optional SDK/server features remain feature-gated.
-- Repo `quant-app-v1/backend/app/providers/alpaca_live.py`: 3 lines ("Status: Draft — prerequisites not met"). Not a blocker for data-layer Phase 6.
+- Broker execution adapters are currently under `quant-app-v1/backend/app/services/`; they are guarded and fail closed. Their status does not block retained OpenBB context development; it does not authorize broker requests.
 - Historical data flows through the selectable provider history endpoint and the provider registry; OpenBB is not included in that chain.
 - Quant engine historical prices continue to use the configured providers in the canonical history contract; OpenBB output is not used for historical bars.
 
@@ -101,7 +101,7 @@ Historical adapters, routes, CLI commands, and ingestion helpers are removed; do
 
 **Unmodified / Reference**
 - `docs/phase-5-plan.md` (sequence reference; Phase 5 prerequisites remain)
-- `quant-app-v1/backend/app/providers/alpaca_live.py` (draft; not modified by this plan)
+- Broker execution modules under `quant-app-v1/backend/app/services/` are outside the retained OpenBB context scope; no broker calls or order behavior is changed by this plan.
 
 ## Dependency / License Notes
 
@@ -122,7 +122,7 @@ Historical adapters, routes, CLI commands, and ingestion helpers are removed; do
 - OpenBB historical OHLCV retrieval; use existing history providers instead
 - Historical backtesting / replay using OpenBB data
 - Multi-provider fusion (combine OpenBB + Alpaca live feeds) until Phase 5 live broker proven
-- No change to `alpaca_live.py` (remains draft; out of scope)
+- No broker execution changes are implied by Phase 6 context work; current execution adapters remain fail-closed as separately documented in Phase 5.
 
 ## Editor / Build Notes
 
