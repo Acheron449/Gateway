@@ -1,4 +1,6 @@
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Navigate } from "react-router-dom";
+import { API_BASE } from "../../lib/constants";
 import { ChartContainer } from "../../components/ChartContainer";
 import { AssetSelector } from "../../components/features/AssetSelector";
 import { PaperTrading } from "../../components/features/PaperTrading";
@@ -7,7 +9,7 @@ import { AiTrading } from "../../components/features/AiTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
 import { AgenticLab } from "./AgenticLab";
-import Backtester from "./Backtester";
+import { type BtRun } from "./Backtester";
 import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
@@ -19,6 +21,25 @@ import { IdleScreen } from "./IdleScreen";
 interface CenterCanvasProps {
   activeView: string;
   selectedSymbol: string;
+}
+
+function AgenticLabView({ selectedSymbol }: { selectedSymbol: string }) {
+  const [runs, setRuns] = useState<BtRun[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const loadRuns = useCallback(async () => {
+    setError(null);
+    try {
+      const token = localStorage.getItem("gateway_auth_token");
+      const response = await fetch(`${API_BASE}/agentic-lab/runs?limit=50`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const data = await response.json() as { runs?: BtRun[] };
+      setRuns(data.runs ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load lab runs");
+    }
+  }, []);
+  useEffect(() => { void loadRuns(); }, [loadRuns]);
+  return <AgenticLab selectedSymbol={selectedSymbol} runs={runs} error={error} onRefresh={loadRuns} />;
 }
 
 function getViewComponent(activeView: string, selectedSymbol: string) {
@@ -81,21 +102,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
     case "agentic-lab":
       return (
         <div className="canvas-view canvas-view-wide">
-          <AgenticLab selectedSymbol={selectedSymbol} />
-        </div>
-      );
-    case "backtests":
-      return (
-        <div className="canvas-view canvas-view-wide">
-          <div className="view-header">
-            <h1>Backtester</h1>
-            <p className="view-description">
-              Replay strategies over past bars only — a paper layout of trades, opened positions,
-              logs and theoretical P&amp;L. No live orders are placed from here.
-            </p>
-            <LastUpdated />
-          </div>
-          <Backtester />
+          <AgenticLabView selectedSymbol={selectedSymbol} />
         </div>
       );
     case "paper-trading":
@@ -116,16 +123,17 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
         <div className="canvas-view canvas-view-wide canvas-view-trading">
           <div className="trading-view-header view-header">
             <div className="trading-view-title">
-              <h1>Live Trading</h1>
+              <h1>Live execution unavailable</h1>
               <p className="view-description">
-                Real-money orders through your broker — the same desk as paper trading,
-                with account, positions, orders and fills fed by the live account
-                (UI patterned after professional terminals such as nautilus_trader).
+                Broker account and order routes are disabled until authenticated account ownership
+                and durable order recovery are implemented. Use the separately labeled simulated-paper desk.
               </p>
             </div>
-            <TradingAccountStatus mode="live" />
           </div>
-          <PaperTrading selectedSymbol={selectedSymbol} mode="live" />
+          <section className="desk-card" role="status" aria-label="Broker execution unavailable">
+            <h2>Live execution unavailable</h2>
+            <p>No broker account data or order actions are available in this build.</p>
+          </section>
         </div>
       );
     case "ai-trading":
@@ -197,7 +205,7 @@ export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) 
       className={`center-canvas-inner${fixed ? " center-canvas-fixed" : ""}`}
       ref={canvasRef}
     >
-      {getViewComponent(activeView, selectedSymbol)}
+      {activeView === "backtests" ? <Navigate to="/app/agentic-lab?tab=backtests" replace /> : getViewComponent(activeView, selectedSymbol)}
     </div>
   );
 }

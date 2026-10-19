@@ -180,6 +180,8 @@ function AppRoutes() {
       <Route path="/login" element={<AuthRoute mode="login" />} />
       <Route path="/register" element={<AuthRoute mode="signup" />} />
       <Route path="/app" element={<Navigate to="/app/overview" replace />} />
+      <Route path="/app/backtests" element={<Navigate to="/app/agentic-lab?tab=backtests" replace />} />
+      <Route path="/app/backtests/*" element={<Navigate to="/app/agentic-lab?tab=backtests" replace />} />
       <Route path="/app/:viewParam" element={<ShellRoute />} />
       <Route path="/app/:viewParam/*" element={<ShellRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />

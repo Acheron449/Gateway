@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Query
 
 from app.services import market_data
 from app.services.catalogue import InstrumentCatalogueError, get_instrument, search_instruments
@@ -28,7 +29,9 @@ async def search_tickers(query: str) -> dict:
 
 
 @router.get("/{ticker}/metadata")
-async def get_ticker_metadata(ticker: str) -> dict:
+async def get_ticker_metadata(ticker: str, as_of: datetime | None = None) -> dict:
+    if as_of is not None and (as_of.tzinfo is None or as_of.utcoffset() is None):
+        raise HTTPException(status_code=422, detail="as_of must be timezone-aware")
     try:
         instrument = get_instrument(ticker)
     except InstrumentCatalogueError as exc:
@@ -37,7 +40,7 @@ async def get_ticker_metadata(ticker: str) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if instrument is None:
         raise HTTPException(status_code=404, detail=f"'{ticker.upper()}' is not in the supported instrument catalogue")
-    result = await market_data.fetch_ohlcv(ticker, limit=2)
+    result = await market_data.fetch_ohlcv(ticker, limit=2, as_of=as_of)
     latest = float(result.dataframe["Close"].iloc[-1])
     return {
         "ticker": instrument.symbol,

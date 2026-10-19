@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from app.models import Candle, Provenance
+from app.models import EconomicEvent, EventImportance, NewsItem
 from app.providers.base import MarketDataProvider, ProviderMeta
 
 logger = logging.getLogger(__name__)
@@ -31,10 +31,7 @@ class OpenBBConfig:
 
 
 class OpenBBProvider(MarketDataProvider):
-    """OpenBB-backed provider for equities, crypto, and fixed income data.
-
-    Wraps `obb` modules to return normalized `Candle` records with provenance.
-    """
+    """OpenBB-backed adapter for quote, news, and calendar context."""
 
     def __init__(self, config: Optional[OpenBBConfig] = None):
         self._config = config or OpenBBConfig()
@@ -94,135 +91,6 @@ class OpenBBProvider(MarketDataProvider):
                         await asyncio.sleep(self._config.retry_delay * (attempt + 1))
             raise last_error
 
-    def _transform_equity_dataframe(self, df: pd.DataFrame, symbol: str) -> List[Candle]:
-        """Transform OpenBB equity DataFrame to Gateway Candle list."""
-        if df.empty:
-            return []
-
-        candles = []
-        for idx, row in df.iterrows():
-            ts = idx.timestamp() if hasattr(idx, 'timestamp') else idx
-            candle = Candle(
-                instrument=symbol.upper(),
-                timeframe="1d",
-                time=datetime.fromtimestamp(ts, tz=timezone.utc),
-                open=float(row.get("Open", row.get("open", 0))),
-                high=float(row.get("High", row.get("high", 0))),
-                low=float(row.get("Low", row.get("low", 0))),
-                close=float(row.get("Close", row.get("close", 0))),
-                volume=float(row.get("Volume", row.get("volume", 0))),
-                provenance=Provenance(
-                    source="openbb",
-                    provider_version="openbb-v1",
-                    fetched_at=datetime.now(timezone.utc),
-                    data_time=datetime.fromtimestamp(ts, tz=timezone.utc),
-                    coverage="US equities / daily",
-                    delay_seconds=86400,
-                    entitlement="public",
-                ),
-            )
-            candles.append(candle)
-        return candles
-
-    def _transform_crypto_dataframe(self, df: pd.DataFrame, symbol: str) -> List[Candle]:
-        """Transform OpenBB crypto DataFrame to Gateway Candle list."""
-        if df.empty:
-            return []
-
-        candles = []
-        for idx, row in df.iterrows():
-            ts = idx.timestamp() if hasattr(idx, 'timestamp') else idx
-            candle = Candle(
-                instrument=symbol.upper(),
-                timeframe="1d",
-                time=datetime.fromtimestamp(ts, tz=timezone.utc),
-                open=float(row.get("Open", row.get("open", 0))),
-                high=float(row.get("High", row.get("high", 0))),
-                low=float(row.get("Low", row.get("low", 0))),
-                close=float(row.get("Close", row.get("close", 0))),
-                volume=float(row.get("Volume", row.get("volume", 0))),
-                provenance=Provenance(
-                    source="openbb",
-                    provider_version="openbb-v1",
-                    fetched_at=datetime.now(timezone.utc),
-                    data_time=datetime.fromtimestamp(ts, tz=timezone.utc),
-                    coverage="Crypto / daily",
-                    delay_seconds=3600,
-                    entitlement="public",
-                ),
-            )
-            candles.append(candle)
-        return candles
-
-    async def history(
-        self, symbol: str, interval: str = "1d", range: str = "1y"
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Fetch historical OHLCV data from OpenBB."""
-        await self._init_obb()
-
-        try:
-            if self._obb is None:
-                return None
-
-            # Determine asset class based on symbol format
-            is_crypto = "-" in symbol and symbol.split("-")[1] in ("USD", "USDT", "BTC", "ETH")
-            is_forex = len(symbol) == 6 and symbol[:3].isalpha() and symbol[3:].isalpha()
-
-            if is_crypto:
-                # Crypto: use obb.crypto.price.historical
-                df = await self._call_with_retry(
-                    self._obb.crypto.price.historical,
-                    symbol=symbol.upper(),
-                    interval=interval,
-                    start_date=None,
-                    end_date=None,
-                )
-                candles = self._transform_crypto_dataframe(df, symbol)
-            elif is_forex:
-                # Forex: use obb.forex.price.historical
-                df = await self._call_with_retry(
-                    self._obb.forex.price.historical,
-                    symbol=symbol.upper(),
-                    interval=interval,
-                )
-                candles = self._transform_equity_dataframe(df, symbol)
-            else:
-                # Equity: use obb.equity.price.historical
-                df = await self._call_with_retry(
-                    self._obb.equity.price.historical,
-                    symbol=symbol.upper(),
-                    interval=interval,
-                    start_date=None,
-                    end_date=None,
-                )
-                candles = self._transform_equity_dataframe(df, symbol)
-
-            # Convert to dict format expected by existing API
-            return [
-                {
-                    "time": int(c.time.timestamp()),
-                    "open": c.open,
-                    "high": c.high,
-                    "low": c.low,
-                    "close": c.close,
-                    "volume": c.volume,
-                    "provenance": {
-                        "source": c.provenance.source,
-                        "provider_version": c.provenance.provider_version,
-                        "fetched_at": c.provenance.fetched_at.isoformat(),
-                        "data_time": c.provenance.data_time.isoformat() if c.provenance.data_time else None,
-                        "coverage": c.provenance.coverage,
-                        "delay_seconds": c.provenance.delay_seconds,
-                        "entitlement": c.provenance.entitlement,
-                    }
-                }
-                for c in candles
-            ]
-
-        except Exception as e:
-            logger.error(f"OpenBB history fetch failed for {symbol}: {e}")
-            return None
-
     async def quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch real-time quote from OpenBB."""
         await self._init_obb()
@@ -276,8 +144,6 @@ class OpenBBProvider(MarketDataProvider):
             if self._obb is None:
                 return []
 
-            from app.models import NewsItem
-
             news_df = await self._call_with_retry(
                 self._obb.news.world,
                 limit=limit,
@@ -310,8 +176,6 @@ class OpenBBProvider(MarketDataProvider):
         try:
             if self._obb is None:
                 return []
-
-            from app.models import EconomicEvent, EventImportance
 
             cal_df = await self._call_with_retry(
                 self._obb.economy.calendar,

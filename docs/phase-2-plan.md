@@ -1,6 +1,6 @@
 # Phase 2 — Data, News & Macro Intelligence (8–14 weeks)
 
-> Status: **Not started.** Only planning/proposed. Completed upstream: Phase 0 (safety, catalogue, increment4, boundary) and Phase 1 slices 1.1–1.3 (Shell, Scanner, Workspace). Dependencies: Phase 0 domain models partial (`models/` only strategy/user); `base.py` missing. See `docs/phase-5-prerequisites.md` (priority 2).
+> Status: **Partially verified (2026-10-18).** Provider contracts/implementations and market-data, news and calendar paths exist in `quant-app-v1/backend/app/providers/` and `app/services/`; Phase 2 is not wholly unstarted. Scope, licensed coverage, provenance/freshness, historical event snapshots and all acceptance criteria have not been demonstrated end-to-end in this pass. See `docs/status.md` and `docs/phase-5-prerequisites.md` for evidence gaps.
 
 ## User outcome
 

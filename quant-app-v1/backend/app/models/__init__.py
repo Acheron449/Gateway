@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from datetime import datetime, timezone
+import json
+import unicodedata
+from decimal import Decimal, InvalidOperation
+from datetime import date, datetime, timezone
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.provenance import UTC_ISO
 
@@ -279,6 +282,99 @@ class Assumptions(BaseModel):
     funding_rate_bps: float = 0.0  # for leveraged positions
 
 
+_HASH_EXCLUDED_ROOT_FIELDS = {
+    "strategy_id", "version", "name", "description", "tags", "created_at", "created_by", "content_hash",
+}
+_HASH_EXCLUDED_RULE_FIELDS = {"id", "description", "text"}
+_HASH_SET_LIST_FIELDS = {
+    "allowed_sessions", "event_importance", "allowed_currencies", "blocked_currencies", "blocked_windows",
+}
+
+
+def _decimal_string(value: int | float | Decimal) -> str:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Strategy content cannot contain invalid numbers") from exc
+    if not number.is_finite():
+        raise ValueError("Strategy content cannot contain NaN or Infinity")
+    if number == 0:
+        return "0"
+    normalized = number.normalize()
+    return format(normalized, "f")
+
+
+def _canonical_value(value: object, *, path: tuple[str, ...] = ()) -> list:
+    if value is None:
+        return ["null"]
+    if isinstance(value, bool):
+        return ["bool", value]
+    if isinstance(value, str):
+        return ["string", unicodedata.normalize("NFC", value)]
+    if isinstance(value, (int, float, Decimal)):
+        return ["decimal", _decimal_string(value)]
+    if isinstance(value, (datetime, date)):
+        normalized = value.isoformat()
+        if isinstance(value, datetime) and value.tzinfo is not None:
+            normalized = value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return ["string", normalized]
+    if isinstance(value, StrEnum):
+        return ["string", str(value.value)]
+    if isinstance(value, (list, tuple)):
+        items = [_canonical_value(item, path=path + ("[]",)) for item in value]
+        if path and path[-1] in _HASH_SET_LIST_FIELDS or path == ("universe",):
+            unique = {json.dumps(item, ensure_ascii=False, separators=(",", ":")): item for item in items}
+            items = [unique[key] for key in sorted(unique)]
+        return ["array", items]
+    if isinstance(value, dict):
+        pairs: list[list[object]] = []
+        seen: set[str] = set()
+        keys = []
+        for key in value:
+            if not isinstance(key, str):
+                raise ValueError("Strategy object keys must be strings")
+            normalized_key = unicodedata.normalize("NFC", key)
+            if normalized_key in seen:
+                raise ValueError("Strategy object contains NFC-colliding keys")
+            seen.add(normalized_key)
+            keys.append((normalized_key, key))
+        is_rule_object = len(path) >= 2 and path[-1] == "[]" and path[-2].endswith("_rules")
+        for normalized_key, original_key in sorted(keys):
+            if not path and normalized_key in _HASH_EXCLUDED_ROOT_FIELDS:
+                continue
+            if is_rule_object and normalized_key in _HASH_EXCLUDED_RULE_FIELDS:
+                continue
+            pairs.append([
+                normalized_key,
+                _canonical_value(value[original_key], path=path + (normalized_key,)),
+            ])
+        return ["object", pairs]
+    raise ValueError(f"Unsupported strategy content type: {type(value).__name__}")
+
+
+def canonical_strategy_payload(spec: "StrategySpec") -> bytes:
+    """Return the versioned canonical semantic JSON tree for a StrategySpec."""
+    data = spec.model_dump(mode="python", exclude={"content_hash"})
+    data["universe"] = sorted({unicodedata.normalize("NFC", symbol).upper() for symbol in data.get("universe", [])})
+    for field_name in ("entry_rules", "exit_rules", "sizing_rules", "invalidation_rules", "session_rules", "event_rules"):
+        rules = data.get(field_name, [])
+        for rule in rules:
+            if not rule.get("text"):
+                continue
+            structured = any(
+                rule.get(key) not in (None, {}, [], "")
+                for key in ("condition", "parameters", "method", "allowed_sessions", "blocked_windows", "event_importance", "allowed_currencies", "blocked_currencies")
+            )
+            if not structured:
+                raise ValueError("Executable strategy rules with text require structured semantic fields")
+    tree = _canonical_value(data)
+    return json.dumps(tree, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def compute_strategy_content_hash(spec: "StrategySpec") -> str:
+    return hashlib.sha256(b"gateway-strategy-spec:v1:" + canonical_strategy_payload(spec)).hexdigest()
+
+
 class StrategySpec(BaseModel):
     """A complete, versioned, typed strategy specification for the Strategy Studio."""
     strategy_id: str
@@ -297,6 +393,13 @@ class StrategySpec(BaseModel):
     tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str | None = None
+    content_hash: str | None = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def _validate_content_hash(self) -> "StrategySpec":
+        if self.content_hash is not None and self.content_hash != compute_strategy_content_hash(self):
+            raise ValueError("content_hash does not match canonical StrategySpec content")
+        return self
 
     def to_legacy_version(self, strategy_id: str) -> "StrategyVersion":
         """Convert to legacy StrategyVersion for backwards compatibility."""
@@ -474,6 +577,8 @@ __all__ = [
     "SizingRule",
     "Strategy",
     "StrategySpec",
+    "canonical_strategy_payload",
+    "compute_strategy_content_hash",
     "StrategyStatus",
     "StrategyVersion",
     "Timeframe",

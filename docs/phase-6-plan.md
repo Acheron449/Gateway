@@ -3,7 +3,7 @@
 ```markdown
 # Phase 6 — OpenBB Open-Data Integration (PROPOSED — AUTHORITIES COMMISSIONED)
 
-> Status: **Implemented / in progress (plan emitted 2026-09-20).** OpenBB provider code, routes, CLI, server provider, ingestor and registry are present in the repository; feature‑gated behind `ENABLE_OPENBB_DATA=false` and `ENABLE_OPENBB_SERVER=false`. AGPLv3 review required before production deployment. Parallel with Phase 5 allowed (data feed independent of live‑broker gates). Compared to codebase‑memory (gen 2026‑09‑20) OpenBB is now indexed; source files verified.
+> Status: **Historical OHLCV support is retired.** OpenBB is retained for quote/news/calendar context only; the old history compatibility layer is not used. Historical requests use existing providers: Yahoo Finance, Alpaca, Finnhub, TradingView, AllTick, CCXT, or London Strategic Edge. Quote/news/calendar context features remain feature-gated behind `ENABLE_OPENBB_DATA=false` and `ENABLE_OPENBB_SERVER=false`; AGPLv3 review is required before production use.
 >
 > Source: https://github.com/OpenBB-finance/OpenBB (AGPLv3). Repo index: Gateway (codebase-memory, gen 2026-09-20, 1665 nodes).
 
@@ -11,10 +11,10 @@
 
 | # | Clarification | Default chosen | Note |
 |---|---------------|----------------|------|
-| 1 | Scope: package / server / both | **Both** | Slice 6.1 = `openbb` pkg; Slice 6.4 = `openbb-api` server (port 6900) |
+| 1 | Scope: package / server / both | **Context only** | Quote/news/calendar context retained; history is not supported |
 | 2 | Filename | **`docs/phase-6-plan.md`** | Matches phase-0..5 sequence |
-| 3 | Phase 5 dependency | **Parallel allowed** | Data feed independent from live-broker gates (`alpaca_live.py` draft = 3 lines) |
-| 4 | Slices / order | **4 slices (see below)** | Data provider → CLI/API → Engine feed → Optional server |
+| 3 | Phase 5 dependency | **Parallel allowed for retained context development** | Quote/news/calendar context does not require broker order access; broker execution remains blocked by separate evidence/security/legal/authorization gates |
+| 4 | Slices / order | **3 retained slices (see below)** | Context provider → context API/CLI → Optional context server |
 | 5 | Feature flag | **`ENABLE_OPENBB_DATA` (default false)** | Mirrors `ENABLE_LIVE_ALPACA` |
 | 6 | Acceptance criteria | **Proposed below** — revise if needed |
 | 7 | AGPLv3 compatibility | **Review required** before prod; documented here |
@@ -22,51 +22,44 @@
 
 ## Context (verified from repo + OpenBB)
 
-- OpenBB (user URL): open-source data platform; `pip install openbb`; CLI `openbb-cli`; Python `obb` modules (`obb.equity`, `obb.crypto`, `obb.fixedincome`, etc.); FastAPI server via `openbb-api` (port 6900); AGPLv3.
-- Repo `quant-app-v1/backend/app/providers/alpaca_live.py`: 3 lines ("Status: Draft — prerequisites not met"). Not a blocker for data-layer Phase 6.
-- `quant-app-v1/backend/app/services/market_data.py`: clean (ingestor); `provider_registry.py`: directory (registry); `requirements.txt`: lines 28-29 (`alpaca-trade-api`, `alpaca-py`) — dependency insertion point.
-- Quant engine: `quant-app-v1/backend/app/quant/indicators.py`, `backtester.py`, `risk_engine.py` — pandas/numpy compatible with OpenBB output frames.
+- OpenBB context adapters may provide quote, news, and calendar data. Its historical OHLCV compatibility layer is obsolete and is excluded; chart/history retrieval uses the existing provider adapters. The optional SDK/server features remain feature-gated.
+- Broker execution adapters are currently under `quant-app-v1/backend/app/services/`; they are guarded and fail closed. Their status does not block retained OpenBB context development; it does not authorize broker requests.
+- Historical data flows through the selectable provider history endpoint and the provider registry; OpenBB is not included in that chain.
+- Quant engine historical prices continue to use the configured providers in the canonical history contract; OpenBB output is not used for historical bars.
 
 ## Prerequisites (must complete before production; parallel with Phase 5 ok for dev)
 
-- [ ] User explicitly confirms scope above (package / server / both) — if "package only", drop 6.4.
+- [ ] Confirm whether the optional OpenBB context server (slice 6.4) is in scope; it does not serve historical bars.
 - [ ] AGPLv3 license review for proprietary quant components (legal/compliance per Phase 5.4).
-- [ ] Phase 5 prerequisites reviewed — `alpaca_live.py` is draft; Phase 6 data feed does NOT require live broker.
+- [ ] Phase 5 prerequisites reviewed before any live-broker integration; historical context provider work does not require live broker access.
 - [ ] `ENABLE_OPENBB_DATA` feature flag documented; default `false`.
-- [ ] Dependency audit: `openbb` package + optional server image; add to `requirements.txt` / `docker-compose.yml`.
+- [ ] Dependency audit: OpenBB context package and optional server image; add only if retained context integration requires them.
 - [ ] Provider interface spec aligned: compare with any existing `alpaca_provider.py` / `finnhub_provider.py` once indexed.
 
 ## Integration Slices (high-level, sequential; week estimates proposed, not committed)
 
-### Slice 6.1: OpenBB Data Provider (Week 1–3)
-**Focus:** New provider module wrapping OpenBB data into existing model.
+### Slice 6.1: OpenBB Context Provider (Week 1–3)
+**Focus:** OpenBB context integration only. OpenBB historical OHLCV adapter support was removed; historical prices come from the existing chart/history providers.
 
 **Deliverables**
-- `quant-app-v1/backend/app/providers/openbb_provider.py` (NEW):
-  - Wraps `obb.equity.price.historical()`, `obb.crypto.price.historical()`, etc.
-  - Outputs aligned to existing `TickData` / `MarketData` pandas model (`market_data.py`)
-  - Config-driven symbol list; rate-limit awareness (OpenBB provider APIs)
-  - Feature-flag gated: only registered when `ENABLE_OPENBB_DATA=true`
-- `quant-app-v1/backend/app/services/provider_registry.py`: register `openbb_provider`
-- Unit tests: frame conversion, empty response, rate-limit retry
+- Retain the existing OpenBB quote/news/calendar context adapter and its feature flag.
+- Do not register OpenBB as a historical `MarketDataProvider` source.
+- Unit tests should cover only retained context behavior.
 
 **Acceptance criteria**
-- `obb.equity.price.historical("AAPL")` → `DataFrame` → provider transforms to `TickData` list with correct schema
-- Feature-flag off → provider unregistered; on → endpoint <2s p95 for 1 symbol / 30-day history
-- No network dependency when disabled
+- Historical OHLCV routes and provider selection do not call OpenBB.
+- Historical data is retrieved from the existing selectable providers.
+- OpenBB context features remain disabled by default and make no network request when disabled.
 
 ---
 
-### Slice 6.2: CLI / REST API Wrapper (Week 3–5)
-**Focus:** Surface OpenBB to frontend / external consumers.
+### Slice 6.2: Context CLI / REST API Wrapper (Week 3–5)
+**Focus:** Surface retained OpenBB context data to frontend / external consumers; no equity/crypto history endpoints.
 
 **Deliverables**
-- `quant-app-v1/backend/app/api/openbb_routes.py` (NEW):
-  - `GET /api/v1/openbb/equity?symbol=AAPL&period=1m` → provider → `TickData`
-  - `GET /api/v1/openbb/crypto?symbol=BTC` → same
-  - `GET /api/v1/openbb/available` → list loaded integrations
-- `quant-app-v1/backend/app/cli/openbb_cli.py` (NEW, optional): command-line access using `obb.*`
-- Auth same as existing `/api/v1/` routes; no extra auth model
+- Retained API routes: `/openbb/quote`, `/openbb/news`, `/openbb/calendar`, and `/openbb/available`.
+- Optional CLI commands cover quote, news, calendar, and integration listing only; equity/crypto history commands are removed.
+- Auth follows the existing API conventions; no separate auth model.
 
 **Acceptance criteria**
 - Endpoint responds in <2s p95 for common request
@@ -75,23 +68,14 @@
 
 ---
 
-### Slice 6.3: Quant Engine Feed (Week 5–7)
-**Focus:** Pipe OpenBB data into existing quant pipeline.
+### Slice 6.3: Quant Engine Feed — Retired
 
-**Deliverables**
-- Update `quant-app-v1/backend/app/services/market_data.py`: add `OpenBBIngestor` or extend `MarketDataIngestor`
-- Feed into `quant/indicators.py`, `backtester.py`, `risk_engine.py`
-- Column mapping doc: OpenBB `close`, `open`, `high`, `low`, `volume` → existing schema
-- Backfill / replay capability using OpenBB historical data (replay engine integration with Phase 5.3 audit log if needed)
-
-**Acceptance criteria**
-- Historical backtest using OpenBB data produces same indicator values (within float tolerance) as existing source
-- Replay from audit event + OpenBB data reconstructs port state (if combined with Phase 5.3)
+OpenBB is not a source for the chart, analysis, or backtest historical-data pipeline. `OpenBBIngestor`, `fetch_ohlcv_openbb`, and the OpenBB history methods/routes/CLI commands are removed. Analysis and backtests use the existing provider history contract and configured sources instead. Do not restore the obsolete compatibility layer.
 
 ---
 
-### Slice 6.4: Optional OpenBB-API Server (Week 7–9; SKIPPABLE if scope = package only)
-**Focus:** Deploy standalone `openbb-api` for multi-service consumption.
+### Slice 6.4: Optional OpenBB Context Server (Week 7–9; optional)
+**Focus:** Deploy standalone `openbb-api` for quote/news/calendar context only; it is not a historical data source.
 
 **Deliverables**
 - `docker-compose.yml` addition: `openbb-api` service (port 6900; image / build from OpenBB repo)
@@ -106,25 +90,18 @@
 
 ---
 
-## File Paths (new + modified)
+## Retained OpenBB Context Files
 
-**New**
-- `quant-app-v1/backend/app/providers/openbb_provider.py`
-- `quant-app-v1/backend/app/providers/openbb_server_provider.py` (optional, 6.4)
-- `quant-app-v1/backend/app/api/openbb_routes.py`
-- `quant-app-v1/backend/app/cli/openbb_cli.py` (optional)
-- `docs/phase-6-plan.md` (this document — emitted during build transition)
+- `quant-app-v1/backend/app/providers/openbb_provider.py` — quote/news/calendar context.
+- `quant-app-v1/backend/app/providers/openbb_server_provider.py` — optional quote/news/calendar context server.
+- `quant-app-v1/backend/app/api/openbb_routes.py` — quote/news/calendar/available routes only.
+- `quant-app-v1/backend/app/cli/openbb_cli.py` — quote/news/calendar/available commands only.
 
-**Modified**
-- `quant-app-v1/backend/app/services/provider_registry.py`
-- `quant-app-v1/backend/app/services/market_data.py`
-- `requirements.txt` (add `openbb`; optional server deps)
-- `docker-compose.yml` (optional 6.4 service)
-- `quant-app-v1/backend/app/config.py` / settings: add `ENABLE_OPENBB_DATA`, `ENABLE_OPENBB_SERVER`
+Historical adapters, routes, CLI commands, and ingestion helpers are removed; do not add them back.
 
 **Unmodified / Reference**
 - `docs/phase-5-plan.md` (sequence reference; Phase 5 prerequisites remain)
-- `quant-app-v1/backend/app/providers/alpaca_live.py` (draft; not modified by this plan)
+- Broker execution modules under `quant-app-v1/backend/app/services/` are outside the retained OpenBB context scope; no broker calls or order behavior is changed by this plan.
 
 ## Dependency / License Notes
 
@@ -134,23 +111,22 @@
 
 ## Acceptance Criteria (proposed — revise if needed)
 
-- [ ] `ENABLE_OPENBB_DATA=true` → `/api/v1/openbb/equity?symbol=AAPL` returns valid `TickData` <2s p95
-- [ ] `ENABLE_OPENBB_DATA=false` → provider unregistered; endpoint unavailable (503/404)
-- [ ] `openbb_provider.py` transforms `obb` output to existing schema with zero data loss (close/open/high/low/volume + timestamp)
+- [ ] With `ENABLE_OPENBB_DATA=false`, retained context routes respond unavailable without network access.
 - [ ] AGPLv3 attribution documented; legal sign-off recorded (Phase 5.4 style)
-- [ ] (If 6.4) `openbb-api` container healthy; provider connects; graceful failure when server down
-- [ ] Feature flags documented in `docs/` and `config.py`; default `false`
+- [ ] (If context server is enabled) the context service connects and fails gracefully when unavailable.
+- [ ] Feature flags documented in `docs/` and `config.py`; default `false`.
 
 ## Intentionally Unavailable / Blocked
 
-- Phase 6 production deployment until AGPLv3 review complete
-- Additional asset-class providers beyond equity/crypto/fixed-income until Phase 6.1 proven
+- Phase 6 production use until AGPLv3 review complete
+- OpenBB historical OHLCV retrieval; use existing history providers instead
+- Historical backtesting / replay using OpenBB data
 - Multi-provider fusion (combine OpenBB + Alpaca live feeds) until Phase 5 live broker proven
-- No change to `alpaca_live.py` (remains draft; out of scope)
+- No broker execution changes are implied by Phase 6 context work; current execution adapters remain fail-closed as separately documented in Phase 5.
 
 ## Editor / Build Notes
 
-- Plan emitted during plan→build mode transition (user: "do what you need").
-- No edits made to source code; only `docs/phase-6-plan.md` created.
-- User's 8 clarifications resolved by default; if any must change, update this document's "Unresolved → Resolved" section and re-phase.
+- Historical OHLCV support is explicitly excluded from the retained OpenBB context integration; source selection uses existing historical providers.
+- Implementation status was reconciled with the provider history path on 2026-10-18.
+- The historical scope decision supersedes earlier proposed OpenBB history deliverables in this plan.
 Priority link: see docs/phase-5-prerequisites.md (priority 6)

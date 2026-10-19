@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import CurrentUser
+from app.auth import OperatorUser
 from app.providers.registry import (
     _delete_api_key,
     _store_api_key,
@@ -50,7 +50,7 @@ class ProviderKeyDeleteResponse(BaseModel):
 
 
 @router.get("", response_model=List[ProviderStatusResponse])
-async def list_providers() -> List[ProviderStatusResponse]:
+async def list_providers(user: OperatorUser) -> List[ProviderStatusResponse]:
     """List providers without exposing credentials."""
     results = []
     for name, meta in registry_list_providers().items():
@@ -67,7 +67,7 @@ async def list_providers() -> List[ProviderStatusResponse]:
 
 
 @router.get("/{provider_name}", response_model=ProviderStatusResponse)
-async def get_provider_status(provider_name: str) -> ProviderStatusResponse:
+async def get_provider_status(provider_name: str, user: OperatorUser) -> ProviderStatusResponse:
     """Get detailed status for a specific provider."""
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
     if meta is None:
@@ -86,7 +86,7 @@ async def get_provider_status(provider_name: str) -> ProviderStatusResponse:
 async def store_provider_key(
     provider_name: str,
     request: ProviderKeyRequest,
-    user: CurrentUser,
+    user: OperatorUser,
 ) -> ProviderKeyResponse:
     """Store an encrypted API key for a supported BYOK provider."""
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
@@ -112,7 +112,7 @@ async def store_provider_key(
 @router.delete("/{provider_name}/key", response_model=ProviderKeyDeleteResponse)
 async def delete_provider_key(
     provider_name: str,
-    user: CurrentUser,
+    user: OperatorUser,
 ) -> ProviderKeyDeleteResponse:
     """Delete a stored API key."""
     meta = next((value for name, value in registry_list_providers().items() if name.casefold() == provider_name.casefold()), None)
@@ -135,7 +135,7 @@ async def delete_provider_key(
 @router.get("/{provider_name}/test", response_model=Dict[str, Any])
 async def test_provider_key(
     provider_name: str,
-    user: CurrentUser,
+    user: OperatorUser,
 ) -> Dict[str, Any]:
     """Test a stored provider key without returning raw provider errors.
 

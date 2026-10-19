@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.providers.registry import get_provider, has_stored_key, list_providers
 from app.providers.base import ProviderUnavailableError
 from app.services.calendar_service import fetch_and_store_economic_events, get_calendar_provenance
 from app.services.news_service import fetch_and_store_news, get_news_provenance
+from app.services.as_of import is_at_or_before, normalize_as_of
 
 
 router = APIRouter(prefix="/news", tags=["news"])
@@ -55,8 +57,9 @@ class QuoteResponse(BaseModel):
 
 
 # Economic-calendar sources in preference order for provider="auto".
-# EconomicCalendar is the default base feed; the rest layer events on top.
-_CALENDAR_CHAIN = ("EconomicCalendar", "FinancialModelingPrep", "JBlanked", "Bloomberg", "Finnhub")
+# EconomicCalendar is the default base feed; other configured sources layer
+# events on top. Yahoo is a keyless, best-effort fallback/contributor.
+_CALENDAR_CHAIN = ("EconomicCalendar", "FinancialModelingPrep", "JBlanked", "Bloomberg", "Finnhub", "Yahoo Finance")
 
 _CALENDAR_SOURCE_DETAILS = {
     "EconomicCalendar": "Default economic-calendar-api feed (investing.com) · self-hosted · no API key",
@@ -64,6 +67,7 @@ _CALENDAR_SOURCE_DETAILS = {
     "JBlanked": "Official JBlanked API · ForexFactory · MQL5 · FxStreet feeds · API key required",
     "Bloomberg": "bloomberg.com economic calendar (Investing.com widget) · no API key · may be bot-walled",
     "Finnhub": "Finnhub economic calendar · API key · premium-gated",
+    "Yahoo Finance": "Yahoo Finance economic events via yfinance · no API key · best effort",
 }
 
 # News sources in preference order for provider="auto".  Finnhub answers when
@@ -88,6 +92,7 @@ async def get_news(
         description="News source: 'auto' walks the source chain (Finnhub → Yahoo Finance), or name one explicitly",
     ),
     response: Response = None,
+    as_of: datetime | None = None,
 ) -> NewsResponse:
     """Fetch and persist news headlines with provenance.
 
@@ -96,6 +101,11 @@ async def get_news(
     chain behaviour.  An explicitly named provider is used strictly — its
     failure is reported rather than silently substituted.
     """
+    try:
+        as_of = normalize_as_of(as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     requested = (provider or "auto").strip()
     if requested.casefold() == "auto":
         order: list[str] = list(_NEWS_CHAIN)
@@ -116,7 +126,12 @@ async def get_news(
             reasons.append(f"{instance.name}: not configured")
             continue
         try:
-            items = await fetch_and_store_news(provider_name=instance.name, symbol=symbol, limit=limit)
+            items = await fetch_and_store_news(
+                provider_name=instance.name,
+                symbol=symbol,
+                limit=limit,
+                **({"as_of": as_of} if as_of is not None else {}),
+            )
         except ProviderUnavailableError as exc:
             reasons.append(f"{instance.name}: {exc}")
             continue
@@ -180,6 +195,7 @@ async def get_calendar(
     limit: int = Query(20, ge=1, le=100, description="Maximum number of events"),
     provider: str = Query("auto", description="Calendar source: 'auto' merges the default + all sources, or name one explicitly"),
     response: Response = None,
+    as_of: datetime | None = None,
 ) -> CalendarResponse:
     """Fetch economic calendar events with a merged multi-source feed.
 
@@ -189,11 +205,17 @@ async def get_calendar(
     used strictly — its failure is reported instead of silently substituted.
     Provenance names the base source plus any contributors.
     """
+    try:
+        as_of = normalize_as_of(as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     requested = (provider or "auto").strip()
     merged: dict[tuple[str, str, str], dict] = {}
     reasons: list[str] = []
     answered: list[str] = []
     empty_source: Optional[str] = None
+    cutoff_filtered_source: Optional[str] = None
     fail_name, fail_version = requested, "unknown"
 
     if requested.casefold() == "auto":
@@ -212,13 +234,24 @@ async def get_calendar(
             reasons.append(f"{instance.name}: not configured")
             continue
         try:
-            events = await fetch_and_store_economic_events(provider_name=instance.name, limit=limit)
+            events = await fetch_and_store_economic_events(
+                provider_name=instance.name,
+                limit=limit,
+                **({"as_of": as_of} if as_of is not None else {}),
+            )
         except ProviderUnavailableError as exc:
             reasons.append(f"{instance.name}: {exc}")
             continue
         if events:
-            answered.append(instance.name)
-            for event in events:
+            admitted_events = [
+                event for event in events
+                if as_of is None or is_at_or_before(event.scheduled_at, as_of)
+            ]
+            if admitted_events:
+                answered.append(instance.name)
+            elif as_of is not None and cutoff_filtered_source is None:
+                cutoff_filtered_source = instance.name
+            for event in admitted_events:
                 key = (
                     event.title.strip().casefold(),
                     event.scheduled_at.isoformat(),
@@ -228,7 +261,7 @@ async def get_calendar(
                 merged.setdefault(key, event.model_dump(mode="json"))
         else:
             reasons.append(f"{instance.name}: no events returned")
-            if empty_source is None:
+            if empty_source is None and as_of is None:
                 empty_source = instance.name
 
     if merged:
@@ -240,6 +273,14 @@ async def get_calendar(
         return CalendarResponse(events=rows, provenance=provenance, count=len(rows), status="available")
 
     message = "; ".join(reasons) or "No calendar sources are configured"
+    if cutoff_filtered_source is not None:
+        return CalendarResponse(
+            events=[],
+            provenance=await get_calendar_provenance(cutoff_filtered_source),
+            count=0,
+            status="available",
+            message="No calendar events were scheduled at or before the requested as_of",
+        )
     if empty_source is not None:
         # A configured source answered but produced no rows — keep the
         # empty-success contract so callers can render an empty calendar.
@@ -286,8 +327,14 @@ async def get_quote(
     symbol: str,
     provider: str = Query("Finnhub", description="Data provider"),
     response: Response = None,
+    as_of: datetime | None = None,
 ) -> QuoteResponse:
     """Return a normalized quote without synthetic substitution."""
+    try:
+        as_of = normalize_as_of(as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     provider_instance = get_provider(provider)
     if provider_instance is None:
         message = f"Provider '{provider}' is not available"
@@ -312,7 +359,7 @@ async def get_quote(
     try:
         quote = await provider_instance.quote(symbol)
     except ProviderUnavailableError as exc:
-        message = str(exc)
+        message = "Quote provider unavailable"
         if response is not None:
             response.status_code = 503
         return QuoteResponse(
@@ -348,6 +395,23 @@ async def get_quote(
             "entitlement": "unknown",
         },
     )
+    if as_of is not None:
+        quote_time = payload.get("data_time") or (payload.get("provenance") or {}).get("data_time")
+        if not is_at_or_before(quote_time, as_of):
+            message = "Provider quote has no timestamp at or before the requested as_of"
+            if response is not None:
+                response.status_code = 503
+            return QuoteResponse(
+                instrument=symbol.upper(),
+                provenance=_unavailable_provenance(
+                    provider_instance.name,
+                    provider_instance.meta.get("version", "unknown"),
+                    "US equities quote",
+                    message,
+                ),
+                status="unavailable",
+                message=message,
+            )
     return QuoteResponse(**payload)
 
 

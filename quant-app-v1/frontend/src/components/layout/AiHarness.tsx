@@ -4,6 +4,7 @@ import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { Markdown } from "../../lib/markdown";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
+import { ModelPicker } from "./ModelPicker";
 
 /** OpenAI-compatible + foundation providers the chat can use. */
 interface LlmProvider {
@@ -26,6 +27,17 @@ export interface ChatMessage {
   content: string;
   /** Sections attached by the context feeder when the message was sent. */
   contextLabel?: string;
+}
+
+interface BacktestProposal {
+  provider: string;
+  model: string;
+  prompt: string;
+  symbol: string;
+  tf: "1d" | "1h" | "1wk";
+  bars: number;
+  capital: number;
+  max_llm_calls: number;
 }
 
 interface ChatSession {
@@ -70,10 +82,11 @@ const SESSIONS_KEY = "gateway_chat_sessions";
  */
 const SYSTEM_POLICY = [
   "You are Gateway's in-app trading assistant. Follow these rules:",
+  "6. Optional tools are enabled only when the user checks Tools. Use only public market context or propose a historical backtest. A backtest proposal is not an instruction to run; wait for the user's explicit confirmation. Never access portfolio/account/broker/secrets or submit orders.",
   "1. Answer ONLY what the user asked. Be concise and do not volunteer extra analysis, metrics, or tangents they did not request.",
   "2. If the request is ambiguous, overly specific, or missing a symbol/ticker, timeframe, or key detail, ask a short clarifying question before answering instead of guessing.",
   "3. Never access, reveal, or act on the user's funds (real or simulated: cash, equity, buying power, balances, positions) unless the user explicitly requests it in this conversation.",
-  "4. You can deep-link into app features when useful. Available in-app routes: Strategy Studio /app/strategies, Backtester /app/backtests, Agentic Lab /app/agentic-lab, AI Chat /app/chat, Trading /app/trading, Overview /app/overview, Calendar /app/calendar, News /app/news, Trade Journal /app/journal, Providers /app/settings. To help the user create a strategy, link them to [Strategy Studio](/app/strategies). Use markdown links like [Strategy Studio](/app/strategies).",
+  "4. You can deep-link into app features when useful. Available in-app routes: Strategy Studio /app/strategies, Agentic Lab /app/agentic-lab?tab=backtests, AI Chat /app/chat, Trading /app/trading, Overview /app/overview, Calendar /app/calendar, News /app/news, Trade Journal /app/journal, Providers /app/settings. To help the user create a strategy, link them to [Strategy Studio](/app/strategies). Use markdown links like [Strategy Studio](/app/strategies).",
   "5. Format output with GitHub-flavored Markdown: headings, bold, bullet/numbered lists, tables for comparisons, and fenced code blocks for code.",
 ].join("\n");
 
@@ -158,6 +171,11 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [toolsEnabled, setToolsEnabled] = useState(false);
+  const [backtestProposal, setBacktestProposal] = useState<BacktestProposal | null>(null);
+  const [proposalJob, setProposalJob] = useState<Record<string, any> | null>(null);
+  const [proposalBusy, setProposalBusy] = useState(false);
+  const [toolNotice, setToolNotice] = useState<string | null>(null);
 
   const [panel, setPanel] = useState<"none" | "context">("none");
   const [contextSymbol, setContextSymbol] = useState(selectedSymbol);
@@ -273,6 +291,9 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     setSessionId(null);
     setMessages([]);
     setChatError(null);
+    setBacktestProposal(null);
+    setProposalJob(null);
+    setToolNotice(null);
     setContext(null);
     setPanel("none");
   }, []);
@@ -282,6 +303,9 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
       setSessionId(session.id);
       setMessages(session.messages);
       setChatError(null);
+      setBacktestProposal(null);
+      setProposalJob(null);
+      setToolNotice(null);
       if (session.provider) setProviderId(session.provider);
       if (session.model) setModel(session.model);
     },
@@ -358,12 +382,13 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     const controller = new AbortController();
     abortRef.current = controller;
     let assembled = "";
+    let streamError: string | null = null;
 
     try {
       const response = await fetch(`${API_BASE}/llm/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ provider: providerId, model: model.trim(), messages: outbound }),
+        body: JSON.stringify({ provider: providerId, model: model.trim(), messages: outbound, enable_tools: toolsEnabled }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await readError(response, "Chat request failed"));
@@ -377,13 +402,13 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
       while (!finished) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
         const events = buffer.split("\n\n");
         buffer = events.pop() ?? "";
         for (const event of events) {
           const line = event.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
-          const payload = JSON.parse(line.slice(5).trim()) as { type: string; text?: string; message?: string };
+          const payload = JSON.parse(line.slice(5).trim()) as { type: string; text?: string; message?: string; proposal?: BacktestProposal; provider?: string; model?: string; prompt?: string; symbol?: string; tf?: BacktestProposal["tf"]; bars?: number; capital?: number; max_llm_calls?: number };
           if (payload.type === "delta" && payload.text) {
             assembled += payload.text;
             const snapshot = assembled;
@@ -395,19 +420,29 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
               }
               return next;
             });
+          } else if (payload.type === "market_context") {
+            setToolNotice(`Loaded public market context for ${payload.symbol ?? "the requested symbol"}.`);
+          } else if (payload.type === "backtest_proposal") {
+            const candidate = payload.proposal ?? payload;
+            if (typeof candidate.provider === "string" && typeof candidate.model === "string" && typeof candidate.prompt === "string" && candidate.prompt.length > 0 && candidate.prompt.length <= 2000 && typeof candidate.symbol === "string" && /^[A-Za-z0-9.^-]{1,12}$/.test(candidate.symbol) && ["1d", "1h", "1wk"].includes(candidate.tf ?? "1d") && Number.isInteger(candidate.bars) && candidate.bars! >= 40 && candidate.bars! <= 1000 && typeof candidate.capital === "number" && candidate.capital >= 100 && candidate.capital <= 10000000 && Number.isInteger(candidate.max_llm_calls) && candidate.max_llm_calls! >= 1 && candidate.max_llm_calls! <= 40 && candidate.provider === providerId && candidate.model === model) {
+              setBacktestProposal(candidate as BacktestProposal);
+              setProposalJob(null);
+            }
           } else if (payload.type === "error") {
-            throw new Error(payload.message || "Model error");
+            streamError = payload.message || "Model error";
+            finished = true;
           } else if (payload.type === "done") {
             finished = true;
           }
         }
       }
-      if (!assembled) assembled = "(empty reply)";
+      if (!assembled && !streamError) assembled = "(empty reply)";
       const finalMessages: ChatMessage[] = nextMessages.map((message, index) =>
         index === nextMessages.length - 1 ? { ...message, content: assembled } : message,
       );
       setMessages(finalMessages);
       persistSession(activeId, finalMessages);
+      if (streamError) setChatError(streamError);
     } catch (error) {
       if ((error as Error).name !== "AbortError") {
         setChatError(error instanceof Error ? error.message : "Chat failed");
@@ -417,7 +452,27 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [input, streaming, isAuthenticated, providerId, model, messages, context, sessionId, persistSession]);
+  }, [input, streaming, isAuthenticated, providerId, model, messages, context, sessionId, persistSession, toolsEnabled]);
+
+  const submitBacktestProposal = useCallback(async () => {
+    if (!backtestProposal) return;
+    if (!isAuthenticated) { openAuth("login"); return; }
+    setProposalBusy(true); setChatError(null); setProposalJob(null);
+    try {
+      const response = await fetch(`${API_BASE}/agentic-lab/backtest`, { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ kind: "llm", provider: backtestProposal.provider, model: backtestProposal.model, prompt: backtestProposal.prompt, symbol: backtestProposal.symbol, tf: backtestProposal.tf, bars: backtestProposal.bars, capital: backtestProposal.capital, max_llm_calls: backtestProposal.max_llm_calls, risk: { max_position_pct: 100, max_drawdown_pct: 0, allow_short: true } }) });
+      if (!response.ok) throw new Error(await readError(response, "Could not start proposed backtest"));
+      const { job_id } = await response.json() as { job_id: string };
+      const poll = async () => {
+        const result = await fetch(`${API_BASE}/agentic-lab/jobs/${job_id}`, { headers: authHeaders() });
+        if (!result.ok) throw new Error(await readError(result, "Could not poll proposed backtest"));
+        const state = await result.json() as Record<string, any>;
+        setProposalJob(state);
+        if (state.status === "queued" || state.status === "running") window.setTimeout(() => { void poll().catch((error: unknown) => { setChatError(error instanceof Error ? error.message : "Backtest polling failed"); setProposalBusy(false); }); }, 1000);
+        else setProposalBusy(false);
+      };
+      await poll();
+    } catch (error) { setChatError(error instanceof Error ? error.message : "Could not start proposed backtest"); setProposalBusy(false); }
+  }, [backtestProposal, isAuthenticated, openAuth]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -497,7 +552,6 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
     const foundation = providers.filter((p) => p.group === "foundation");
     return { compatible, foundation };
   }, [providers]);
-
   const composer = (
     <div className={`chat-composer-card ${panel === "context" ? "raised" : ""}`}>
       <textarea
@@ -604,33 +658,27 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
                         className="model-picker-item-main"
                         onClick={() => {
                           setProviderId(provider.id);
-                          setModel(provider.default_model ?? provider.models[0] ?? "");
+                          setBacktestProposal(null);
+                          setProposalJob(null);
+                          setModel("");
                         }}
                       >
                         <span className={`status-dot ${provider.configured ? "on" : "off"}`} aria-hidden="true" />
                         <span>{provider.label}</span>
                         {!provider.configured && <span className="model-picker-note">not configured</span>}
                       </button>
-                      {providerId === provider.id && provider.models.length > 0 && (
-                        <select
-                          className="model-picker-select"
-                          value={model || provider.default_model || provider.models[0]}
-                          onChange={(event) => setModel(event.target.value)}
-                        >
-                          {provider.models.map((entry) => (
-                            <option key={entry} value={entry}>
-                              {entry}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      {providerId === provider.id && provider.models.length === 0 && (
-                        <input
-                          className="model-picker-input"
-                          type="text"
+                      {providerId === provider.id && (
+                        <ModelPicker
+                          providerId={provider.id}
+                          configured={provider.configured}
                           value={model}
-                          placeholder="model id"
-                          onChange={(event) => setModel(event.target.value)}
+                          onChange={(nextModel) => {
+                            if (nextModel !== model) {
+                              setBacktestProposal(null);
+                              setProposalJob(null);
+                            }
+                            setModel(nextModel);
+                          }}
                         />
                       )}
                     </div>
@@ -646,6 +694,7 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
           )}
         </div>
 
+        <label className="chat-tools-toggle"><input type="checkbox" checked={toolsEnabled} onChange={(event) => setToolsEnabled(event.target.checked)} aria-label="Allow public market context and backtest proposal tools"/><span>Tools</span><small>market data · proposals</small></label>
         <span className="chat-composer-hint">{context && context.ok_count > 0 ? `📎 ${context.symbol} context on` : ""}</span>
 
         {/* context wheel: hover/click → token usage, max context, compact */}
@@ -794,6 +843,7 @@ export function AiHarness({ selectedSymbol }: AiHarnessProps) {
           )}
         </div>
 
+        {toolNotice && <p className="chat-tool-notice" role="status">{toolNotice}</p>}              {backtestProposal && <section className="chat-proposal-card" aria-label="Backtest proposal"><div><strong>Historical backtest proposal · awaiting confirmation</strong><p>{backtestProposal.prompt}</p><small>{backtestProposal.symbol} · {backtestProposal.tf} · {backtestProposal.bars} bars · {backtestProposal.model} · ${backtestProposal.capital.toLocaleString()} · up to {backtestProposal.max_llm_calls} model calls</small></div><div className="action-buttons"><button type="button" className="btn-primary" disabled={proposalBusy || !!proposalJob} onClick={() => void submitBacktestProposal()}>{proposalBusy ? "Starting…" : "Confirm backtest"}</button><button type="button" className="btn-secondary" disabled={proposalBusy} onClick={() => { setBacktestProposal(null); setProposalJob(null); }}>Cancel</button><a href="/app/agentic-lab?tab=backtests">Backtests</a></div>{proposalJob && <p role="status">{proposalJob.message || proposalJob.status}</p>}</section>}
         {chatError && (
           <div className="settings-error chat-error" role="alert">
             <span>{chatError}</span>

@@ -25,17 +25,24 @@ def score_text_sentiment(cleaned_text: str) -> float:
     return max(-1.0, min(1.0, raw * 3))
 
 
-def process_news_sentiment(headline: str, timestamp: datetime) -> float:
+def process_news_sentiment(
+    headline: str,
+    timestamp: datetime,
+    *,
+    as_of: datetime | None = None,
+) -> float:
     cleaned_text = clean_headline(headline)
     raw_score = score_text_sentiment(cleaned_text)
 
     now = datetime.now(timezone.utc)
     ts = timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc)
-    hours_elapsed = max(0.0, (now - ts).total_seconds() / 3600)
+    reference_time = now if as_of is None else as_of.astimezone(timezone.utc)
+    hours_elapsed = max(0.0, (reference_time - ts).total_seconds() / 3600)
     decay_factor = math.exp(-0.1 * hours_elapsed)
     return raw_score * decay_factor
 
 
-def get_latest_score_for_ticker(ticker: str) -> float:
+def get_latest_score_for_ticker(ticker: str, *, as_of: datetime | None = None) -> float:
     headline = f"{ticker} posts strong growth outlook"
-    return process_news_sentiment(headline, datetime.now(timezone.utc))
+    timestamp = as_of.astimezone(timezone.utc) if as_of is not None else datetime.now(timezone.utc)
+    return process_news_sentiment(headline, timestamp, as_of=as_of)

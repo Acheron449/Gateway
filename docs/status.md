@@ -1,25 +1,43 @@
 # Gateway — Completion Status
 
-> Last updated: 2026-10-04. Companion to the phase plans (`phase-N-plan.md`):
+> Last updated: 2026-10-18. Companion to the phase plans (`phase-N-plan.md`):
 > those documents describe *intent and gates*; this file records what has
-> actually been **built and verified** versus what remains.
+> actually been **built and verified** versus what remains. This note reconciles the 2026-10-18 paper-safety increment; checks below are scoped and do not imply Phase 4/5 readiness.
 
 ## Completed (built and verified)
 
-### Core platform (Phases 0–4)
+### Core platform (Phases 0–4) — mixed completion; Phase 4 evidence gate remains open
 - Provider layer with encrypted API-key store, registry, and canonical
   `MarketDataProvider` contract (`app/providers/`); Yahoo Finance via
   `yfinance` is the keyless default.
-- Market data: `/history/{sym}` with a selectable provider chain
-  (Yahoo → TradingView → AllTick → Alpaca → OpenBB), candle resampling,
-  provenance on every row; batch `/quotes` for the ticker strip (45s merge
-  cache).
+- Market data: `/history/{sym}` with selectable historical sources (Yahoo
+  Finance, TradingView, AllTick, Alpaca, Finnhub, CCXT, and LSE), Yahoo as
+  the default, and CCXT as a crypto backup; candle resampling and provenance
+  on every row. OpenBB is not a historical source. Batch `/quotes` powers
+  the ticker strip (45s merge cache).
 - News/calendar/quote endpoints with **multi-source fallback chains**
   (`provider=auto`), provenance, and persistence (`news_service`,
   `calendar_service`).
 - Auth (JWT), watchlists, layouts, preferences, symbol search, analysis,
-  risk dashboard, divergence scorecards, strategy studio, paper trading
-  (portfolio/orders/fills/kill-switch), journal.
+  risk dashboard, divergence scorecards, strategy specs/version storage,
+  simulated paper portfolio/orders/fills/kill-switch, journal. This does not
+  establish Phase 4 broker reconciliation: broker-origin fill ingestion and
+  independent comparator are not implemented; ≥1,000 settled real fills /
+  <0.1% discrepancy remains unverified.
+- **2026-10-18 paper safety:** both direct broker order-placement paths fail
+  closed pending durable intent/recovery; execution requests validate the
+  exact paper trading origin; `/live` account/mutation router is unmounted;
+  indirect AI live submission is disabled. UI calls the portfolio order path
+  simulated paper and labels live execution unavailable. Evidence: focused
+  backend suites (45 passed in the recorded checkpoint), frontend build and
+  two focused Playwright tests (see
+  `.superpowers/sdd/2026-10-18-paper-safety-roadmap/progress.md`). No broker
+  requests/orders were sent.
+- **StrategySpec content hash/version safety:** canonical content hash is
+  stored separately in nullable `strategy_versions.content_hash`, with
+  `BEGIN IMMEDIATE` version allocation; focused hash + regression tests passed
+  (13 in the recorded checkpoint). This is not full Phase 3 backtest/OOS
+  completion.
 - Frontend shell: sidebar views, top-bar ticker marquee, right inspector,
   charts, scanner, markets, calendar.
 
@@ -33,17 +51,30 @@
 - **2026-10-04:** decorative "gateway" watermark removed from the empty-state
   hero; the two guidance lines are preserved.
 
-### Agentic Trading Lab — *completed*
+### Agentic Trading Lab — *core features completed; consolidation verified 2026-10-12*
 - LLM/agent dashboard, backtest jobs with model decisions, baselines,
   metrics in plain language, runs persistence (≤50), research documents
-  (typed/uploaded/model-generated), trading log, performance cards.
+  (typed/uploaded/model-generated), and owner-filtered trading log.
+- **Unified Agentic Lab:** the five tabs are LLMs, Research, Trading Log,
+  Backtests, and Cointegration Pairs. Standalone Backtester navigation and
+  duplicate pair-launch locations are removed; legacy `/app/backtests`
+  links redirect to the Backtests tab. Backtests owns run history/detail,
+  including pair folds/fills and multi-strategy Monte Carlo comparison.
+- **Monte Carlo:** seeded historical-return bootstrap compares up to eight
+  eligible single-strategy runs with deterministic strategy colors and an
+  explicit non-forecast/overfitting disclaimer. Pair and legacy runs without
+  full-resolution return data are excluded, not approximated.
+- **Iterative research:** authenticated, owner-scoped, cooperative-cancel
+  jobs use bounded model-call and iteration caps. Public historical prices,
+  the caller's research, and outputs from that job are the only research
+  context; the loop cannot read portfolio/account details or place orders.
+- **Tauric Research TradingAgents** dedicated API/service/UI and remote
+  Docker installation removed. Shared LLM providers and Agentic Lab remain.
 - **RiskGuard port** from `kweinmeister/agentic-trading`: max-position cap,
   drawdown circuit breaker, short filter; every decision annotated
   approved/blocked/halted; `Risk guard` stat row, log column and badges.
 - **Reference results chart**: price + SMA 10/30 with open/close/risk
   markers (`build_chart` → `RunChart`).
-- **TradingAgents (Tauric Research)** integration: analyst selection,
-  progress via job polling, report sections; one run at a time.
 
 ### Overview redesign — *completed (2026-10-04)*
 - Reference-style dashboard (`OverviewDashboard.tsx`): market-overview
@@ -82,7 +113,29 @@
   (public SEC/EDGAR feed), 10-minute TTL cache, newest-first merge; degrades
   to an empty feed on yfinance pins that predate the API.
 
-### Verification status (2026-10-04)
+### Verification status (2026-10-12 consolidation)
+- Focused backend suite: **61 passed** across Agentic Lab, job store, deploy
+  hardening, auth preferences, and journal/vault.
+- Frontend `npm run build` (TypeScript + Vite): passed; Vite emitted its
+  existing >500 kB chunk-size advisory.
+- Full backend `pytest -q` did **not** pass collection (65 collection errors).
+  Failures include a local SciPy `_propack._spropack` loader error for pairs,
+  Pydantic `NameError: Any` while collecting the strategy regression test,
+  and missing/incompatible optional dependencies while pytest discovers vendored
+  Kronos/TradingAgents tests. A retry excluding the pairs test still stopped
+  on the strategy regression collection error. These are reported as blocked
+  checks, not passing tests; the focused suite above ran independently.
+- Browser smoke test with local frontend/backend: all five Agentic Lab tabs
+  render; Backtests displays run history and Monte Carlo controls/disclaimer;
+  Cointegration Pairs contains the launcher; `/app/backtests` redirects to
+  `/app/agentic-lab?tab=backtests`. `/health`, `/openapi.json`, provider,
+  research, agent and run-list APIs returned 200; Monte Carlo/research routes
+  are registered and the removed `/agents/trading-agents` route returns 404.
+  Some external quote/calendar provider requests returned 503 during the
+  smoke test; no real provider-backed LLM job was submitted.
+- Docker build not run (Docker CLI unavailable).
+
+### Previous verification status (2026-10-04)
 - `tsc --noEmit`: 0 errors.
 - Backend `py_compile`: clean; app imports and serves all new routes.
 - `pytest`: 11 new tests in `tests/test_data_sources.py` (news chain,
@@ -100,9 +153,9 @@
 ## Remaining / not done
 
 ### This iteration
+- **Model discovery/free-only filtering, yfinance calendar source, Financial Modeling Prep provider removal, and scanner-to-command-bar migration** remain unimplemented follow-up work; these systems were inspected but not changed in the consolidation increment.
 - **Docker build not run here** (no docker CLI): run `docker compose build`
-  locally — it installs TradingAgents from git and picks up the new
-  `ccxt` requirement.
+  locally to verify the backend image and current pinned dependencies.
 - **Real LLM API keys untested**: model behavior verified only against the
   local fake OpenAI-compatible server (`127.0.0.1:9099`); wire a real key
   for a live smoke test.
@@ -127,9 +180,23 @@
   therefore uses the `YfData` search endpoint. If yfinance fixes
   `Ticker.news`, the provider can switch back.
 
-### Project-level gates (see phase plans; intentionally untouched)
-- **Phase 5** live broker: gated on reconciliation ≥1000 trades <0.1%, pen
-  test, legal sign-off, written authorization; `ENABLE_LIVE_ALPACA=false`.
+### Project-level gates (see phase plans)
+- **Phase 4 reconciliation / Phase 5 live execution:** insufficient evidence.
+  No broker-origin fill ledger or reviewed comparator; ≥1,000 settled real
+  paper fills and <0.1% discrepancy are unproven. Durable order intent and
+  crash recovery are not implemented. Both broker order-placement paths
+  fail closed, `/live` routes are not mounted, and no live trading is enabled.
+  Security/legal review, account ownership and written authorization remain
+  required. No statement in this status report authorizes broker calls/orders.
 - **Phase 8** external services (Supabase/Stripe/Vercel/Resend/Auth0/
   Cloudflare/Sentry): plan-only, all `ENABLE_*` false.
-- **Phase 9** AI agent interface / MCP: planned, `ENABLE_AI_AGENT` false.
+- **Phase 9** AI agent interface / MCP: planned, `ENABLE_AI_AGENT` false; historical build-transition wording is not current authorization.
+
+### Evidence record (2026-10-18 paper-safety increment)
+- Focused tests from `quant-app-v1/backend`: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_broker_service_safety.py tests/test_broker_paper_safety.py tests/test_phase0_safety.py tests/test_phase4_paper_portfolio.py` → 45 passed (recorded in the plan ledger).
+- Strategy hash tests: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_strategy_content_hash.py app/tests/test_strategy_spec_regression.py` → 13 passed (recorded in the plan ledger).
+- Current resumed run: `PYTHONPATH=. ./.venv/bin/pytest -q tests/test_broker_paper_safety.py tests/test_broker_service_safety.py tests/test_strategy_content_hash.py` → 37 passed.
+- Frontend rerun after reconciliation: `npm run build` passed (Vite emitted the existing >500 kB chunk advisory); `npm run test:e2e -- --grep 'paper desk discloses simulator mode|live execution view'` → 2 passed.
+- Changed Python modules compiled successfully with `PYTHONPATH=. ./.venv/bin/python -m py_compile` (working directory `quant-app-v1/backend`); the exact argument list is recorded in `.superpowers/sdd/2026-10-18-paper-safety-roadmap/progress.md`.
+- Broader backend selection hit an unrelated fixture incompatibility in `test_phase0_catalogue.py::test_stocks_metadata_includes_catalogue_fields` (`fetch_ohlcv` mock rejects the new `as_of=` kwarg). Full `PYTHONPATH=. ./.venv/bin/pytest -q` was blocked during collection with 64 errors: local SciPy `_spropack` loader failure, vendored optional dependencies missing/incompatible (e.g. matplotlib, langchain_core/langgraph/typer/stockstats) and vendored yfinance `config` API mismatch. These are blockers, not passes.
+- Read-only secret-pattern scan across changed source/docs: 0 matching files (matching values suppressed). `git diff --check` passed at final review. The root [ROADMAP.md](../ROADMAP.md) is ignored by `.gitignore` and untracked in HEAD; it was locally reconciled but is not part of the normal diff.

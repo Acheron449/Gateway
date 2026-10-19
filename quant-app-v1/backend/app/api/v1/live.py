@@ -58,25 +58,17 @@ from app.services.production import (
     validate_production_readiness,
 )
 
+# Broker account and order endpoints remain deliberately unmounted until the
+# app has authenticated account ownership and durable order recovery.
 router = APIRouter(prefix="/live", tags=["live"])
+BROKER_ROUTES_ENABLED = False
 
 _provider: Optional[AlpacaLiveProvider] = None
 _reconciliation_job: Optional[ReconciliationJob] = None
 
 
 def get_provider() -> AlpacaLiveProvider:
-    global _provider
-    if _provider is None:
-        api_key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY")
-        api_secret = os.getenv("ALPACA_SECRET") or os.getenv("ALPACA_API_SECRET")
-        base_url = os.getenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
-        paper = os.getenv("ALPACA_PAPER", "false").lower() == "true"
-
-        if not api_key or not api_secret:
-            raise HTTPException(status_code=503, detail="Alpaca credentials not configured")
-
-        _provider = AlpacaLiveProvider(api_key, api_secret, base_url, paper)
-    return _provider
+    raise HTTPException(status_code=503, detail="Broker execution unavailable")
 
 
 def get_reconciliation_job(local_get_positions, local_get_orders) -> ReconciliationJob:
@@ -167,7 +159,7 @@ class ReconciliationResponse(BaseModel):
     alerts: list[dict]
 
 
-@router.get("/account", response_model=LiveAccountResponse)
+@router.get("/account", response_model=LiveAccountResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_account() -> LiveAccountResponse:
     provider = get_provider()
     account = await provider.get_account()
@@ -193,7 +185,7 @@ async def get_live_account() -> LiveAccountResponse:
     )
 
 
-@router.get("/positions", response_model=list[LivePositionResponse])
+@router.get("/positions", response_model=list[LivePositionResponse], include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_positions() -> list[LivePositionResponse]:
     provider = get_provider()
     positions = await provider.get_positions()
@@ -218,7 +210,7 @@ async def get_live_positions() -> list[LivePositionResponse]:
     ]
 
 
-@router.get("/positions/{symbol}", response_model=LivePositionResponse)
+@router.get("/positions/{symbol}", response_model=LivePositionResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_position(symbol: str) -> LivePositionResponse:
     provider = get_provider()
     position = await provider.get_position(symbol.upper())
@@ -240,7 +232,7 @@ async def get_live_position(symbol: str) -> LivePositionResponse:
     )
 
 
-@router.post("/orders", response_model=LiveOrderResponse)
+@router.post("/orders", response_model=LiveOrderResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def place_live_order(request: LiveOrderRequest) -> LiveOrderResponse:
     provider = get_provider()
 
@@ -282,7 +274,7 @@ async def place_live_order(request: LiveOrderRequest) -> LiveOrderResponse:
     )
 
 
-@router.get("/orders", response_model=list[LiveOrderResponse])
+@router.get("/orders", response_model=list[LiveOrderResponse], include_in_schema=BROKER_ROUTES_ENABLED)
 async def list_live_orders(
     status: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
@@ -317,7 +309,7 @@ async def list_live_orders(
     ]
 
 
-@router.get("/orders/{order_id}", response_model=LiveOrderResponse)
+@router.get("/orders/{order_id}", response_model=LiveOrderResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_order(order_id: str) -> LiveOrderResponse:
     provider = get_provider()
     order = await provider.get_order(order_id)
@@ -339,7 +331,7 @@ async def get_live_order(order_id: str) -> LiveOrderResponse:
     )
 
 
-@router.delete("/orders/{order_id}")
+@router.delete("/orders/{order_id}", include_in_schema=BROKER_ROUTES_ENABLED)
 async def cancel_live_order(order_id: str) -> dict:
     provider = get_provider()
     success = await provider.cancel_order(order_id)
@@ -348,14 +340,14 @@ async def cancel_live_order(order_id: str) -> dict:
     return {"status": "canceled", "order_id": order_id}
 
 
-@router.delete("/orders")
+@router.delete("/orders", include_in_schema=BROKER_ROUTES_ENABLED)
 async def cancel_all_live_orders() -> dict:
     provider = get_provider()
     canceled = await provider.cancel_all_orders()
     return {"canceled": canceled, "count": len(canceled)}
 
 
-@router.get("/activities")
+@router.get("/activities", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_activities(
     activity_type: str = "FILL",
     after: Optional[str] = None,
@@ -371,7 +363,7 @@ async def get_live_activities(
     return await provider.get_activities(activity_type, after_dt, until_dt, direction, page_size)
 
 
-@router.get("/idempotency/{key}")
+@router.get("/idempotency/{key}", include_in_schema=BROKER_ROUTES_ENABLED)
 async def check_idempotency(key: str) -> dict:
     entry = _idempotency_store.get(key)
     if not entry:
@@ -401,7 +393,7 @@ def _get_paper_orders():
     return portfolio.get("open_orders", [])
 
 
-@router.post("/reconcile/start")
+@router.post("/reconcile/start", include_in_schema=BROKER_ROUTES_ENABLED)
 async def start_reconciliation(interval_seconds: int = Query(300, ge=60, le=3600)) -> dict:
     global _reconciliation_job
     job = get_reconciliation_job(_get_paper_positions, _get_paper_orders)
@@ -409,7 +401,7 @@ async def start_reconciliation(interval_seconds: int = Query(300, ge=60, le=3600
     return {"status": "started", "interval_seconds": interval_seconds}
 
 
-@router.post("/reconcile/stop")
+@router.post("/reconcile/stop", include_in_schema=BROKER_ROUTES_ENABLED)
 async def stop_reconciliation() -> dict:
     global _reconciliation_job
     if _reconciliation_job:
@@ -417,21 +409,21 @@ async def stop_reconciliation() -> dict:
     return {"status": "stopped"}
 
 
-@router.post("/reconcile/run", response_model=ReconciliationResponse)
+@router.post("/reconcile/run", response_model=ReconciliationResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def run_reconciliation_once() -> ReconciliationResponse:
     job = get_reconciliation_job(_get_paper_positions, _get_paper_orders)
     result = await job.run_once()
     return ReconciliationResponse(**result)
 
 
-@router.get("/reconcile/alerts", response_model=list[dict])
+@router.get("/reconcile/alerts", response_model=list[dict], include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_reconciliation_alerts(since: Optional[str] = None) -> list[dict]:
     job = get_reconciliation_job(_get_paper_positions, _get_paper_orders)
     since_dt = datetime.fromisoformat(since.replace('Z', '+00:00')) if since else None
     return job.get_alerts(since_dt)
 
 
-@router.get("/health")
+@router.get("/health", include_in_schema=BROKER_ROUTES_ENABLED)
 async def live_health() -> dict:
     try:
         provider = get_provider()
@@ -483,7 +475,7 @@ class KillSwitchRequest(BaseModel):
     reason: str
 
 
-@router.get("/gates/status", response_model=ActivationStatusResponse)
+@router.get("/gates/status", response_model=ActivationStatusResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_activation_status() -> ActivationStatusResponse:
     gates = get_live_gates()
     user_id = "default_user"
@@ -491,7 +483,7 @@ async def get_activation_status() -> ActivationStatusResponse:
     return ActivationStatusResponse(**status)
 
 
-@router.post("/gates/check", response_model=list[GateResultResponse])
+@router.post("/gates/check", response_model=list[GateResultResponse], include_in_schema=BROKER_ROUTES_ENABLED)
 async def check_all_gates() -> list[GateResultResponse]:
     gates = get_live_gates()
     user_id = "default_user"
@@ -508,7 +500,7 @@ async def check_all_gates() -> list[GateResultResponse]:
     ]
 
 
-@router.get("/agreements", response_model=list[AgreementResponse])
+@router.get("/agreements", response_model=list[AgreementResponse], include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_user_agreements() -> list[AgreementResponse]:
     gate = AgreementGate()
     user_id = "default_user"
@@ -528,7 +520,7 @@ async def get_user_agreements() -> list[AgreementResponse]:
     ]
 
 
-@router.get("/agreements/{agreement_type}/text")
+@router.get("/agreements/{agreement_type}/text", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_agreement_text(agreement_type: AgreementType, version: str = "1.0") -> dict:
     gate = AgreementGate()
     text = gate.get_agreement_text(agreement_type, version)
@@ -541,7 +533,7 @@ async def get_agreement_text(agreement_type: AgreementType, version: str = "1.0"
     }
 
 
-@router.post("/agreements/sign", response_model=AgreementResponse)
+@router.post("/agreements/sign", response_model=AgreementResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def sign_agreement(request: AgreementSignRequest) -> AgreementResponse:
     gate = AgreementGate()
     user_id = "default_user"
@@ -575,7 +567,7 @@ class LimitsRequest(BaseModel):
     trading_hours_only: Optional[bool] = None
 
 
-@router.get("/limits", response_model=dict)
+@router.get("/limits", response_model=dict, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_account_limits() -> dict:
     limits = AccountLimits()
     return {
@@ -590,7 +582,7 @@ async def get_account_limits() -> dict:
     }
 
 
-@router.put("/limits", response_model=dict)
+@router.put("/limits", response_model=dict, include_in_schema=BROKER_ROUTES_ENABLED)
 async def update_account_limits(request: LimitsRequest) -> dict:
     limits = AccountLimits(
         max_position_size=request.max_position_size or 10000.0,
@@ -614,25 +606,25 @@ async def update_account_limits(request: LimitsRequest) -> dict:
     }
 
 
-@router.post("/kill-switch/activate")
+@router.post("/kill-switch/activate", include_in_schema=BROKER_ROUTES_ENABLED)
 async def activate_kill_switch(request: KillSwitchRequest) -> dict:
     gates = get_live_gates()
     return gates.kill_switch.activate(request.reason, "user")
 
 
-@router.post("/kill-switch/deactivate")
+@router.post("/kill-switch/deactivate", include_in_schema=BROKER_ROUTES_ENABLED)
 async def deactivate_kill_switch() -> dict:
     gates = get_live_gates()
     return gates.kill_switch.deactivate("user")
 
 
-@router.get("/kill-switch/status")
+@router.get("/kill-switch/status", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_kill_switch_status() -> dict:
     gates = get_live_gates()
     return gates.kill_switch.get_status()
 
 
-@router.get("/monitoring", response_model=dict)
+@router.get("/monitoring", response_model=dict, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_live_monitoring() -> dict:
     try:
         provider = get_provider()
@@ -709,7 +701,7 @@ class HashChainVerifyResponse(BaseModel):
     errors: list[dict]
 
 
-@router.post("/audit/events", response_model=list[AuditEventResponse])
+@router.post("/audit/events", response_model=list[AuditEventResponse], include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_audit_events(request: ReplayRequest) -> list[AuditEventResponse]:
     audit_log = get_audit_log()
 
@@ -753,7 +745,7 @@ async def get_audit_events(request: ReplayRequest) -> list[AuditEventResponse]:
     ]
 
 
-@router.post("/audit/replay", response_model=ReplayResponse)
+@router.post("/audit/replay", response_model=ReplayResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def replay_audit_log(request: ReplayRequest) -> ReplayResponse:
     replay_engine = get_replay_engine()
 
@@ -782,13 +774,13 @@ async def replay_audit_log(request: ReplayRequest) -> ReplayResponse:
     )
 
 
-@router.get("/audit/replay/order/{correlation_id}")
+@router.get("/audit/replay/order/{correlation_id}", include_in_schema=BROKER_ROUTES_ENABLED)
 async def replay_order_lifecycle(correlation_id: str) -> dict:
     replay_engine = get_replay_engine()
     return replay_engine.replay_order_lifecycle(correlation_id)
 
 
-@router.get("/audit/verify", response_model=HashChainVerifyResponse)
+@router.get("/audit/verify", response_model=HashChainVerifyResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def verify_hash_chain(
     start_sequence: int = Query(1, ge=1),
     end_sequence: Optional[int] = Query(None, ge=1),
@@ -798,7 +790,7 @@ async def verify_hash_chain(
     return HashChainVerifyResponse(valid=valid, errors=errors)
 
 
-@router.get("/audit/latest-hash")
+@router.get("/audit/latest-hash", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_latest_hash() -> dict:
     audit_log = get_audit_log()
     hash_val = audit_log.get_latest_hash()
@@ -821,7 +813,7 @@ class ValidationResponse(BaseModel):
     timestamp: str
 
 
-@router.get("/production/config", response_model=ProductionConfigResponse)
+@router.get("/production/config", response_model=ProductionConfigResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_production_config_endpoint() -> ProductionConfigResponse:
     config = get_production_config()
     return ProductionConfigResponse(
@@ -873,48 +865,48 @@ async def get_production_config_endpoint() -> ProductionConfigResponse:
     )
 
 
-@router.get("/production/validate", response_model=ValidationResponse)
+@router.get("/production/validate", response_model=ValidationResponse, include_in_schema=BROKER_ROUTES_ENABLED)
 async def validate_production() -> ValidationResponse:
     result = validate_production_readiness()
     return ValidationResponse(**result)
 
 
-@router.get("/production/prometheus-rules")
+@router.get("/production/prometheus-rules", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_prometheus_rules() -> dict:
     return {"rules_yaml": generate_prometheus_rules()}
 
 
-@router.get("/production/grafana-dashboard")
+@router.get("/production/grafana-dashboard", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_grafana_dashboard() -> dict:
     return generate_grafana_dashboard()
 
 
-@router.get("/production/docker-compose")
+@router.get("/production/docker-compose", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_docker_compose() -> dict:
     return {"docker_compose": generate_docker_compose_monitoring()}
 
 
-@router.get("/production/prometheus-config")
+@router.get("/production/prometheus-config", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_prometheus_config() -> dict:
     return {"prometheus_yml": generate_prometheus_config()}
 
 
-@router.get("/production/alertmanager-config")
+@router.get("/production/alertmanager-config", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_alertmanager_config() -> dict:
     return {"alertmanager_yml": generate_alertmanager_config()}
 
 
-@router.get("/production/runbooks")
+@router.get("/production/runbooks", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_runbooks() -> dict:
     return generate_runbooks()
 
 
-@router.get("/production/env-template")
+@router.get("/production/env-template", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_env_template() -> dict:
     return {"env_template": generate_env_template()}
 
 
-@router.get("/production/alert-rules")
+@router.get("/production/alert-rules", include_in_schema=BROKER_ROUTES_ENABLED)
 async def get_alert_rules() -> list[dict]:
     return [
         {

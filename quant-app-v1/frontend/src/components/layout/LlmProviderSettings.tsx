@@ -3,6 +3,7 @@ import { API_BASE } from "../../lib/constants";
 import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
+import { ModelPicker } from "./ModelPicker";
 
 export interface LlmProvider {
   id: string;
@@ -60,7 +61,6 @@ function LlmProviderCard({
   setState,
   onSave,
   onTest,
-  onFetchModels,
   onDeleteKey,
   isAuthenticated,
   onSignIn,
@@ -72,7 +72,6 @@ function LlmProviderCard({
   setState: (next: CardState) => void;
   onSave: () => void;
   onTest: () => void;
-  onFetchModels: () => void;
   onDeleteKey: () => void;
   isAuthenticated: boolean;
   onSignIn: () => void;
@@ -130,36 +129,17 @@ function LlmProviderCard({
           </div>
 
           <div className="llm-models">
-            <div className="llm-field-row">
-              <label className="llm-field">
-                <span>Default model</span>
-                <input
-                  type="text"
-                  value={state.defaultModel}
-                  onChange={(event) => patch({ defaultModel: event.target.value })}
-                  placeholder="model id used by chat & lab"
-                  spellCheck={false}
-                />
-              </label>
-              <button type="button" className="btn-secondary" onClick={onFetchModels} disabled={state.loading || !provider.configured}>
-                Fetch models
-              </button>
+            <div className="llm-field">
+              <span>Default model</span>
+              <ModelPicker
+                providerId={provider.id}
+                configured={provider.configured}
+                value={state.defaultModel}
+                onChange={(defaultModel) => patch({ defaultModel })}
+                className="llm-default-model-picker"
+              />
             </div>
-            {provider.models.length > 0 && (
-              <div className="llm-model-chips">
-                {provider.models.slice(0, 30).map((entry) => (
-                  <button
-                    key={entry}
-                    type="button"
-                    className={`context-chip ${state.defaultModel === entry ? "on" : ""}`}
-                    onClick={() => patch({ defaultModel: entry })}
-                    title="Click to make this the default model"
-                  >
-                    {entry}
-                  </button>
-                ))}
-              </div>
-            )}
+            <p className="llm-hint">Choose the default from the provider catalogue. Free-only excludes models without verified free metadata.</p>
           </div>
 
           <div className="action-buttons">
@@ -301,20 +281,6 @@ export function LlmProviderSettings() {
       return { ...state, message: { ok: payload.success === true, text: payload.message || "Test finished" } };
     });
 
-  const fetchModels = (id: string) =>
-    mutate(id, async (state) => {
-      const response = await fetch(`${API_BASE}/llm/providers/${encodeURIComponent(id)}/models`, {
-        headers: authHeaders(),
-      });
-      if (!response.ok) throw new Error(await readError(response, "Model list failed"));
-      const payload = (await response.json()) as { models: string[] };
-      return {
-        ...state,
-        defaultModel: state.defaultModel || payload.models[0] || "",
-        message: { ok: true, text: `Found ${payload.models.length} models.` },
-      };
-    });
-
   const deleteKey = async (id: string) => {
     if (!window.confirm("Delete the stored API key for this provider?")) return;
     await mutate(id, async (state) => {
@@ -364,7 +330,6 @@ export function LlmProviderSettings() {
                 setState={(next) => setOpen((current) => ({ ...current, [provider.id]: next }))}
                 onSave={() => save(provider.id)}
                 onTest={() => test(provider.id)}
-                onFetchModels={() => fetchModels(provider.id)}
                 onDeleteKey={() => void deleteKey(provider.id)}
                 isAuthenticated={isAuthenticated}
                 onSignIn={() => openAuth("login")}
@@ -399,7 +364,6 @@ export function LlmProviderSettings() {
                 setState={(next) => setOpen((current) => ({ ...current, [provider.id]: next }))}
                 onSave={() => save(provider.id)}
                 onTest={() => test(provider.id)}
-                onFetchModels={() => fetchModels(provider.id)}
                 onDeleteKey={() => void deleteKey(provider.id)}
                 isAuthenticated={isAuthenticated}
                 onSignIn={() => openAuth("login")}

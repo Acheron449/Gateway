@@ -1,8 +1,8 @@
 from __future__ import annotations
 import math
 import os
-import asyncio
-from typing import Literal, Optional
+from typing import Optional
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from enum import Enum
 
@@ -21,10 +21,47 @@ class OrderSide(str, Enum):
 
 class OrderStatus(str, Enum):
     PENDING_NEW = "PENDING_NEW"
+    NEW = "NEW"
     ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+    REPLACED = "REPLACED"
+    PENDING_CANCEL = "PENDING_CANCEL"
+    PENDING_REPLACE = "PENDING_REPLACE"
+    DONE_FOR_DAY = "DONE_FOR_DAY"
+    ACCEPTED_FOR_BIDDING = "ACCEPTED_FOR_BIDDING"
+    STOPPED = "STOPPED"
     REJECTED = "REJECTED"
+    SUSPENDED = "SUSPENDED"
+    CALCULATED = "CALCULATED"
+    UNKNOWN = "UNKNOWN"
+
+
+_ALPACA_ORDER_STATUSES = {
+    "new": OrderStatus.NEW,
+    "accepted": OrderStatus.ACCEPTED,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "filled": OrderStatus.FILLED,
+    "canceled": OrderStatus.CANCELLED,
+    "cancelled": OrderStatus.CANCELLED,
+    "expired": OrderStatus.EXPIRED,
+    "replaced": OrderStatus.REPLACED,
+    "pending_cancel": OrderStatus.PENDING_CANCEL,
+    "pending_replace": OrderStatus.PENDING_REPLACE,
+    "done_for_day": OrderStatus.DONE_FOR_DAY,
+    "accepted_for_bidding": OrderStatus.ACCEPTED_FOR_BIDDING,
+    "stopped": OrderStatus.STOPPED,
+    "rejected": OrderStatus.REJECTED,
+    "suspended": OrderStatus.SUSPENDED,
+    "calculated": OrderStatus.CALCULATED,
+    "pending_new": OrderStatus.PENDING_NEW,
+}
+
+
+def _map_alpaca_order_status(value: object) -> OrderStatus:
+    return _ALPACA_ORDER_STATUSES.get(str(value or "").strip().lower(), OrderStatus.UNKNOWN)
 
 
 class OrderValidationError(ValueError):
@@ -60,12 +97,52 @@ class _BaseProvider:
     async def get_order_status(self, broker_order_id: str) -> ExecutionReport:
         raise NotImplementedError
 
+_PAPER_TRADING_ORIGIN = "https://paper-api.alpaca.markets"
+
+
+def _validate_paper_trading_origin(base_url: str) -> str:
+    """Accept only Alpaca's exact HTTPS paper API origin, without URL extras."""
+    try:
+        parsed = urlsplit(base_url)
+        valid = (
+            parsed.scheme == "https"
+            and parsed.hostname == "paper-api.alpaca.markets"
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path in ("", "/")
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise OrderValidationError("Broker execution requires Alpaca's exact HTTPS paper API origin")
+    return _PAPER_TRADING_ORIGIN
+
+
 class _AlpacaProvider(_BaseProvider):
-    def __init__(self, api_key: str, api_secret: str, base_url: str, paper: bool = True):
+    def __init__(self, api_key: str, api_secret: str, base_url: str = _PAPER_TRADING_ORIGIN, paper: bool = True):
+        if not paper:
+            raise OrderValidationError("Broker execution requires paper mode")
         self.api_key = api_key
         self.api_secret = api_secret
-        self.base_url = base_url.rstrip('/')
-        self.paper = paper
+        self.base_url = _validate_paper_trading_origin(base_url)
+        self.paper = True
+
+    def _url(self, path: str) -> str:
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+            raise OrderValidationError("Broker request path must be an absolute API path without query or fragment")
+        url = f"{self.base_url}{path}"
+        # Revalidate the assembled URL on every call to prevent a mutated base
+        # URL or request-target path from escaping the paper origin.
+        try:
+            parts = urlsplit(url)
+            origin = parts._replace(path="", query="", fragment="").geturl()
+        except ValueError as exc:
+            raise OrderValidationError("Invalid broker request URL") from exc
+        _validate_paper_trading_origin(origin)
+        return url
 
     async def _request(self, method: str, path: str, json: dict | None = None):
         if not _HAS_AIOHTTP:
@@ -76,32 +153,28 @@ class _AlpacaProvider(_BaseProvider):
             'APCA-API-SECRET-KEY': self.api_secret,
             'Content-Type': 'application/json'
         }
-        url = f"{self.base_url}{path}"
+        url = self._url(path)
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, json=json, timeout=10) as resp:
+            async with session.request(
+                method, url, headers=headers, json=json, timeout=10, allow_redirects=False
+            ) as resp:
                 text = await resp.text()
+                if 300 <= resp.status < 400:
+                    raise RuntimeError(f"Alpaca API redirect refused ({resp.status})")
                 if resp.status >= 400:
                     raise RuntimeError(f"Alpaca API error {resp.status}: {text}")
+                if not text:
+                    return {}
                 return await resp.json()
 
     async def place_order(self, order: Order) -> Optional[str]:
-        payload = {
-            'symbol': order.symbol,
-            'qty': order.quantity,
-            'side': order.side.value.lower(),
-            'type': order.order_type.lower(),
-            'time_in_force': 'day'
-        }
-        data = await self._request('POST', '/v2/orders', json=payload)
-        return data.get('id')
+        raise OrderValidationError(
+            "Broker order submission is unavailable until durable intent and recovery are integrated"
+        )
 
     async def get_order_status(self, broker_order_id: str) -> ExecutionReport:
         data = await self._request('GET', f'/v2/orders/{broker_order_id}')
-        status = data.get('status', 'unknown').upper()
-        try:
-            status_enum = OrderStatus[status]
-        except Exception:
-            status_enum = OrderStatus.PENDING_NEW
+        status_enum = _map_alpaca_order_status(data.get("status"))
         executed_qty = float(data.get('filled_qty', 0) or 0)
         avg_price = float(data.get('filled_avg_price', 0) or 0)
         return ExecutionReport(order_id=broker_order_id, status=status_enum, executed_qty=executed_qty, avg_price=avg_price)
@@ -131,9 +204,8 @@ class BrokerService:
 
         self._alpaca_key = api_key or os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_KEY")
         self._alpaca_secret = api_secret or os.getenv("ALPACA_SECRET") or os.getenv("ALPACA_API_SECRET")
-        self._alpaca_base = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-        if "paper-api.alpaca.markets" not in self._alpaca_base:
-            raise OrderValidationError("ALPACA_BASE_URL must be Alpaca's paper endpoint during Phase 0")
+        configured_base = os.getenv("ALPACA_BASE_URL", _PAPER_TRADING_ORIGIN)
+        self._alpaca_base = _validate_paper_trading_origin(configured_base)
 
         try:
             from app.services import database

@@ -4372,6 +4372,18 @@ a.rail-icon {
 }
 .model-picker-item-main:hover { background: var(--bg-tertiary); }
 .model-picker-note { font-size: 10.5px; color: var(--text-secondary); margin-left: auto; }
+.model-picker-free-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.model-picker-free-filter input { accent-color: var(--accent-primary); }
+.model-picker-message { display: block; padding: 6px 8px 9px; margin: 0; }
+.model-picker-error { padding: 6px 8px; color: var(--accent-danger); font-size: 11px; }
 .model-picker-select, .model-picker-input {
   margin: 2px 8px 8px;
   width: calc(100% - 16px);
@@ -4740,57 +4752,6 @@ a.rail-icon {
   flex-wrap: wrap;
 }
 .run-sparkline { width: 100%; height: 60px; }
-
-/* TradingAgents */
-.ta-form { display: flex; flex-direction: column; gap: 12px; }
-.ta-form-row { display: flex; gap: 12px; flex-wrap: wrap; }
-.ta-form-row label { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1; }
-.ta-form-row label span { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
-.ta-analysts { display: flex; gap: 14px; flex-wrap: wrap; }
-.ta-analyst {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 999px;
-  padding: 6px 13px;
-  cursor: pointer;
-}
-.ta-analyst input { accent-color: var(--accent-primary); }
-.ta-progress { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
-.ta-result { border-top: 1px solid var(--border-primary); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
-.ta-result-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.ta-signal {
-  font-size: 20px;
-  font-weight: 800;
-  border-radius: var(--radius-lg);
-  padding: 8px 18px;
-  border: 1px solid var(--border-primary);
-  background: var(--bg-tertiary);
-}
-.ta-signal.buy, .ta-signal.overweight { color: var(--accent-success); border-color: rgba(34, 197, 94, 0.55); }
-.ta-signal.sell, .ta-signal.underweight { color: var(--accent-danger); border-color: rgba(239, 68, 68, 0.55); }
-.ta-signal.hold, .ta-signal.review { color: #f59e0b; border-color: rgba(245, 158, 11, 0.5); }
-.ta-result-meta { font-size: 13px; color: var(--text-secondary); }
-.ta-sections { display: flex; flex-direction: column; gap: 8px; }
-.ta-section { background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: var(--radius-lg); }
-.ta-section summary { cursor: pointer; padding: 10px 14px; font-size: 13.5px; font-weight: 600; }
-.ta-section pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--text-secondary);
-  padding: 0 14px 14px;
-  max-height: 360px;
-  overflow-y: auto;
-  margin: 0;
-}
-.ta-disclaimer { font-size: 11.5px; color: var(--text-secondary); font-style: italic; }
 
 @media (max-width: 960px) {
   .chat-page { grid-template-columns: 1fr; }
@@ -5751,6 +5712,48 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
 }
 
+/* Cointegration pair launcher and historical synthetic-book disclosures */
+.pairs-launcher {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+.pairs-launcher-head, .pairs-actions, .pairs-run-summary, .pairs-chart-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pairs-launcher-head h2 { margin: 0 0 4px; font-size: 16px; }
+.pairs-launcher-head p, .pairs-disclosure, .pairs-validation-note { margin: 0; color: var(--text-muted); font-size: 12px; }
+.pairs-badge { color: var(--accent-warning, #f59e0b); font-size: 11px; white-space: nowrap; }
+.pairs-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }
+.pairs-form-grid label { display: grid; gap: 5px; color: var(--text-muted); font-size: 11px; }
+.pairs-form-grid input, .pairs-form-grid select { min-width: 0; width: 100%; }
+.pairs-disclosure { line-height: 1.5; }
+.pairs-actions [role="status"] { color: var(--text-muted); font-size: 12px; }
+.pairs-series-chart { margin: 16px 0 8px; padding: 8px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); }
+.pairs-series-chart svg { display: block; width: 100%; height: 180px; }
+.pairs-entry-line { stroke: #f59e0b; stroke-dasharray: 5 4; stroke-width: 1; }
+.pairs-exit-line { stroke: #3b82f6; stroke-dasharray: 3 5; stroke-width: 1; }
+.pairs-zero-line { stroke: var(--border-primary); stroke-width: 1; }
+.pairs-z-line { fill: none; stroke: var(--accent-primary, #a78bfa); stroke-width: 2; }
+.pairs-chart-legend { justify-content: flex-start; color: var(--text-muted); font-size: 11px; }
+.pairs-run-details { display: grid; gap: 12px; margin: 12px 0; }
+.pairs-run-disclosure { display: grid; gap: 4px; padding: 10px; border-left: 3px solid var(--accent-warning, #f59e0b); background: var(--bg-tertiary, var(--bg-primary)); font-size: 12px; }
+.pairs-run-summary { justify-content: flex-start; color: var(--text-muted); font-size: 12px; }
+.pairs-run-summary span { padding: 6px 9px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); }
+.pairs-fills summary { cursor: pointer; padding: 8px 0; }
+.pairs-run-details .bt-table { display: block; max-width: 100%; overflow-x: auto; }
+@media (max-width: 700px) {
+  .pairs-launcher { padding: 12px; }
+  .pairs-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    Backtester (paper layout, historical-only)
    Two-column desk: detail sidebar + run viewer.
@@ -6663,3 +6666,40 @@ tr.ai-log-error td { background: rgb(248 81 73 / 0.08); }
   font-size: 12px;
   color: #484f58;
 }
+
+/* Model choices, chat tool confirmations, and natural-language backtests */
+.model-choice-control { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
+.model-choice-filter { display: flex; align-items: center; gap: 7px; width: fit-content; color: var(--text-secondary); font-size: 11.5px; cursor: pointer; }
+.model-choice-filter input { accent-color: var(--accent-primary); }
+.model-choice-status { color: var(--text-secondary); font-size: 11.5px; line-height: 1.4; }
+.model-choice-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--accent-danger); font-size: 11.5px; }
+.model-choice-error .btn-secondary { padding: 4px 8px; font-size: 11px; }
+.model-choice-manual { display: flex; flex-direction: column; gap: 4px; }
+.model-choice-manual > span, .strategy-launcher label > span, .strategy-model-field > span, .strategy-review > span, .strategy-prompt-field > span { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.model-picker-select, .model-picker-input { width: 100%; min-width: 0; margin: 0; }
+.llm-default-model-picker { margin-top: 6px; }
+.llm-models > .llm-hint { margin-top: 6px; }
+.model-choice-control :focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.chat-tools-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; cursor: pointer; }
+.chat-tools-toggle input { accent-color: var(--accent-primary); }
+.chat-tools-toggle small { color: var(--text-secondary); font-size: 9px; }
+.chat-tool-notice { margin: 6px 16px; color: var(--text-secondary); font-size: 11px; }
+.chat-proposal-card { margin: 8px auto; width: min(780px, calc(100% - 32px)); padding: 14px; background: var(--bg-secondary); border: 1px solid var(--accent-primary); border-radius: var(--radius-lg); }
+.chat-proposal-card p { margin: 6px 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.chat-proposal-card small { color: var(--text-secondary); }
+.chat-proposal-card .action-buttons { align-items: center; margin-top: 10px; }
+.chat-proposal-card a { color: var(--accent-primary); font-size: 12px; }
+.strategy-launcher { min-width: 0; padding: 18px; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--radius-lg); }
+.strategy-launcher-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.strategy-launcher-head h2 { margin: 0; font-size: 17px; }
+.strategy-launcher-head p { margin: 4px 0 0; color: var(--text-secondary); font-size: 12px; }
+.strategy-prompt-field { display: flex; flex-direction: column; gap: 6px; }
+.strategy-prompt-field textarea, .strategy-launcher-grid input, .strategy-launcher-grid select { width: 100%; min-width: 0; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; }
+.strategy-launcher-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.strategy-launcher-grid > label, .strategy-model-field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
+.strategy-review { margin-top: 13px; padding: 10px 12px; background: var(--bg-primary); border-left: 2px solid var(--accent-primary); border-radius: var(--radius-sm); }
+.strategy-review p, .strategy-job p { margin: 4px 0 0; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.strategy-job { margin-top: 10px; }
+.strategy-launcher :focus-visible, .chat-proposal-card :focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+@media (max-width: 900px) { .strategy-launcher-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .strategy-launcher { padding: 13px; } .strategy-launcher-grid { grid-template-columns: minmax(0, 1fr); } .strategy-launcher-head { flex-direction: column; } .chat-tools-toggle small { display: none; } }

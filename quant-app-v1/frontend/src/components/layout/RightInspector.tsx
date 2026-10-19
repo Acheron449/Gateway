@@ -88,7 +88,6 @@ const EMPTY_STATE_MESSAGES: Record<string, string> = {
   markets: "Select a symbol to view market details",
   calendar: "Upcoming economic events will appear here",
   strategies: "Select or create a strategy to see details",
-  backtests: "Select a backtest run to see results",
   "paper-trading": "Place simulated orders from the paper desk",
   journal: "Select a trade to review",
 };

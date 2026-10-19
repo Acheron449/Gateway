@@ -47,7 +47,10 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
-  const goTo = (view: View) => navigate(`/app/${view}`);
+  const goToSymbol = (symbol: string) => {
+    window.dispatchEvent(new CustomEvent("symbol-select", { detail: symbol }));
+    navigate("/app/markets");
+  };
   const currentWatchlist = WATCHLIST_DEFAULTS.find((w) => w.id === activeWatchlist) || WATCHLIST_DEFAULTS[0];
 
   if (collapsed) {
@@ -156,7 +159,7 @@ export function LeftSidebar({ activeView, collapsed }: LeftSidebarProps) {
                 <button
                   key={symbol}
                   className={`symbol-chip ${symbol === "AAPL" ? "active" : ""}`}
-                  onClick={() => goTo("markets")}
+                  onClick={() => goToSymbol(symbol)}
                   role="option"
                   aria-selected={symbol === "AAPL"}
                   title={`Chart ${symbol}`}

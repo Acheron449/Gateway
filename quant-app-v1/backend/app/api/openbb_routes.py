@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.providers.openbb_provider import OpenBBProvider, OpenBBConfig
@@ -35,15 +35,6 @@ def get_openbb_provider() -> OpenBBProvider:
     return _openbb_provider
 
 
-class OHLCVResponse(BaseModel):
-    """OHLCV data response model."""
-    symbol: str
-    timeframe: str
-    range: str
-    data: List[Dict[str, Any]]
-    count: int
-    provenance: Dict[str, Any]
-
 
 class QuoteResponse(BaseModel):
     """Quote response model."""
@@ -60,75 +51,6 @@ class AvailableProvidersResponse(BaseModel):
     """Available integrations response model."""
     providers: List[Dict[str, Any]]
 
-
-@router.get("/equity", response_model=OHLCVResponse)
-async def get_equity_history(
-    symbol: str = Query(..., min_length=1, max_length=12, description="Stock symbol (e.g., AAPL)"),
-    interval: str = Query("1d", description="Interval (1d, 1h, 5m, 1m)"),
-    period: str = Query("1y", description="Period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
-    provider: OpenBBProvider = Depends(get_openbb_provider),
-) -> OHLCVResponse:
-    """Get historical equity data from OpenBB."""
-    try:
-        data = await provider.history(symbol=symbol.upper(), interval=interval, range=period)
-        if data is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No data found for symbol {symbol.upper()}"
-            )
-
-        provenance = data[0].get("provenance", {}) if data else {}
-
-        return OHLCVResponse(
-            symbol=symbol.upper(),
-            timeframe=interval,
-            range=period,
-            data=data,
-            count=len(data),
-            provenance=provenance,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch equity data: {str(e)}"
-        )
-
-
-@router.get("/crypto", response_model=OHLCVResponse)
-async def get_crypto_history(
-    symbol: str = Query(..., min_length=3, max_length=20, description="Crypto symbol (e.g., BTC-USD)"),
-    interval: str = Query("1d", description="Interval (1d, 1h, 5m, 1m)"),
-    period: str = Query("1y", description="Period (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)"),
-    provider: OpenBBProvider = Depends(get_openbb_provider),
-) -> OHLCVResponse:
-    """Get historical crypto data from OpenBB."""
-    try:
-        data = await provider.history(symbol=symbol.upper(), interval=interval, range=period)
-        if data is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No data found for symbol {symbol.upper()}"
-            )
-
-        provenance = data[0].get("provenance", {}) if data else {}
-
-        return OHLCVResponse(
-            symbol=symbol.upper(),
-            timeframe=interval,
-            range=period,
-            data=data,
-            count=len(data),
-            provenance=provenance,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch crypto data: {str(e)}"
-        )
 
 
 @router.get("/quote", response_model=QuoteResponse)

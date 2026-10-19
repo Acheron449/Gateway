@@ -87,6 +87,9 @@ def get_config() -> dict[str, Any]:
             stored = json.load(handle)
         merged = dict(DEFAULT_CONFIG)
         merged.update(stored if isinstance(stored, dict) else {})
+        # Broker execution is unavailable without real account ownership and
+        # durable intent recovery; old saved `live` preferences cannot reenable it.
+        merged["route"] = "paper"
         return merged
     except (OSError, ValueError, TypeError):
         return dict(DEFAULT_CONFIG)
@@ -99,7 +102,8 @@ def save_config(config: dict[str, Any]) -> dict[str, Any]:
     merged["max_position_notional"] = max(10.0, float(merged["max_position_notional"]))
     merged["confidence_threshold"] = _CLAMP(merged["confidence_threshold"])
     merged["cycle_seconds"] = max(15, int(merged["cycle_seconds"]))
-    merged["route"] = "live" if merged.get("route") == "live" else "paper"
+    # Reject all attempts to restore broker execution through saved AI config.
+    merged["route"] = "paper"
     merged["strategy"] = "mean_reversion" if merged.get("strategy") == "mean_reversion" else "momentum"
     symbols = merged.get("symbols") or []
     if isinstance(symbols, str):
@@ -282,26 +286,8 @@ def _kill_switch_active() -> bool:
 
 
 async def place_live_order_async(symbol: str, side: str, qty: int) -> dict[str, Any]:
-    """Awaitable live placement (kill-switch checked)."""
-    from app.api.v1.live import get_provider
-    from app.models import OrderSide
-    from app.services.broker_service import Order as BrokerOrder
-
-    if _kill_switch_active():
-        raise RuntimeError("Kill switch is active — live orders are blocked")
-
-    provider = get_provider()
-    order = BrokerOrder(
-        symbol=symbol,
-        side=OrderSide(side),
-        quantity=float(qty),
-        entry_price=0.0,
-        order_type="market",
-    )
-    broker_id = await provider.place_order(order)
-    if not broker_id:
-        raise RuntimeError("Broker rejected the order")
-    return {"order_id": broker_id, "filled": None, "fill_price": None}
+    """Fail closed: broker submission is unavailable until auth and durable recovery exist."""
+    raise RuntimeError("Live broker execution is unavailable")
 
 
 # --- Cycle -----------------------------------------------------------------
@@ -362,8 +348,10 @@ async def evaluate_symbol(symbol: str, config: dict[str, Any]) -> dict[str, Any]
 
 
 async def run_cycle() -> dict[str, Any]:
-    """One full evaluation + execution pass over the configured symbols."""
+    """One full evaluation + execution pass over the configured paper simulator."""
     config = get_config()
+    if config.get("route") != "paper":
+        raise RuntimeError("Live broker execution is unavailable")
     symbols: list[str] = config["symbols"]
     route: str = config["route"]
     results: list[dict[str, Any]] = []

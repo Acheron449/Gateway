@@ -9,6 +9,7 @@ from app.models import (
     StrategySpec, StrategyVersion, StrategyStatus, Timeframe, RuleType,
     EntryRule, ExitRule, SizingRule, InvalidationRule, SessionRule, EventRule,
     Assumptions,
+    compute_strategy_content_hash,
 )
 from app.services.database import get_connection, init_db
 from uuid import uuid4
@@ -97,10 +98,14 @@ def _get_strategy_table():
                 version INTEGER NOT NULL,
                 spec TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                content_hash TEXT,
                 FOREIGN KEY(strategy_id) REFERENCES strategies(id),
                 UNIQUE(strategy_id, version)
             )
         """)
+        version_columns = {row[1] for row in cur.execute("PRAGMA table_info(strategy_versions)").fetchall()}
+        if "content_hash" not in version_columns:
+            cur.execute("ALTER TABLE strategy_versions ADD COLUMN content_hash TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS strategy_backtests (
                 id TEXT PRIMARY KEY,
@@ -163,10 +168,12 @@ async def create_strategy(request: StrategyCreateRequest) -> StrategyResponse:
                VALUES (?, ?, ?, 'draft', 1, ?, ?, ?)""",
             (strategy_id, request.name, request.description, json.dumps(request.tags), now, now),
         )
+        stored_spec = spec.model_dump(mode="json", exclude={"content_hash"})
+        content_hash = compute_strategy_content_hash(spec)
         cur.execute(
-            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (strategy_id, 1, json.dumps(spec.model_dump(mode="json")), now),
+            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at, content_hash)
+               VALUES (?, ?, ?, ?, ?)""",
+            (strategy_id, 1, json.dumps(stored_spec), now, content_hash),
         )
         conn.commit()
     
@@ -304,31 +311,36 @@ async def create_strategy_version(strategy_id: str, spec: StrategySpec) -> Strat
     """Create a new version of a strategy."""
     _get_strategy_table()
     
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    new_version = strategy["current_version"] + 1
     now = datetime.now(timezone.utc).isoformat()
-    
-    # Validate the spec matches the strategy
-    if spec.strategy_id != strategy_id:
-        spec = spec.model_copy(update={"strategy_id": strategy_id})
-    if spec.version != new_version:
-        spec = spec.model_copy(update={"version": new_version})
-    
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """UPDATE strategies SET current_version = ?, updated_at = ? WHERE id = ?""",
-            (new_version, now, strategy_id),
-        )
-        cur.execute(
-            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (strategy_id, new_version, json.dumps(spec.model_dump(mode="json")), now),
-        )
-        conn.commit()
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            strategy_row = cur.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
+            if strategy_row is None:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="Strategy not found")
+            new_version = strategy_row["current_version"] + 1
+            # Validate/canonicalize with the assigned identity and version.
+            spec = spec.model_copy(update={"strategy_id": strategy_id, "version": new_version, "content_hash": None})
+            content_hash = compute_strategy_content_hash(spec)
+            stored_spec = spec.model_dump(mode="json", exclude={"content_hash"})
+            cur.execute(
+                """UPDATE strategies SET current_version = ?, updated_at = ? WHERE id = ?""",
+                (new_version, now, strategy_id),
+            )
+            cur.execute(
+                """INSERT INTO strategy_versions (strategy_id, version, spec, created_at, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (strategy_id, new_version, json.dumps(stored_spec), now, content_hash),
+            )
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "locked" in str(exc).lower():
+            raise HTTPException(status_code=409, detail="Strategy version allocation conflict") from exc
+        raise
     
     return StrategyVersionResponse(
         strategy_id=strategy_id,

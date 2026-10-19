@@ -7,6 +7,7 @@ from typing import Any
 
 from app.models import EconomicEvent
 from app.providers import get_provider
+from app.services.as_of import is_at_or_before, normalize_as_of, supports_keyword_argument
 from app.services.database import (
     get_economic_event as db_get_economic_event,
     get_economic_events as db_get_economic_events,
@@ -37,20 +38,29 @@ def _event_tags(event: EconomicEvent) -> list[dict[str, Any]]:
 async def fetch_and_store_economic_events(
     provider_name: str = "Finnhub",
     limit: int = 50,
+    *,
+    as_of: datetime | None = None,
 ) -> list[EconomicEvent]:
     """Fetch, tag, snapshot, and persist economic calendar events."""
+    as_of = normalize_as_of(as_of)
     provider = get_provider(provider_name)
     if not provider or not provider.is_configured:
         return []
 
-    events = await provider.calendar(limit=limit)
+    calendar = provider.calendar
+    kwargs = {"limit": limit}
+    if as_of is not None and supports_keyword_argument(calendar, "as_of"):
+        kwargs["as_of"] = as_of
+    events = await calendar(**kwargs)
+    if as_of is not None:
+        events = [event for event in events if is_at_or_before(event.scheduled_at, as_of)]
 
     fetched_at = datetime.now(timezone.utc).isoformat()
     stored_events: list[EconomicEvent] = []
     for event in events:
         event.tags = _event_tags(event)
         event.source = provider.name
-        event.provider_version = provider.meta["version"]
+        event.provider_version = getattr(provider, "calendar_version", provider.meta["version"])
         event.fetched_at = datetime.fromisoformat(fetched_at)
         event.entitlement = "finnhub-free-tier" if provider.name == "Finnhub" else event.entitlement
         event_dict = event.model_dump(mode="json")
@@ -106,9 +116,9 @@ async def get_calendar_provenance(provider_name: str = "Finnhub") -> dict[str, A
         }
     return {
         "source": provider.name,
-        "provider_version": provider.meta["version"],
-        "coverage": "US economic calendar",
-        "entitlement": "configured-provider" if provider.is_configured else "unavailable",
+        "provider_version": getattr(provider, "calendar_version", provider.meta["version"]),
+        "coverage": "Global economic events (best effort)" if provider.name == "Yahoo Finance" else "US economic calendar",
+        "entitlement": "public" if provider.name == "Yahoo Finance" and provider.is_configured else "configured-provider" if provider.is_configured else "unavailable",
     }
 
 
