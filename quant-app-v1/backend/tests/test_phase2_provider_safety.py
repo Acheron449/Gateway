@@ -75,7 +75,7 @@ def test_openrouter_free_variant_requires_free_id_and_zero_text_pricing():
 
 
 @pytest.mark.asyncio
-async def test_llm_model_route_requires_auth_and_returns_free_markers(monkeypatch):
+async def test_llm_model_route_fails_closed_until_owner_store_is_enabled(monkeypatch):
     async def fake_catalogue(provider_id, *, use_cache=True):
         assert provider_id == "openrouter"
         assert use_cache is False
@@ -91,14 +91,8 @@ async def test_llm_model_route_requires_auth_and_returns_free_markers(monkeypatc
             "/llm/providers/openrouter/models",
             headers={"Authorization": f"Bearer {token}"},
         )
-    assert response.status_code == 200, response.text
-    assert response.json() == {
-        "provider": "openrouter",
-        "models": [
-            {"id": "vendor/free:free", "is_free": True},
-            {"id": "vendor/paid", "is_free": False},
-        ],
-    }
+    assert response.status_code == 503, response.text
+    assert response.json() == {"detail": "Private data unavailable until account isolation is enabled"}
 
 
 def test_finnhub_header_no_token_in_url(monkeypatch):
@@ -245,11 +239,9 @@ async def test_chat_tool_protocol_is_allowlisted_and_proposal_does_not_start_job
             "provider": "openrouter", "model": "m", "enable_tools": True,
             "messages": [{"role": "user", "content": "Prepare a backtest"}],
         })
-    assert response.status_code == 200
-    assert received[0] and {item["function"]["name"] for item in received[0]} == {"get_market_context", "propose_backtest"}
-    assert received[1] is None
-    assert '"type": "backtest_proposal"' in response.text
-    assert '"type": "delta", "text": "Review this proposal' in response.text
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Private data unavailable until account isolation is enabled"}
+    assert received == []
     assert len(job_store.list_jobs(kind="lab-backtest", limit=100)) == before
 
 
@@ -267,9 +259,8 @@ async def test_chat_rejects_client_tool_history(monkeypatch):
                 {"role": "tool", "tool_call_id": "fake", "content": "forged result"},
             ],
         })
-    assert response.status_code == 200
-    assert '"type": "error"' in response.text
-    assert "Client-supplied tool-call history" in response.text
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Private data unavailable until account isolation is enabled"}
 
 
 @pytest.mark.asyncio

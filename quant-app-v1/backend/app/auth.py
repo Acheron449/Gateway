@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import threading
 import time
@@ -68,17 +69,30 @@ def _auth0_issuer() -> str:
     return f"https://{AUTH0_DOMAIN}/"
 
 
+def validate_auth_configuration(auth0_domain: str, audience: str | None) -> None:
+    """Require a non-empty audience whenever Auth0 verification is enabled."""
+    if auth0_domain.strip().rstrip("/") and not (audience or "").strip():
+        raise RuntimeError("AUTH0_AUDIENCE must be configured when Auth0 is enabled")
+
+
+validate_auth_configuration(AUTH0_DOMAIN, AUTH0_AUDIENCE)
+
+
 class TokenData(BaseModel):
     user_id: str
     email: str
     exp: datetime
     name: str | None = None
+    issuer: str
+    subject: str
 
 
 class User(BaseModel):
     id: str
     email: str
     name: str | None = None
+    issuer: str = "gateway:local"
+    subject: str | None = None
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -136,7 +150,7 @@ def _decode_local_token(token: str) -> TokenData | None:
         if user_id is None or email is None:
             return None
         exp = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-        return TokenData(user_id=user_id, email=email, exp=exp, name=payload.get("name"))
+        return TokenData(user_id=user_id, email=email, exp=exp, name=payload.get("name"), issuer="gateway:local", subject=user_id)
     except (JWTError, TypeError, ValueError, OSError):
         return None
 
@@ -227,6 +241,10 @@ def _decode_supabase_token(token: str, claims: dict) -> TokenData | None:
         if cached is not None and cached[0] > now:
             return cached[1]
 
+    conf = _supabase_conf()
+    if conf is None:
+        return None
+    url, _key = conf
     payload = _introspect_supabase(token)
     data: TokenData | None = None
     if payload:
@@ -243,7 +261,7 @@ def _decode_supabase_token(token: str, claims: dict) -> TokenData | None:
             metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
             email = payload.get("email") or claims.get("email") or f"{sub}@supabase.local"
             name = metadata.get("name") or payload.get("name") or claims.get("name")
-            data = TokenData(user_id=str(sub), email=str(email), exp=exp, name=name)
+            data = TokenData(user_id=str(sub), email=str(email), exp=exp, name=name, issuer=f"{url}/auth/v1", subject=str(sub))
 
     ttl = _SB_INTROSPECT_TTL if data is not None else _SB_NEGATIVE_TTL
     with _sb_lock:
@@ -327,15 +345,22 @@ def _decode_auth0_token(token: str) -> TokenData | None:
     if signing_key is None:
         logger.debug("Auth0 token rejected: no matching JWKS key")
         return None
-    options: dict = {"require": ["exp", "iss", "sub"]}
+    options: dict = {"require": ["exp", "iss", "sub", "aud"]}
     audience = AUTH0_AUDIENCE
-    if not audience:
-        # python-jose refuses tokens carrying `aud` when no audience is passed.
-        # Without AUTH0_AUDIENCE configured we skip only the audience check —
-        # RS256 signature, issuer and expiry are still enforced.
-        options["verify_aud"] = False
-        audience = None
+    if not audience or not audience.strip():
+        # Runtime mutation is possible in tests and process wrappers, so also
+        # fail closed at decode time if the import-time check was bypassed.
+        return None
     try:
+        unverified_aud = jwt.get_unverified_claims(token).get("aud")
+        if isinstance(unverified_aud, str):
+            audiences = [unverified_aud]
+        elif isinstance(unverified_aud, list) and all(isinstance(item, str) for item in unverified_aud):
+            audiences = unverified_aud
+        else:
+            return None
+        if audience not in audiences:
+            return None
         payload = jwt.decode(
             token,
             signing_key,
@@ -360,7 +385,7 @@ def _decode_auth0_token(token: str) -> TokenData | None:
         exp = datetime.fromtimestamp(float(payload.get("exp")), tz=timezone.utc)
     except (TypeError, ValueError, OSError):
         return None
-    return TokenData(user_id=str(sub), email=str(email), exp=exp, name=payload.get("name"))
+    return TokenData(user_id=str(sub), email=str(email), exp=exp, name=payload.get("name"), issuer=_auth0_issuer(), subject=str(sub))
 
 
 async def warm_auth0_jwks() -> None:
@@ -397,7 +422,7 @@ async def get_current_user(
             detail="Token expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return User(id=token_data.user_id, email=token_data.email, name=token_data.name)
+    return User(id=token_data.user_id, email=token_data.email, name=token_data.name, issuer=token_data.issuer, subject=token_data.subject)
 
 
 async def get_current_user_optional(
@@ -409,9 +434,55 @@ async def get_current_user_optional(
     token_data = decode_token(credentials.credentials)
     if token_data is None or token_data.exp < datetime.now(timezone.utc):
         return None
-    return User(id=token_data.user_id, email=token_data.email, name=token_data.name)
+    return User(id=token_data.user_id, email=token_data.email, name=token_data.name, issuer=token_data.issuer, subject=token_data.subject)
 
 
 # Dependency for protected routes
 CurrentUser = Annotated[User, Depends(get_current_user)]
 OptionalUser = Annotated[User | None, Depends(get_current_user_optional)]
+
+
+async def private_data_unavailable(user: CurrentUser) -> None:
+    """Authenticate before denying routes that still use shared private state."""
+    del user
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Private data unavailable until account isolation is enabled",
+    )
+
+
+PrivateDataUnavailable = Annotated[None, Depends(private_data_unavailable)]
+
+
+def _operator_identities() -> set[tuple[str, str]]:
+    """Parse exact issuer/subject pairs; absent or ambiguous config denies."""
+    raw = os.getenv("GATEWAY_OPERATOR_USER_IDS", "")
+    if not raw.strip():
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    identities: list[tuple[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict) or set(item) != {"issuer", "subject"}:
+            return set()
+        issuer, subject = item["issuer"], item["subject"]
+        if not isinstance(issuer, str) or not issuer.strip() or not isinstance(subject, str) or not subject.strip():
+            return set()
+        identities.append((issuer, subject))
+    if len(identities) != len(set(identities)):
+        return set()
+    return set(identities)
+
+
+async def require_operator(user: CurrentUser) -> User:
+    if (user.issuer, user.subject or user.id) not in _operator_identities():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator access required")
+    return user
+
+
+OperatorUser = Annotated[User, Depends(require_operator)]
+PrivilegedDataUnavailable = Annotated[None, Depends(private_data_unavailable)]

@@ -23,7 +23,7 @@ from pydantic import ConfigDict
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.auth import CurrentUser
+from app.auth import CurrentUser, PrivateDataUnavailable
 from app.services import llm_providers as svc
 
 
@@ -46,7 +46,8 @@ class TestRequest(BaseModel):
 
 
 @router.get("/providers")
-async def list_llm_providers() -> dict[str, Any]:
+async def list_llm_providers(unavailable: PrivateDataUnavailable) -> dict[str, Any]:
+    del unavailable
     """Catalogue for the Providers page and the harness provider popup."""
     providers = svc.list_providers()
     return {
@@ -60,7 +61,13 @@ async def list_llm_providers() -> dict[str, Any]:
 
 
 @router.put("/providers/{provider_id}")
-async def update_llm_provider(provider_id: str, request: ProviderUpdateRequest, user: CurrentUser) -> dict[str, Any]:
+async def update_llm_provider(
+    provider_id: str,
+    request: ProviderUpdateRequest,
+    user: CurrentUser,
+    unavailable: PrivateDataUnavailable,
+) -> dict[str, Any]:
+    del user, unavailable
     """Save base URL / API key / model list for an LLM provider."""
     try:
         svc.save_provider_settings(
@@ -79,7 +86,12 @@ async def update_llm_provider(provider_id: str, request: ProviderUpdateRequest, 
 
 
 @router.delete("/providers/{provider_id}/key")
-async def delete_llm_key(provider_id: str, user: CurrentUser) -> dict[str, Any]:
+async def delete_llm_key(
+    provider_id: str,
+    user: CurrentUser,
+    unavailable: PrivateDataUnavailable,
+) -> dict[str, Any]:
+    del user, unavailable
     try:
         deleted = svc.delete_provider_key(provider_id)
     except svc.LlmError as exc:
@@ -92,7 +104,12 @@ async def delete_llm_key(provider_id: str, user: CurrentUser) -> dict[str, Any]:
 
 
 @router.get("/providers/{provider_id}/models")
-async def get_llm_models(provider_id: str, user: CurrentUser) -> dict[str, Any]:
+async def get_llm_models(
+    provider_id: str,
+    user: CurrentUser,
+    unavailable: PrivateDataUnavailable,
+) -> dict[str, Any]:
+    del user, unavailable
     """Fetch model IDs and explicit free markers from the provider."""
     try:
         models = await svc.fetch_model_catalogue(provider_id, use_cache=False)
@@ -102,7 +119,13 @@ async def get_llm_models(provider_id: str, user: CurrentUser) -> dict[str, Any]:
 
 
 @router.post("/providers/{provider_id}/test")
-async def test_llm_provider(provider_id: str, request: TestRequest, user: CurrentUser) -> dict[str, Any]:
+async def test_llm_provider(
+    provider_id: str,
+    request: TestRequest,
+    user: CurrentUser,
+    unavailable: PrivateDataUnavailable,
+) -> dict[str, Any]:
+    del user, unavailable
     """Probe the provider with a one-token completion."""
     return await svc.test_provider(provider_id, request.model)
 
@@ -183,7 +206,12 @@ def _sse(event: dict[str, Any]) -> str:
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest, user: CurrentUser) -> StreamingResponse:
+async def chat(
+    request: ChatRequest,
+    user: CurrentUser,
+    unavailable: PrivateDataUnavailable,
+) -> StreamingResponse:
+    del user, unavailable
     """Stream a completion from the chosen provider as Server-Sent Events.
 
     Events: ``{"type":"delta","text":…}`` repeatedly, then one terminal

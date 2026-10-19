@@ -359,7 +359,7 @@ async def get_quote(
     try:
         quote = await provider_instance.quote(symbol)
     except ProviderUnavailableError as exc:
-        message = str(exc)
+        message = "Quote provider unavailable"
         if response is not None:
             response.status_code = 503
         return QuoteResponse(

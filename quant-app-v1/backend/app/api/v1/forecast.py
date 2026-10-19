@@ -13,23 +13,15 @@ router = APIRouter(prefix="/forecast", tags=["forecasting"])
 
 @router.get("/kronos/install/status")
 async def kronos_install_status() -> dict[str, Any]:
-    """Progress of the one-click Kronos install (clone + pip + model weights)."""
-    return await asyncio.to_thread(kronos_installer.status)
+    """Sanitized, bounded status for the disabled runtime installer."""
+    return {"enabled": False, "installed": False, "installing": False, "status": "disabled", "log_tail": ""}
 
 
 @router.post("/kronos/install")
 async def kronos_install(force: bool = False, path: str | None = None) -> dict[str, Any]:
-    """Start the one-click Kronos install in the background.
-
-    Clones the repository, installs its requirements into the running
-    interpreter, and pre-downloads the model weights. ``path`` is the save
-    location the user picked in the installer popup. Poll the status endpoint
-    for progress.
-    """
-    try:
-        return await asyncio.to_thread(kronos_installer.start_install, force, path)
-    except kronos_installer.KronosInstallError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    """Runtime installation is deliberately unavailable in this service."""
+    del force, path
+    raise HTTPException(status_code=503, detail="Kronos runtime installation is disabled")
 
 
 @router.get("/kronos/local-server")

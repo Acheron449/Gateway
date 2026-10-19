@@ -151,24 +151,19 @@ class TestReadOnlyLlmProviderSettings:
         assert llm_svc._SETTINGS_DIR.is_dir()
 
     @pytest.mark.asyncio
-    async def test_llm_providers_endpoint_survives_read_only_bundle(
+    async def test_llm_providers_endpoint_is_gated_before_shared_store_access(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_readonly_llm_bundle(tmp_path, monkeypatch)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-        # The exact production crash site: GET /llm/providers -> _load_store()
-        # -> _ensure_dir() used to raise EROFS ("internal server error").
+        def forbidden_store_read():
+            raise AssertionError("private LLM settings must not be read before ownership isolation")
+
+        monkeypatch.setattr(llm_svc, "_load_store", forbidden_store_read)
         response = await fetch("/llm/providers")
-        assert response.status_code == 200
-        body = response.json()
-        assert body["providers"], "catalogue must not be empty"
-        by_id = {p["id"]: p for p in body["providers"]}
-        # Keyed provider with no env key and no stored key reports unconfigured.
-        assert by_id["openrouter"]["has_key"] is False
-        assert by_id["openrouter"]["configured"] is False
-        # Keyless entries stay available so local Ollama still works.
-        assert by_id["ollama-local"]["key_required"] is False
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Not authenticated"}
 
     def test_llm_key_roundtrip_after_relocation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

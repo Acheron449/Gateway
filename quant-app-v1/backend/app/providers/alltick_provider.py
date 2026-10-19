@@ -90,19 +90,24 @@ class AllTickProvider(MarketDataProvider):
         params = {"token": self._api_key, "query": json.dumps(query, separators=(",", ":"))}
 
         httpx = _httpx()
+        status_code: int | None = None
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
                 response = await client.get(f"{_BASE_URL}/kline", params=params)
+                status_code = response.status_code
                 response.raise_for_status()
                 payload = response.json()
         except Exception as exc:
-            raise ProviderUnavailableError(f"AllTick request failed: {exc or 'network error'}") from exc
+            safe_status = status_code if isinstance(status_code, int) and 100 <= status_code <= 599 else None
+            raise ProviderUnavailableError(
+                "AllTick request failed",
+                status_code=safe_status,
+            ) from None
 
         if not isinstance(payload, dict) or payload.get("ret") != 200:
-            message = payload.get("msg") if isinstance(payload, dict) else None
             raise ProviderUnavailableError(
-                f"AllTick rejected the request: {message or 'unknown error'}",
-                status_code=401 if str(message).lower().find("token") >= 0 else None,
+                "AllTick request failed",
+                status_code=status_code if isinstance(status_code, int) and 100 <= status_code <= 599 else None,
             )
         data = payload.get("data")
         rows = data.get("kline_list") if isinstance(data, dict) else None

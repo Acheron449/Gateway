@@ -103,7 +103,7 @@ def rsa_key():
 def tenant(monkeypatch, rsa_key):
     """Auth0 mode ON, JWKS served from a local (fake) tenant."""
     monkeypatch.setattr(auth, "AUTH0_DOMAIN", DOMAIN)
-    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", None)
+    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", AUDIENCE)
     jwk = _jwk_for(rsa_key)
     monkeypatch.setattr(auth, "_download_jwks", lambda: [copy.deepcopy(jwk)])
     _reset_cache()
@@ -122,6 +122,42 @@ def auth0_off(monkeypatch):
 
 
 # --- Auth0 happy path --------------------------------------------------------
+
+def test_auth0_missing_audience_fails_closed(monkeypatch, tenant, rsa_key):
+    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", None)
+    assert auth.decode_token(_sign(_claims(), rsa_key)) is None
+
+
+def test_auth0_empty_audience_fails_closed(monkeypatch, tenant, rsa_key):
+    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", "   ")
+    assert auth.decode_token(_sign(_claims(), rsa_key)) is None
+
+
+def test_auth0_configuration_rejects_missing_or_whitespace_audience():
+    for audience in (None, "", "  "):
+        with pytest.raises(RuntimeError, match="AUTH0_AUDIENCE"):
+            auth.validate_auth_configuration(DOMAIN, audience)
+
+
+def test_auth0_missing_claim_audience_is_rejected(tenant, rsa_key):
+    claims = _claims()
+    claims.pop("aud")
+    assert auth.decode_token(_sign(claims, rsa_key)) is None
+
+
+def test_auth0_verified_identity_preserves_issuer_and_subject(tenant, rsa_key):
+    data = auth.decode_token(_sign(_claims(), rsa_key))
+    assert data is not None
+    assert data.issuer == ISSUER
+    assert data.subject == "auth0|gwuser1"
+
+
+def test_local_verified_identity_uses_fixed_issuer(auth0_off):
+    token = auth.create_access_token({"sub": "user-local", "email": "local@example.test"})
+    data = auth.decode_token(token)
+    assert data is not None
+    assert (data.issuer, data.subject) == ("gateway:local", "user-local")
+
 
 def test_auth0_token_accepted(tenant, rsa_key):
     token = _sign(_claims(), rsa_key)
@@ -179,6 +215,7 @@ def test_malformed_token_rejected(tenant):
 def test_unknown_kid_forces_jwks_refresh(monkeypatch, rsa_key):
     """Auth0 rotates signing keys — an unseen kid must trigger one refetch."""
     monkeypatch.setattr(auth, "AUTH0_DOMAIN", DOMAIN)
+    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", AUDIENCE)
     old_key = _make_key()
     new_key = _make_key()
     responses = [[_jwk_for(old_key, "old-key")], [_jwk_for(new_key, "new-key")]]
@@ -194,6 +231,7 @@ def test_unknown_kid_forces_jwks_refresh(monkeypatch, rsa_key):
 def test_jwks_outage_serves_stale_keys(monkeypatch, rsa_key):
     """A JWKS refresh failure must not lock signed-in users out."""
     monkeypatch.setattr(auth, "AUTH0_DOMAIN", DOMAIN)
+    monkeypatch.setattr(auth, "AUTH0_AUDIENCE", AUDIENCE)
     jwk = _jwk_for(rsa_key)
     monkeypatch.setattr(auth, "_download_jwks", lambda: [copy.deepcopy(jwk)])
     _reset_cache()

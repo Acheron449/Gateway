@@ -823,10 +823,9 @@ export function PaperTrading({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, []);
-
-  // Authenticated live stream (paper desk only): server pushes portfolio
-  // state each second and auto-fills accepted orders while connected.
+  }, []);    // The backend currently disables the private portfolio stream until
+    // owner-scoped storage ships. Tokens are sent only in the first frame,
+    // never in the WebSocket URL.
   useEffect(() => {
     if (isLive) return undefined;
     if (!localStorage.getItem("gateway_auth_token")) return undefined;
@@ -843,16 +842,19 @@ export function PaperTrading({
       const token = localStorage.getItem("gateway_auth_token");
       if (!token) return;
       try {
-        socket = new WebSocket(`${WS_BASE}/portfolio/stream?token=${encodeURIComponent(token)}`);
+        socket = new WebSocket(`${WS_BASE}/portfolio/stream`);
       } catch {
         return;
       }
       wsRef.current = socket;
-      socket.onopen = () => setLive(true);
+      socket.onopen = () => {
+        socket?.send(JSON.stringify({ type: "authenticate", token }));
+      };
       socket.onmessage = (event: MessageEvent) => {
         try {
           const msg = JSON.parse(event.data as string) as { type?: string; data?: Portfolio };
           if (msg.type === "portfolio_update" && msg.data) {
+            setLive(true);
             queryClient.setQueryData(["portfolio", "paper"], msg.data);
           }
         } catch {
@@ -861,6 +863,7 @@ export function PaperTrading({
       };
       socket.onclose = () => {
         setLive(false);
+        queryClient.removeQueries({ queryKey: ["portfolio", "paper"] });
         if (!closed) retryTimer = window.setTimeout(connect, 4000);
       };
       socket.onerror = () => socket?.close();

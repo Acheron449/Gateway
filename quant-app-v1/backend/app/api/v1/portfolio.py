@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.models import OrderSide, OrderStatus, OrderType
+from app.auth import decode_token
 from app.services.database import (
     create_portfolio,
     get_portfolio,
@@ -872,51 +873,29 @@ async def get_attribution_report(
 
 @router.websocket("/stream")
 async def portfolio_websocket(websocket: WebSocket) -> None:
-    # Authenticate via query parameter or header
-    token = websocket.query_params.get("token")
-    if not token:
-        auth_header = websocket.headers.get("authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    
-    if not token:
+    """Authenticate from a first frame and fail closed until owner isolation."""
+    if websocket.query_params.get("token"):
+        await websocket.close(code=4001, reason="Token query parameters are not accepted")
+        return
+    await websocket.accept()
+    try:
+        payload = await websocket.receive_json()
+    except (WebSocketDisconnect, ValueError):
         await websocket.close(code=4001, reason="Authentication required")
         return
-    
-    from app.auth import decode_token
-    from datetime import datetime, timezone
-    token_data = decode_token(token)
+    if not isinstance(payload, dict) or payload.get("type") != "authenticate":
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    token = payload.get("token")
+    if not isinstance(token, str) or not token.strip():
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    token_data = decode_token(token.strip())
     if not token_data or token_data.exp < datetime.now(timezone.utc):
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
-    
-    await websocket.accept()
-    portfolio_id = _get_default_portfolio()
-    service = PaperPortfolioService(portfolio_id)
-
-    try:
-        while True:
-            for order in service.get_current_state().get("open_orders", []):
-                if order["status"] in ("accepted", "partially_filled"):
-                    _fill_simulator.try_fill_order(portfolio_id, order["id"])
-
-            portfolio = service.get_current_state()
-            if portfolio:
-                await websocket.send_json({
-                    "type": "portfolio_update",
-                    "data": {
-                        "portfolio_id": portfolio_id,
-                        "cash": portfolio.get("cash", 0),
-                        "equity": portfolio.get("equity", 0),
-                        "buying_power": portfolio.get("buying_power", 0),
-                        "positions": portfolio.get("positions", []),
-                        "open_orders": portfolio.get("open_orders", []),
-                        "recent_fills": portfolio.get("recent_fills", []),
-                    }
-                })
-            import asyncio
-            await asyncio.sleep(1.0)
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:
-        await websocket.send_json({"type": "error", "message": str(exc)})
+    await websocket.send_json({
+        "type": "error",
+        "message": "Private data unavailable until account isolation is enabled",
+    })
+    await websocket.close(code=1013, reason="Account isolation unavailable")
