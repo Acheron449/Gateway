@@ -50,7 +50,7 @@ from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
 from app.services.as_of import filter_timestamped_rows, normalize_as_of, parse_data_timestamp
-from app.auth import get_current_user_optional, OptionalUser, warm_auth0_jwks
+from app.auth import _operator_identities, decode_token, get_current_user_optional, OptionalUser, warm_auth0_jwks
 
 
 def _yf():
@@ -69,7 +69,6 @@ def _yf():
 limiter = Limiter(key_func=get_remote_address, default_limits=["240/minute", "3000/hour"])
 
 # Security headers middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 
@@ -374,6 +373,33 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
+
+class PrivateDataGateMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        """Authenticate shared-state routes; keep them unavailable until isolation ships."""
+        path = request.url.path.rstrip("/") or "/"
+        private_prefixes = ("/portfolio", "/strategies", "/journal", "/ai-trading", "/vault", "/llm")
+        operator_prefixes = ("/risk", "/settings/providers")
+        private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
+        operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
+        if not private and not operator_only:
+            return await call_next(request)
+
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.casefold() != "bearer" or not token.strip():
+            return JSONResponse(status_code=401, headers={"WWW-Authenticate": "Bearer"}, content={"detail": "Not authenticated"})
+        token_data = decode_token(token.strip())
+        if token_data is None or token_data.exp < datetime.now(timezone.utc):
+            return JSONResponse(status_code=401, headers={"WWW-Authenticate": "Bearer"}, content={"detail": "Invalid or expired token"})
+        if operator_only:
+            if (token_data.issuer, token_data.subject) not in _operator_identities():
+                return JSONResponse(status_code=403, content={"detail": "Operator access required"})
+            return await call_next(request)
+        return JSONResponse(status_code=503, content={"detail": "Private data unavailable until account isolation is enabled"})
+
+
+app.add_middleware(PrivateDataGateMiddleware)
+
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -410,14 +436,14 @@ app.include_router(catalogue_router)  # Public catalogue access
 app.include_router(news_router)  # Public news/calendar access
 app.include_router(filings_router)  # SEC filings feed for the Overview card
 app.include_router(quote_router)  # Public normalized quote access
-app.include_router(strategies_router)  # Strategy Studio
-app.include_router(journal_router)  # Trade Journal
-app.include_router(risk_router)  # Risk Dashboard
+app.include_router(strategies_router)  # Gated until owner isolation ships
+app.include_router(journal_router)  # Gated until owner isolation ships
+app.include_router(risk_router)  # Operator-gated global risk state
 app.include_router(divergence_router)  # Divergence Scorecards
-app.include_router(settings_router)  # Settings
+app.include_router(settings_router)  # Operator-gated global provider settings
 app.include_router(vault_router, dependencies=[Depends(get_current_user_optional)])  # Encrypted secrets vault
 app.include_router(ai_trading_router, dependencies=[Depends(get_current_user_optional)])  # AI auto-trading section
-app.include_router(llm_router)  # AI model providers, chat harness, context feeder
+app.include_router(llm_router)  # Gated until durable owner-key storage is enabled
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
 app.include_router(openbb_router)  # OpenBB Data Integration
 app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment

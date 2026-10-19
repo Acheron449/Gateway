@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import threading
 import time
@@ -415,3 +416,34 @@ async def get_current_user_optional(
 # Dependency for protected routes
 CurrentUser = Annotated[User, Depends(get_current_user)]
 OptionalUser = Annotated[User | None, Depends(get_current_user_optional)]
+
+
+async def private_data_unavailable(user: CurrentUser) -> None:
+    del user
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Private data unavailable until account isolation is enabled")
+
+
+def _operator_identities() -> set[tuple[str, str]]:
+    raw = os.getenv("GATEWAY_OPERATOR_USER_IDS", "")
+    if not raw.strip():
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    identities: list[tuple[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict) or set(item) != {"issuer", "subject"}:
+            return set()
+        issuer, subject = item["issuer"], item["subject"]
+        if not isinstance(issuer, str) or not issuer.strip() or not isinstance(subject, str) or not subject.strip():
+            return set()
+        identities.append((issuer, subject))
+    return set() if len(identities) != len(set(identities)) else set(identities)
+
+async def require_operator(user: CurrentUser) -> User:
+    if (user.issuer, user.subject or user.id) not in _operator_identities():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator access required")
+    return user
