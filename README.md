@@ -70,7 +70,9 @@ python -m pytest quant-app-v1/backend/tests/
     - **ChartContainer:** Orchestrates data flow between history fetching and live socket updates.
     - **News Terminal:** Displays sentiment analysis from the backend.
     - **PatternList:** Visualizes algorithmic trading patterns detected in real-time.
-- **Authentication:** Local email/password (HS256 JWT) and optional Auth0 sign-in (RS256 via tenant JWKS) — setup in [docs/auth0.md](docs/auth0.md).
+- **Authentication:** Supabase Auth (email/password), set up in [docs/deployment.md](docs/deployment.md) §3. Local email/password (HS256 JWT) exists only for `GATEWAY_ENV=local` development and tests. Auth0 is removed from the product.
+
+Requirements live in [docs/SRS.md](docs/SRS.md) — a backtesting and demo-trading workspace for algorithmic strategies and bots. There is no live trading, and no broker is ever contacted.
 
 ## File Structure Overview
 - `src/hooks/useHistory.ts`: Handles REST calls for historical data.

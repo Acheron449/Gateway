@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
-import { auth0Enabled } from "../../lib/auth0";
-import { Auth0Button } from "./Auth0Button";
 
 /**
  * Centered modal with Sign in / Create account tabs.
@@ -140,8 +138,6 @@ export function AuthModal() {
             {submitting ? (isSignup ? "Creating account…" : "Signing in…") : isSignup ? "Create account" : "Sign in"}
           </button>
         </form>
-
-        {auth0Enabled && <Auth0Button />}
 
         <div className="auth-switch">
           {isSignup ? "Already have an account?" : "New to Gateway?"}{" "}

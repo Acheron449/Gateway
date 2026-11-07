@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Navigate } from "react-router-dom";
 import { API_BASE } from "../../lib/constants";
 import { ChartContainer } from "../../components/ChartContainer";
 import { AssetSelector } from "../../components/features/AssetSelector";
@@ -13,6 +12,7 @@ import { type BtRun } from "./Backtester";
 import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
+import { BacktestReports } from "../features/BacktestReports";
 import { TradeJournal } from "./TradeJournal";
 import { ProviderSettings } from "./ProviderSettings";
 import { LastUpdated } from "../../lib/LastUpdated";
@@ -99,6 +99,8 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <StrategyStudio />
         </div>
       );
+    case "backtests":
+      return <BacktestReports />;
     case "agentic-lab":
       return (
         <div className="canvas-view canvas-view-wide">
@@ -205,7 +207,7 @@ export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) 
       className={`center-canvas-inner${fixed ? " center-canvas-fixed" : ""}`}
       ref={canvasRef}
     >
-      {activeView === "backtests" ? <Navigate to="/app/agentic-lab?tab=backtests" replace /> : getViewComponent(activeView, selectedSymbol)}
+      {getViewComponent(activeView, selectedSymbol)}
     </div>
   );
 }

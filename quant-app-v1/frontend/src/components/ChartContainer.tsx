@@ -31,7 +31,7 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
   const [{ provider, indicators }] = useChartPrefs();
   // User-selected refresh rate (Settings → Data refresh) keeps the chart polled.
   const refreshMs = useRefreshMs();
-  const { data, loading, error } = useHistory(ticker, timeframe, 500, provider, refreshMs);
+  const { data, loading, error, retry } = useHistory(ticker, timeframe, 500, provider, refreshMs);
   const liveUpdate = useSocket(ticker);
   const [patterns, setPatterns] = useState<PatternSignal[]>([]);
 
@@ -56,12 +56,26 @@ export function ChartContainer({ ticker }: ChartContainerProps) {
   }, []);
 
   const rsi = liveUpdate?.rsi ?? null;
+  const noBars = !loading && !error && data.length === 0;
 
   return (
     <div className="chart-container">
       {error ? (
         <div className="chart-error" role="alert">
-          Chart data: {error}
+          <span className="chart-error-text">{error}</span>
+          <button type="button" className="tf-button" onClick={retry}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+      {noBars ? (
+        <div className="chart-empty" role="status">
+          <span className="chart-error-text">
+            No {timeframe.toUpperCase()} bars were returned for {ticker.toUpperCase()}.
+          </span>
+          <button type="button" className="tf-button" onClick={retry}>
+            Retry
+          </button>
         </div>
       ) : null}
       <div className="chart-toolbar">

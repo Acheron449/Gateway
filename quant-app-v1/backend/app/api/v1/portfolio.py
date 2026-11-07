@@ -151,61 +151,45 @@ async def get_portfolio_history_endpoint(limit: int = Query(100, ge=1, le=1000))
 
 @router.post("/orders", response_model=OrderResponse)
 async def submit_order(request: OrderRequest) -> OrderResponse:
+    """Admit one simulated order through the shared gate (FR-T2).
+
+    The route deliberately contains no risk logic of its own: it calls
+    :func:`admit_order`, the same path the bot runner uses, so the kill switch
+    and cash reservation cannot be bypassed by one caller.
+    """
     portfolio_id = _get_default_portfolio()
-    portfolio = get_portfolio(portfolio_id)
-    if not portfolio:
+    if not get_portfolio(portfolio_id):
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
-    current_price = _get_current_price(request.instrument)
-    risk_price = request.limit_price if request.limit_price is not None else current_price
-    if request.order_type in (OrderType.MARKET, OrderType.STOP) and risk_price is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Market data is unavailable; use a limit order or configure a quote provider",
+    from app.services.order_admission import AdmissionError, admit_order
+
+    try:
+        decision = admit_order(
+            portfolio_id=portfolio_id,
+            instrument=request.instrument,
+            side=request.side,
+            order_type=request.order_type,
+            qty=request.quantity,
+            limit_price=request.limit_price,
+            stop_price=request.stop_price,
+            strategy_version_id=request.strategy_version_id,
+            source="api",
         )
-    if risk_price is None:
-        raise HTTPException(status_code=503, detail="Market data is unavailable")
+    except AdmissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from app.models import Order
-    order = Order(
-        id="",
-        instrument=request.instrument.upper(),
-        side=request.side,
-        order_type=request.order_type,
-        quantity=request.quantity,
-        limit_price=request.limit_price,
-        stop_price=request.stop_price,
-        account_id=portfolio_id,
-        execution_mode="paper",
-        status=OrderStatus.PENDING_NEW,
-    )
-
-    risk_engine = get_risk_engine()
-    result, violations = risk_engine.check_order(portfolio_id, order, current_price)
-
-    if result == RiskCheckResult.KILL_SWITCH:
-        raise HTTPException(status_code=403, detail=f"Kill switch active: {violations[0].message}")
-    if result == RiskCheckResult.REJECTED:
-        messages = "; ".join(v.message for v in violations)
-        raise HTTPException(status_code=400, detail=f"Risk check failed: {messages}")
-
-    service = PaperPortfolioService(portfolio_id)
-    submitted_order = service.submit_order(
-        instrument_id=request.instrument.upper(),
-        side=request.side,
-        order_type=request.order_type,
-        qty=request.quantity,
-        limit_price=request.limit_price,
-        stop_price=request.stop_price,
-        strategy_version_id=request.strategy_version_id,
-    )
-
-    service.acknowledge_order(submitted_order.id)
-
-    return OrderResponse(
-        order_id=submitted_order.id,
-        status=OrderStatus.ACCEPTED,
-        message="Order accepted and acknowledged"
+    if decision.accepted:
+        return OrderResponse(
+            order_id=decision.order_id or "",
+            status=OrderStatus.ACCEPTED,
+            message="Simulated order accepted and acknowledged",
+        )
+    if decision.status == "blocked":
+        raise HTTPException(status_code=403, detail=decision.reason or "Kill switch active")
+    if decision.status == "unavailable":
+        raise HTTPException(status_code=503, detail=decision.reason or "Market data is unavailable")
+    raise HTTPException(
+        status_code=400, detail=f"Risk check failed: {decision.reason or 'rejected'}"
     )
 
 

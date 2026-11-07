@@ -367,10 +367,12 @@ async def sync_live_trades(limit: int = Query(100, ge=1, le=500)) -> Dict[str, A
     """
     _get_journal_table()
 
-    from app.api.v1.live import get_provider  # lazy: 503 when unconfigured
-
-    provider = get_provider()
-    activities = await provider.get_activities("FILL", None, None, "desc", limit)
+    # Live broker import was removed with the live-execution scope (SRS P4,
+    # FR-T7). Only simulated fills exist, so there is nothing to sync.
+    raise HTTPException(
+        status_code=410,
+        detail="Live broker sync was removed; the journal holds simulated fills only",
+    )
 
     imported = 0
     skipped = 0

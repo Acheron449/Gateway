@@ -27,16 +27,17 @@ class LoginRequest(BaseModel):
 
 
 def _require_local_auth():
-    """Password login only exists when JWT_SECRET_KEY is configured.
+    """Password login exists only in the local and test profiles (SRS FR-A7).
 
-    Auth0-only deployments (AUTH0_DOMAIN set, no local secret) still serve
-    /auth/me, /auth/preferences and token verification — they just can't
-    issue local tokens.
+    Deployed environments still serve /auth/me, /auth/preferences and token
+    verification — they just cannot mint their own tokens, because a token
+    this process issued is not evidence of a real account. Sign-in there is
+    Supabase Auth.
     """
     if not local_auth_enabled():
         raise HTTPException(
             status_code=503,
-            detail="Password login is disabled on this deployment — sign in with Auth0",
+            detail="Password login is disabled on this deployment — sign in with Supabase Auth",
         )
 
 

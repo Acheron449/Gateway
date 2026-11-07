@@ -12,11 +12,14 @@ from app.models import Fill, Order, OrderSide, OrderStatus, OrderType, Position,
 from app.services.database import (
     append_portfolio_event,
     create_portfolio,
+    get_open_reserved_total,
     get_portfolio,
     get_portfolio_events,
     insert_cash_ledger,
     insert_fill,
     insert_paper_order,
+    insert_paper_order_reserved,
+    release_order_reservation,
     update_paper_order,
     update_portfolio_cash,
     update_position,
@@ -29,6 +32,10 @@ class EventType(str, Enum):
     FILL = "Fill"
     POSITION_UPDATE = "PositionUpdate"
     CASH_UPDATE = "CashUpdate"
+
+
+class BuyingPowerUnavailable(Exception):
+    """An order's cash reservation does not fit the portfolio's free cash."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +152,9 @@ class PaperPortfolioService:
 
         status = OrderStatus.FILLED.value if filled_qty >= order_data["qty"] else OrderStatus.PARTIALLY_FILLED.value
         update_paper_order(order_id, filled_qty=filled_qty, avg_fill_price=avg_fill_price, status=status)
+        # The reservation existed to stop double-spending; once cash has actually
+        # moved it is released so the same dollars are not held twice.
+        release_order_reservation(order_id, self.portfolio_id)
 
         positions = order.get("positions", [])
         pos = next((p for p in positions if p["instrument_id"] == instrument_id), None)
@@ -193,7 +203,7 @@ class PaperPortfolioService:
             total_realized = sum(p.get("realized_pnl", 0) for p in positions_list)
             cash = portfolio.get("cash", 0) - (price * qty + commission) if side == OrderSide.BUY.value else portfolio.get("cash", 0) + (price * qty - commission)
             equity = _quantize(cash + total_market)
-            buying_power = equity
+            buying_power = _quantize(cash - get_open_reserved_total(self.portfolio_id))
 
             update_portfolio_cash(self.portfolio_id, cash, equity, buying_power)
             insert_cash_ledger(
@@ -213,6 +223,7 @@ class PaperPortfolioService:
         limit_price: float | None = None,
         stop_price: float | None = None,
         strategy_version_id: str | None = None,
+        required_cash: float | None = None,
     ) -> Order:
         order_id = str(uuid4())
         order = Order(
@@ -229,10 +240,21 @@ class PaperPortfolioService:
             created_at=_now_utc(),
         )
 
-        insert_paper_order(
-            order_id, self.portfolio_id, strategy_version_id, instrument_id,
-            side.value, order_type.value, qty, limit_price, stop_price
-        )
+        if required_cash is None:
+            insert_paper_order(
+                order_id, self.portfolio_id, strategy_version_id, instrument_id,
+                side.value, order_type.value, qty, limit_price, stop_price
+            )
+        else:
+            reserved = insert_paper_order_reserved(
+                order_id, self.portfolio_id, strategy_version_id, instrument_id,
+                side.value, order_type.value, qty, limit_price, stop_price, required_cash,
+            )
+            if not reserved:
+                raise BuyingPowerUnavailable(
+                    f"Insufficient unreserved cash for {qty:g} {instrument_id} "
+                    f"(needs ${required_cash:,.2f})"
+                )
 
         self._emit(EventType.ORDER_SUBMITTED, {
             "order_id": order_id,

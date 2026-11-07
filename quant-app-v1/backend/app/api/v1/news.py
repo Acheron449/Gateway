@@ -325,7 +325,7 @@ async def calendar_sources() -> dict:
 @quote_router.get("/quote/{symbol}", response_model=QuoteResponse)
 async def get_quote(
     symbol: str,
-    provider: str = Query("Finnhub", description="Data provider"),
+    provider: str = Query("Yahoo Finance", description="Data provider"),
     response: Response = None,
     as_of: datetime | None = None,
 ) -> QuoteResponse:
@@ -393,8 +393,23 @@ async def get_quote(
             "provider_version": provider_instance.meta.get("version", "unknown"),
             "coverage": "US equities quote",
             "entitlement": "unknown",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+    # FR-W4: a quote is only as fresh as its own data timestamp. Providers that
+    # report one (Yahoo's latest 1m bar) get it promoted into provenance so the
+    # inspector can badge freshness; the raw key is not part of the response
+    # model, so it is removed after being copied.
+    quote_data_time = payload.pop("data_time", None)
+    provenance_payload = payload.get("provenance")
+    if quote_data_time is not None and isinstance(provenance_payload, dict):
+        if not provenance_payload.get("data_time"):
+            if isinstance(quote_data_time, (int, float)):
+                provenance_payload["data_time"] = datetime.fromtimestamp(
+                    int(quote_data_time), tz=timezone.utc
+                ).isoformat()
+            else:
+                provenance_payload["data_time"] = str(quote_data_time)
     if as_of is not None:
         quote_time = payload.get("data_time") or (payload.get("provenance") or {}).get("data_time")
         if not is_at_or_before(quote_time, as_of):

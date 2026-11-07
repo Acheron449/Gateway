@@ -1,21 +1,21 @@
-"""JWT Authentication middleware for FastAPI.
+"""JWT authentication for FastAPI.
 
-Two token flavours share one dependency chain, dispatched by the (unverified)
-``iss`` claim:
+One identity provider: **Supabase Auth (GoTrue)**. Access tokens are verified
+by introspection — ``GET {SUPABASE_URL}/auth/v1/user`` only answers 200 for
+tokens GoTrue itself accepts (signature, expiry, bans) — so the project JWT
+secret never has to leave the Supabase dashboard.
 
-* **Local HS256** tokens signed with ``JWT_SECRET_KEY`` — issued by
-  ``POST /auth/register`` and ``POST /auth/login``.
-* **Auth0 RS256** access tokens from the tenant configured via
-  ``AUTH0_DOMAIN`` (plus optional ``AUTH0_AUDIENCE``), verified against the
-  tenant's JWKS over https — never against a caller-supplied key.
+Local HS256 tokens exist for development and tests only: they are issued and
+accepted when ``GATEWAY_ENV`` is ``local`` or ``test``. Every other profile
+refuses to issue them and requires Supabase to be configured, because a token
+this process minted is not evidence of a real account.
 
-Config is failure-closed: the process refuses to start when no verification
-mode is configured at all (neither ``JWT_SECRET_KEY`` nor ``AUTH0_DOMAIN``).
+Verified identity is always ``(issuer, subject)``; the subject is the Supabase
+user id, which is the only value any route may treat as ownership.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -31,51 +31,24 @@ from jose import JWTError, jwt
 from loguru import logger
 from pydantic import BaseModel
 
-# JWT Configuration — failure-closed: no default secret. Auth0-only
-# deployments may skip JWT_SECRET_KEY as long as AUTH0_DOMAIN is set.
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN", "").strip().rstrip("/")
-AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "").strip() or None
-if not SECRET_KEY and not AUTH0_DOMAIN:
-    raise RuntimeError(
-        "JWT_SECRET_KEY must be set in the environment — refusing to start with a default secret "
-        "(or set AUTH0_DOMAIN for an Auth0-only deployment)"
-    )
-
 ALGORITHM = "HS256"
-AUTH0_ALGORITHM = "RS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Auth0 JWKS cache: warmed at startup, refreshed at most once per TTL, with an
-# immediate re-fetch when an unknown `kid` shows up (signing-key rotation).
-_JWKS_TTL_SECONDS = 600.0
-_jwks_lock = threading.Lock()
-_jwks_cache: dict = {"keys": [], "fetched_at": 0.0}
+# Profiles that may use email/password sign-in against this service.
+LOCAL_AUTH_ENVS = {"local", "test"}
 
 security = HTTPBearer(auto_error=False)
 
 
+def gateway_env() -> str:
+    """Current profile, read at call time so tests can vary it."""
+    return (os.getenv("GATEWAY_ENV", "local") or "local").strip().lower()
+
+
 def local_auth_enabled() -> bool:
-    """True when local password login can issue tokens (JWT_SECRET_KEY set)."""
-    return bool(SECRET_KEY)
-
-
-def auth0_enabled() -> bool:
-    """True when an Auth0 tenant is configured for RS256 verification."""
-    return bool(AUTH0_DOMAIN)
-
-
-def _auth0_issuer() -> str:
-    return f"https://{AUTH0_DOMAIN}/"
-
-
-def validate_auth_configuration(auth0_domain: str, audience: str | None) -> None:
-    """Require a non-empty audience whenever Auth0 verification is enabled."""
-    if auth0_domain.strip().rstrip("/") and not (audience or "").strip():
-        raise RuntimeError("AUTH0_AUDIENCE must be configured when Auth0 is enabled")
-
-
-validate_auth_configuration(AUTH0_DOMAIN, AUTH0_AUDIENCE)
+    """True only when this profile may issue local password tokens."""
+    return bool(SECRET_KEY) and gateway_env() in LOCAL_AUTH_ENVS
 
 
 class TokenData(BaseModel):
@@ -95,75 +68,10 @@ class User(BaseModel):
     subject: str | None = None
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    """Create a local HS256 JWT access token."""
-    if not SECRET_KEY:
-        raise RuntimeError(
-            "Local password auth is disabled (JWT_SECRET_KEY unset) — tokens are issued by Auth0"
-        )
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-def decode_token(token: str) -> TokenData | None:
-    """Decode and validate a JWT — local HS256 or Auth0 RS256.
-
-    Dispatch is by the *unverified* ``iss`` claim: only tokens whose issuer
-    matches the configured Auth0 tenant take the Auth0 path, everything else
-    the local path. A forged issuer still fails RS256 verification, and a
-    forged local token fails the HMAC check, so neither can cross over.
-    """
-    try:
-        claims = jwt.get_unverified_claims(token)
-    except Exception as exc:  # malformed token — fail closed
-        logger.debug("Token rejected before dispatch: {}", exc)
-        return None
-    if not isinstance(claims, dict):
-        return None
-    issuer = claims.get("iss")
-    if (
-        AUTH0_DOMAIN
-        and isinstance(issuer, str)
-        and issuer.rstrip("/") == f"https://{AUTH0_DOMAIN}"
-    ):
-        return _decode_auth0_token(token)
-    if _supabase_conf() is not None and _looks_like_supabase(issuer):
-        # Supabase Auth access token — verify by introspection at GoTrue.
-        return _decode_supabase_token(token, claims)
-    return _decode_local_token(token)
-
-
-def _decode_local_token(token: str) -> TokenData | None:
-    if not SECRET_KEY:
-        return None
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        email: str = payload.get("email")
-        exp_timestamp: int = payload.get("exp")
-        if user_id is None or email is None:
-            return None
-        exp = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-        return TokenData(user_id=user_id, email=email, exp=exp, name=payload.get("name"), issuer="gateway:local", subject=user_id)
-    except (JWTError, TypeError, ValueError, OSError):
-        return None
-
-
 # --- Supabase Auth ---------------------------------------------------------
-# Third token flavour: access tokens issued by Supabase Auth (GoTrue) for the
-# project in SUPABASE_URL. Instead of holding the project JWT secret, the
-# backend verifies by introspection — GET /auth/v1/user only answers 200 for
-# tokens GoTrue itself accepts (signature, expiry, bans), so the secret stays
-# dashboard-only. Verified results are cached briefly so a hot endpoint pays
-# one outbound call per token rather than one per request; failures are
-# cached even more briefly so junk bearer tokens cannot turn into a stream of
-# outbound calls.
+# Verified results are cached briefly so a hot endpoint pays one outbound call
+# per token rather than one per request; failures are cached even more briefly
+# so junk bearer tokens cannot turn into a stream of outbound calls.
 
 _SB_INTROSPECT_TTL = 60.0
 _SB_NEGATIVE_TTL = 10.0
@@ -179,6 +87,76 @@ def _supabase_conf() -> tuple[str, str] | None:
     if not url or not key:
         return None
     return url, key
+
+
+def supabase_auth_enabled() -> bool:
+    """True when token introspection can be attempted."""
+    return _supabase_conf() is not None
+
+
+# Fail closed outside the development profiles: a deployment with neither
+# Supabase nor a local secret has no way to authenticate anybody.
+if not local_auth_enabled() and _supabase_conf() is None and gateway_env() not in LOCAL_AUTH_ENVS:
+    raise RuntimeError(
+        "No token verifier is configured — set SUPABASE_URL and SUPABASE_KEY. "
+        "Local password auth is only available when GATEWAY_ENV is local or test."
+    )
+
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+    """Issue a local HS256 token. Development and tests only."""
+    if not local_auth_enabled():
+        raise RuntimeError(
+            "Local password auth is disabled — sign in with Supabase Auth"
+        )
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> TokenData | None:
+    """Decode and validate an access token.
+
+    Supabase tokens are verified by introspection. Everything else is treated
+    as a local token, which only verifies in the development profiles.
+    """
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except Exception as exc:  # malformed token — fail closed
+        logger.debug("Token rejected before dispatch: {}", exc)
+        return None
+    if not isinstance(claims, dict):
+        return None
+    if _supabase_conf() is not None and _looks_like_supabase(claims.get("iss")):
+        return _decode_supabase_token(token, claims)
+    return _decode_local_token(token)
+
+
+def _decode_local_token(token: str) -> TokenData | None:
+    if not local_auth_enabled():
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        email: str = payload.get("email")
+        exp_timestamp: int = payload.get("exp")
+        if user_id is None or email is None:
+            return None
+        exp = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+        return TokenData(
+            user_id=user_id,
+            email=email,
+            exp=exp,
+            name=payload.get("name"),
+            issuer="gateway:local",
+            subject=user_id,
+        )
+    except (JWTError, TypeError, ValueError, OSError):
+        return None
 
 
 def _looks_like_supabase(issuer: object) -> bool:
@@ -261,7 +239,14 @@ def _decode_supabase_token(token: str, claims: dict) -> TokenData | None:
             metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
             email = payload.get("email") or claims.get("email") or f"{sub}@supabase.local"
             name = metadata.get("name") or payload.get("name") or claims.get("name")
-            data = TokenData(user_id=str(sub), email=str(email), exp=exp, name=name, issuer=f"{url}/auth/v1", subject=str(sub))
+            data = TokenData(
+                user_id=str(sub),
+                email=str(email),
+                exp=exp,
+                name=name,
+                issuer=f"{url}/auth/v1",
+                subject=str(sub),
+            )
 
     ttl = _SB_INTROSPECT_TTL if data is not None else _SB_NEGATIVE_TTL
     with _sb_lock:
@@ -277,132 +262,10 @@ def _decode_supabase_token(token: str, claims: dict) -> TokenData | None:
     return data
 
 
-def _download_jwks() -> list[dict]:
-    """Fetch the tenant JWKS over https (test seam for the cache layer)."""
-    url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
-    response = httpx.get(url, timeout=5.0, follow_redirects=True)
-    response.raise_for_status()
-    payload = response.json()
-    keys = payload.get("keys") if isinstance(payload, dict) else None
-    return [key for key in (keys or []) if isinstance(key, dict)]
-
-
-def _fetch_jwks(force: bool = False) -> list[dict]:
-    """Return JWKS keys, cached for _JWKS_TTL_SECONDS.
-
-    A failed refresh serves stale keys when any are cached (a transient JWKS
-    outage should not lock every signed-in user out) and fails closed when
-    nothing is cached.
-    """
-    with _jwks_lock:
-        cached = list(_jwks_cache["keys"])
-        age = time.monotonic() - float(_jwks_cache["fetched_at"])
-        if not force and cached and age < _JWKS_TTL_SECONDS:
-            return cached
-        try:
-            keys = _download_jwks()
-        except Exception as exc:
-            if cached:
-                logger.warning("Auth0 JWKS refresh failed; serving cached keys: {}", exc)
-                return cached
-            logger.warning("Auth0 JWKS fetch failed: {}", exc)
-            return []
-        if keys:
-            _jwks_cache["keys"] = keys
-            _jwks_cache["fetched_at"] = time.monotonic()
-        return keys
-
-
-def _select_signing_key(keys: list[dict], kid: str | None) -> dict | None:
-    usable = [
-        key
-        for key in keys
-        if key.get("kty") == "RSA" and key.get("alg", AUTH0_ALGORITHM) == AUTH0_ALGORITHM
-    ]
-    if kid is None:
-        return usable[0] if len(usable) == 1 else None
-    for key in usable:
-        if key.get("kid") == kid:
-            return key
-    return None
-
-
-def _auth0_signing_key(token: str) -> dict | None:
-    try:
-        headers = jwt.get_unverified_headers(token)
-    except Exception:
-        return None
-    kid = headers.get("kid") if isinstance(headers, dict) else None
-    key = _select_signing_key(_fetch_jwks(), kid)
-    if key is None:
-        # Unknown kid almost always means Auth0 rotated its signing keys.
-        key = _select_signing_key(_fetch_jwks(force=True), kid)
-    return key
-
-
-def _decode_auth0_token(token: str) -> TokenData | None:
-    signing_key = _auth0_signing_key(token)
-    if signing_key is None:
-        logger.debug("Auth0 token rejected: no matching JWKS key")
-        return None
-    options: dict = {"require": ["exp", "iss", "sub", "aud"]}
-    audience = AUTH0_AUDIENCE
-    if not audience or not audience.strip():
-        # Runtime mutation is possible in tests and process wrappers, so also
-        # fail closed at decode time if the import-time check was bypassed.
-        return None
-    try:
-        unverified_aud = jwt.get_unverified_claims(token).get("aud")
-        if isinstance(unverified_aud, str):
-            audiences = [unverified_aud]
-        elif isinstance(unverified_aud, list) and all(isinstance(item, str) for item in unverified_aud):
-            audiences = unverified_aud
-        else:
-            return None
-        if audience not in audiences:
-            return None
-        payload = jwt.decode(
-            token,
-            signing_key,
-            algorithms=[AUTH0_ALGORITHM],
-            audience=audience,
-            issuer=_auth0_issuer(),
-            options=options,
-        )
-    except JWTError as exc:
-        logger.debug("Auth0 token rejected: {}", exc)
-        return None
-    except Exception as exc:  # network/parse trouble — fail closed to 401
-        logger.warning("Auth0 token verification failed: {}", exc)
-        return None
-
-    sub = payload.get("sub")
-    if not sub:
-        return None
-    # Prefer verified email claims, fall back so the UI always has an id.
-    email = payload.get("email") or payload.get("preferred_username") or str(sub)
-    try:
-        exp = datetime.fromtimestamp(float(payload.get("exp")), tz=timezone.utc)
-    except (TypeError, ValueError, OSError):
-        return None
-    return TokenData(user_id=str(sub), email=str(email), exp=exp, name=payload.get("name"), issuer=_auth0_issuer(), subject=str(sub))
-
-
-async def warm_auth0_jwks() -> None:
-    """Pre-fetch the Auth0 JWKS at startup so the first sign-in isn't latency-bound."""
-    if not AUTH0_DOMAIN:
-        return
-    try:
-        keys = await asyncio.to_thread(_fetch_jwks, True)
-        logger.info("Auth0 JWKS loaded: {} signing key(s) for {}", len(keys), AUTH0_DOMAIN)
-    except Exception as exc:
-        logger.warning("Auth0 JWKS warmup failed: {}", exc)
-
-
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)]
 ) -> User:
-    """Get current authenticated user from JWT token."""
+    """Get current authenticated user from the bearer token."""
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -422,7 +285,13 @@ async def get_current_user(
             detail="Token expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return User(id=token_data.user_id, email=token_data.email, name=token_data.name, issuer=token_data.issuer, subject=token_data.subject)
+    return User(
+        id=token_data.user_id,
+        email=token_data.email,
+        name=token_data.name,
+        issuer=token_data.issuer,
+        subject=token_data.subject,
+    )
 
 
 async def get_current_user_optional(
@@ -434,7 +303,13 @@ async def get_current_user_optional(
     token_data = decode_token(credentials.credentials)
     if token_data is None or token_data.exp < datetime.now(timezone.utc):
         return None
-    return User(id=token_data.user_id, email=token_data.email, name=token_data.name, issuer=token_data.issuer, subject=token_data.subject)
+    return User(
+        id=token_data.user_id,
+        email=token_data.email,
+        name=token_data.name,
+        issuer=token_data.issuer,
+        subject=token_data.subject,
+    )
 
 
 # Dependency for protected routes

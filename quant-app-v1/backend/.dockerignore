@@ -1,34 +1,48 @@
-# Python backend
+# Docker build context exclusions for the API image.
+#
+# Build with the BACKEND directory as the context:
+#     docker build -t gateway-api quant-app-v1/backend
+#
+# models/ and vendor/ are 441 MB of local ML assets that v1 does not ship
+# (docs/SRS.md §8 removes Kronos). They must never enter the context, or the
+# image and the upload both blow past the size budget (SRS AR-10).
+
+# Local ML assets, never shipped
+models/
+vendor/
+
+# Tests and tooling
+tests/
+scripts/
 __pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
 .venv/
 venv/
-.env
-.env.local
+
+# Runtime state (recreated at run time under GATEWAY_DATA_DIR)
 *.db
 *.sqlite
-.pytest_cache/
-htmlcov/
-.coverage
-dist/
-build/
+app/data/
+app/settings/
 
-# Frontend Node
-node_modules/
-npm-debug.log
-yarn-error.log
-.env.local
-.env.*.local
+# Secrets
+.env
+.env.*
+*.key
+*.pem
 
-# OS
+# Container files themselves
+Dockerfile
+.dockerignore
+
+# OS / editor
 .DS_Store
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Build outputs
-dist/
-build/

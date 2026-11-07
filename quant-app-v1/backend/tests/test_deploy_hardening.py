@@ -114,7 +114,9 @@ class TestReadOnlyBundleSettings:
         )
         monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
 
-        response = await fetch("/quote/AAPL")  # default provider: Finnhub
+        # The default source is Yahoo (P3); an explicitly named provider that
+        # has no key must still answer 503 rather than 500.
+        response = await fetch("/quote/AAPL?provider=Finnhub")
         assert response.status_code == 503
         assert response.json()["status"] == "unavailable"
 

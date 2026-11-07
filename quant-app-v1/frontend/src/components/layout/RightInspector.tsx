@@ -133,6 +133,10 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
     if (!sym) return;
 
     setLoading(true);
+    // Drop the previous symbol's identity first: a 404 (crypto has no
+    // catalogue entry) must not leave another ticker's name or price on screen.
+    setQuote(null);
+    setInstrument(null);
 
     try {
       // Fetch quote, analysis, instrument, history, calendar, and news in parallel
@@ -279,6 +283,19 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
 
   const provenanceLines = formatProvenance(quote?.provenance);
 
+  // Freshness badge (FR-W4): how old the quote's own data timestamp is.
+  const dataTimeMs = quote?.provenance?.data_time ? Date.parse(quote.provenance.data_time) : Number.NaN;
+  const ageSeconds = Number.isFinite(dataTimeMs) ? Math.max(0, Math.round((Date.now() - dataTimeMs) / 1000)) : null;
+  const freshness = ageSeconds === null ? "unknown" : ageSeconds <= 60 ? "fresh" : ageSeconds <= 600 ? "delayed" : "stale";
+  const freshnessLabel =
+    ageSeconds === null
+      ? "Freshness unknown"
+      : freshness === "fresh"
+        ? "Live"
+        : freshness === "delayed"
+          ? `Delayed ${Math.max(1, Math.round(ageSeconds / 60))}m`
+          : `Stale ${Math.max(1, Math.round(ageSeconds / 3600))}h`;
+
   // Signal calculations
   const technicalSignal = analysis?.direction === "bullish" ? 1 : analysis?.direction === "bearish" ? -1 : 0;
   const technicalConfidence = analysis?.overall_confidence ?? 0;
@@ -298,6 +315,16 @@ export function RightInspector({ activeView, selectedSymbol, collapsed }: RightI
           <div className="price-display">
             <span className="price-value">{formatPrice(currentPrice)}</span>
             <span className={`price-change ${formatChange(priceChange).className}`}>{formatChange(priceChange).value}</span>
+            <span
+              className={`freshness-badge ${freshness}`}
+              title={
+                ageSeconds === null
+                  ? "The provider returned no data timestamp for this quote"
+                  : `Quote data is ${ageSeconds}s old (source: ${quote?.provenance?.source ?? "unknown"})`
+              }
+            >
+              {freshnessLabel}
+            </span>
           </div>
           <div className="price-meta">
             <span>Bid: {formatPrice(quote?.bid)}</span>

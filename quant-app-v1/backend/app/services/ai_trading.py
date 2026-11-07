@@ -362,15 +362,9 @@ async def run_cycle() -> dict[str, Any]:
         for p in portfolio.get("positions", []):
             positions[str(p.get("instrument_id", "")).upper()] = float(p.get("quantity", 0))
     else:
-        try:
-            from app.api.v1.live import get_provider
-
-            for p in await get_provider().get_positions():
-                positions[p.symbol.upper()] = float(p.qty)
-        except Exception as exc:
-            log_decision("", "error", 0.0, "live positions unavailable", route=route, ok=False, detail=str(exc))
-            results.append({"error": str(exc)})
-            return {"route": route, "decisions": results}
+        # Live routing was removed with the live-execution scope (SRS P4).
+        log_decision("", "error", 0.0, "live routing is not supported", route=route, ok=False)
+        return {"route": route, "decisions": [{"error": "live routing is not supported"}]}
 
     cash = float(portfolio.get("cash") or 0.0)
     threshold = float(config["confidence_threshold"])

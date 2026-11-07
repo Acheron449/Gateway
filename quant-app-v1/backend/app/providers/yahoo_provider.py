@@ -330,12 +330,23 @@ class YahooFinanceProvider(MarketDataProvider):
             if not math.isfinite(price) or price <= 0:
                 return None
             change = price - prev if prev > 0 else 0.0
+            # fast_info carries no timestamp, so the latest 1m bar supplies the
+            # quote's data_time. A failure here only costs the freshness badge,
+            # never the quote itself.
+            data_time: int | None = None
+            try:
+                recent = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=False)
+                if not recent.empty:
+                    data_time = int(recent.index[-1].timestamp())
+            except Exception:
+                data_time = None
             return {
                 "symbol": symbol,
                 "price": round(price, 4),
                 "change": round(change, 4),
                 "change_pct": round((change / prev * 100.0) if prev > 0 else 0.0, 2),
                 "provider_version": "yf-v1",
+                "data_time": data_time,
             }
 
         return await asyncio.to_thread(_fetch)

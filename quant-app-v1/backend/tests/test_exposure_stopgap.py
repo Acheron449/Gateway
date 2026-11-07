@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from app.api.main import app
 from app import auth
@@ -129,33 +130,94 @@ async def test_journal_live_sync_stays_unavailable_for_operator(monkeypatch) -> 
     assert response.status_code == 503
 
 
+class _FakeWebSocket:
+    """Frame-level stand-in for the handshake-only WebSocket handlers.
+
+    The installed TestClient/httpx pair is incompatible (starlette passes
+    ``app=`` to an httpx client that no longer accepts it), so the handlers are
+    driven directly with exactly the frames a browser would send.
+    """
+
+    def __init__(
+        self,
+        *,
+        query: dict[str, str] | None = None,
+        frames: list[object] | None = None,
+        text: list[str] | None = None,
+    ) -> None:
+        self.query_params = query or {}
+        self.accepted = False
+        self.sent: list[dict] = []
+        self.closed: list[tuple[int, str]] = []
+        self._frames = list(frames or [])
+        self._text = list(text or [])
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed.append((code, reason))
+
+    async def receive_json(self) -> object:
+        if not self._frames:
+            raise WebSocketDisconnect(1000)
+        return self._frames.pop(0)
+
+    async def receive_text(self) -> str:
+        if not self._text:
+            raise WebSocketDisconnect(1000)
+        return self._text.pop(0)
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent.append(payload)
+
+
 @pytest.mark.asyncio
-async def test_portfolio_websocket_rejects_query_token_and_first_frame_fails_closed(monkeypatch) -> None:
-    from starlette.testclient import TestClient
+async def test_websockets_reject_query_token_and_first_frame_fails_closed(monkeypatch) -> None:
+    from app.api.main import websocket_trading
+    from app.api.v1.portfolio import portfolio_websocket
 
     subject = "websocket-user"
     token = _token(subject)
     monkeypatch.delenv("GATEWAY_OPERATOR_USER_IDS", raising=False)
-    client = TestClient(app)
-    with pytest.raises(Exception):
-        with client.websocket_connect(f"/ws/trading?token={token}"):
-            pass
-    with pytest.raises(Exception):
-        with client.websocket_connect(f"/portfolio/stream?token={token}"):
-            pass
 
-    with client.websocket_connect("/ws/trading") as socket:
-        socket.send_json({"type": "authenticate", "token": token})
-        assert socket.receive_json() == {"type": "authenticated"}
-        socket.send_json({"action": "subscribe", "symbol": "AAPL", "tf": "1m"})
-        assert socket.receive_json() == {"type": "subscribed", "symbol": "AAPL", "tf": "1m"}
+    # A token in the query string is refused before the socket is accepted.
+    for handler in (websocket_trading, portfolio_websocket):
+        socket = _FakeWebSocket(query={"token": token})
+        await handler(socket)
+        assert socket.accepted is False
+        assert socket.closed == [(4001, "Token query parameters are not accepted")]
 
-    with client.websocket_connect("/portfolio/stream") as socket:
-        socket.send_json({"type": "authenticate", "token": token})
-        assert socket.receive_json() == {
+    # Any first frame that is not an authenticate message closes fail-closed.
+    for handler in (websocket_trading, portfolio_websocket):
+        socket = _FakeWebSocket(frames=[{"action": "subscribe", "symbol": "AAPL"}])
+        await handler(socket)
+        assert socket.accepted is True
+        assert socket.sent == []
+        assert socket.closed == [(4001, "Authentication required")]
+
+    # A valid first frame authenticates trading; subscriptions echo the key.
+    trading = _FakeWebSocket(
+        frames=[{"type": "authenticate", "token": token}],
+        text=[json.dumps({"action": "subscribe", "symbol": "AAPL", "tf": "1m"})],
+    )
+    await websocket_trading(trading)
+    assert trading.sent == [
+        {"type": "authenticated"},
+        {"type": "subscribed", "symbol": "AAPL", "tf": "1m"},
+    ]
+    assert trading.closed == []  # a disconnect ends the loop without a close frame
+
+    # The portfolio stream authenticates, then reports isolation instead of data.
+    stream = _FakeWebSocket(frames=[{"type": "authenticate", "token": token}])
+    await portfolio_websocket(stream)
+    assert stream.sent == [
+        {
             "type": "error",
             "message": "Private data unavailable until account isolation is enabled",
         }
+    ]
+    assert stream.closed == [(1013, "Account isolation unavailable")]
 
 
 @pytest.mark.asyncio

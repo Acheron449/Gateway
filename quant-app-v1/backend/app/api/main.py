@@ -22,13 +22,14 @@ from slowapi.errors import RateLimitExceeded
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.agentic_lab import router as agentic_lab_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.quant import router as quant_router
 from app.api.v1.backtest import router as backtest_router
+from app.api.v1.bots import router as bots_router
 from app.api.v1.catalogue import router as catalogue_router
 from app.api.v1.divergence import router as divergence_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
 from app.api.v1.llm import router as llm_router
-from app.api.v1.live import router as live_router
 from app.api.v1.news import quote_router, router as news_router
 from app.api.openbb_routes import router as openbb_router
 from app.api.openstock_routes import router as openstock_router
@@ -50,7 +51,7 @@ from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
 from app.services.as_of import filter_timestamped_rows, normalize_as_of, parse_data_timestamp
-from app.auth import _operator_identities, decode_token, get_current_user_optional, OptionalUser, warm_auth0_jwks
+from app.auth import _operator_identities, decode_token, get_current_user_optional, OptionalUser
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -112,9 +113,6 @@ RSI_PERIOD = 14
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auth0 mode: fetch the tenant JWKS up front so the first sign-in is not
-    # latency-bound (no-op when AUTH0_DOMAIN is unset).
-    await warm_auth0_jwks()
 
     ws_symbol = (os.getenv("QUANT_WS_SYMBOL", "AAPL") or "AAPL").upper()
     creds = _alpaca_credentials()
@@ -478,6 +476,8 @@ app.include_router(preferences_router, dependencies=[Depends(get_current_user_op
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(quant_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(bots_router, dependencies=[Depends(get_current_user_optional)])
 # NOTE: portfolio_router is included without a router-level dependency because
 # it contains a WebSocket route. The HTTP private-data gate above protects its
 # entire HTTP prefix; the WebSocket handler separately authenticates then
@@ -850,6 +850,35 @@ async def _fetch_history_alt_provider_sync(
     return None
 
 
+# Bar limits (SRS FR-D6): one request never returns more than 20k rows, and
+# an over-limit request is refused with a reason instead of silently truncated.
+HISTORY_MAX_BARS = 20_000
+HISTORY_MIN_BARS = 1
+_CRYPTO_QUOTES = ("USD", "USDT", "USDC", "EUR", "BTC", "ETH")
+
+
+def _is_crypto_symbol(ticker: str) -> bool:
+    """True for pair-style crypto symbols (BTC-USD, ETH-USDT, BTCUSDT)."""
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return False
+    if "-" in sym:
+        return sym.rsplit("-", 1)[-1] in _CRYPTO_QUOTES
+    return any(sym.endswith(quote) and len(sym) > len(quote) for quote in ("USDT", "USDC"))
+
+
+def _bar_limit_error(limit: int) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "bar_limit",
+            "message": f"limit must be between {HISTORY_MIN_BARS} and {HISTORY_MAX_BARS} bars",
+            "requested": limit,
+            "max_bars": HISTORY_MAX_BARS,
+        },
+    )
+
+
 @app.get("/history/{ticker}")
 async def get_history(
     ticker: str,
@@ -858,78 +887,82 @@ async def get_history(
     provider: str = "Yahoo Finance",
     as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Return historical bars for the chart from the selected provider.
+    """Return historical bars for the chart from one explicitly chosen source.
 
-    Defaults to Yahoo Finance (yfinance) — the credentials-free Gateway
-    default. Any other provider falls back to Yahoo Finance when it is not
-    configured, unreachable, or returns no data.
+    Yahoo Finance (yfinance) is the single default source; CCXT is reserved
+    for crypto pairs when Yahoo cannot answer. A provider the caller names is
+    never silently replaced, so the provenance on every bar always describes
+    the source that actually produced it.
     """
+    if limit < HISTORY_MIN_BARS or limit > HISTORY_MAX_BARS:
+        raise _bar_limit_error(limit)
     try:
         as_of = normalize_as_of(as_of)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    symbol = (ticker or "").strip().upper()
     chosen = _canonical_history_provider(provider)
     chart_data: list[dict[str, Any]] | None = None
     source = "yfinance"
+    attempted: list[str] = []
 
     if chosen != "Yahoo Finance":
+        attempted.append(chosen)
         try:
             chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf, as_of=as_of)
-        except HTTPException:
-            chart_data = None
         except Exception as exc:
-            logger.warning(f"history provider '{chosen}' failed for {ticker.upper()}: {exc}")
+            logger.warning(f"history provider '{chosen}' failed for {symbol}: {exc}")
             chart_data = None
         if chart_data:
             source = chosen.casefold().replace(" ", "-")
-
-    if not chart_data:
-        # Primary path: yfinance (keyless Yahoo Finance bars).
+    else:
+        attempted.append("yfinance")
         try:
             if as_of is None:
-                chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
+                chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, symbol, tf)
             else:
                 chart_data = await asyncio.to_thread(
-                    _fetch_history_yfinance_sync, ticker.upper(), tf, as_of=as_of
+                    _fetch_history_yfinance_sync, symbol, tf, as_of=as_of
                 )
-            source = "yfinance"
-        except HTTPException:
-            chart_data = None
         except Exception as exc:
-            logger.warning(f"yfinance history failed for {ticker.upper()}: {exc}")
+            logger.warning(f"yfinance history failed for {symbol}: {exc}")
             chart_data = None
-
-    if not chart_data:
-        # Backup path: CCXT public exchange data (crypto pairs only).  This
-        # keeps charts alive when Yahoo is down/rate-limited or the user
-        # explicitly switched to CCXT and Yahoo could not answer either.
-        if as_of is None:
-            chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, ticker.upper(), tf)
-        else:
-            chart_data = await asyncio.to_thread(
-                _ccxt_history_backup_sync, ticker.upper(), tf, as_of=as_of
-            )
-        if chart_data:
-            source = "ccxt"
+        if not chart_data and _is_crypto_symbol(symbol):
+            attempted.append("ccxt")
+            if as_of is None:
+                chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, symbol, tf)
+            else:
+                chart_data = await asyncio.to_thread(
+                    _ccxt_history_backup_sync, symbol, tf, as_of=as_of
+                )
+            if chart_data:
+                source = "ccxt"
 
     if not chart_data:
         raise HTTPException(
-            status_code=502,
-            detail=f"No history data available for {ticker.upper()} (yfinance and ccxt backup both failed)",
+            status_code=502 if chosen == "Yahoo Finance" else 503,
+            detail={
+                "code": "source_unavailable" if chosen == "Yahoo Finance" else "provider_unavailable",
+                "message": f"No history data available for {symbol} from {chosen}",
+                "provider": chosen,
+                "attempted": attempted,
+                "symbol": symbol,
+            },
         )
 
     chart_data = filter_timestamped_rows(chart_data, as_of=as_of)
     resampled = filter_timestamped_rows(_resample_candles(chart_data, tf), as_of=as_of)
-    if limit and len(resampled) > 0:
-        resampled = resampled[-max(10, min(int(limit), 2000)):]
+    if resampled:
+        resampled = resampled[-limit:]
+    coverage = f"{'crypto' if _is_crypto_symbol(symbol) else 'US equities'} / {tf}"
     return [
         {
             **candle,
             **candle_provenance(
                 source=source,
                 data_time=int(candle["time"]),
-                coverage=f"US equities / {tf}",
+                coverage=coverage,
             ),
         }
         for candle in resampled

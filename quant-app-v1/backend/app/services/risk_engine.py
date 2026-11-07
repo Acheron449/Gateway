@@ -62,26 +62,60 @@ class RiskEngine:
         self._kill_switch_reason: str | None = None
 
     def is_kill_switch_active(self) -> bool:
-        return self._kill_switch_activated
+        """Durable switch is authoritative; the in-process flag is a mirror.
+
+        Reading the store on every check is deliberate — a restart or a second
+        worker must observe the same state as the UI (FR-T5). An unreadable
+        store fails closed inside :mod:`app.services.kill_switch`.
+        """
+        if self._kill_switch_activated:
+            return True
+        try:
+            from app.services.kill_switch import is_active as durable_is_active
+
+            return durable_is_active()
+        except Exception:
+            return self._kill_switch_activated
 
     def get_kill_switch_reason(self) -> str | None:
-        return self._kill_switch_reason
+        if self._kill_switch_reason:
+            return self._kill_switch_reason
+        try:
+            from app.services.kill_switch import get_state
+
+            return get_state().get("reason")
+        except Exception:
+            return None
 
     def activate_kill_switch(self, reason: str) -> None:
         self._kill_switch_activated = True
         self._kill_switch_reason = reason
+        try:
+            from app.services.kill_switch import activate as durable_activate
+
+            durable_activate(reason, activated_by="risk_engine")
+        except Exception:
+            # The in-memory flag still blocks this process; the operator-facing
+            # endpoints surface the store error separately.
+            pass
 
     def reset_kill_switch(self) -> None:
         self._kill_switch_activated = False
         self._kill_switch_reason = None
+        try:
+            from app.services.kill_switch import reset as durable_reset
+
+            durable_reset(reset_by="risk_engine")
+        except Exception:
+            pass
 
     def _quantize(self, value: float) -> float:
         return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
     def check_order(self, portfolio_id: str, order: Order, current_price: float) -> tuple[RiskCheckResult, list[RiskViolation]]:
         """Run all pre-trade checks. Returns (result, violations)."""
-        if self._kill_switch_activated:
-            return RiskCheckResult.KILL_SWITCH, [RiskViolation("kill_switch", f"Kill switch active: {self._kill_switch_reason}")]
+        if self.is_kill_switch_active():
+            return RiskCheckResult.KILL_SWITCH, [RiskViolation("kill_switch", f"Kill switch active: {self.get_kill_switch_reason()}")]
 
         portfolio = get_portfolio(portfolio_id)
         if not portfolio:
@@ -97,7 +131,7 @@ class RiskEngine:
         violations.extend(self._check_event_blackout())
 
         # If kill switch was activated during checks (e.g., daily loss limit), return KILL_SWITCH
-        if self._kill_switch_activated:
+        if self.is_kill_switch_active():
             return RiskCheckResult.KILL_SWITCH, violations
 
         if violations:

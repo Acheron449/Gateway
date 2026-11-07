@@ -1,59 +1,60 @@
-# Multi-stage build for FastAPI backend
-# Stage 1: Builder
-FROM python:3.12-slim as builder
+# Gateway API image.
+#
+# Build with THIS directory as the context so every COPY path below resolves:
+#     docker build -t gateway-api quant-app-v1/backend
+#     docker run --rm -p 8000:8000 --env-file ../../.env gateway-api
+#
+# models/ and vendor/ are excluded by .dockerignore: they are 441 MB of local
+# ML assets that v1 does not ship (docs/SRS.md §8), and including them is what
+# pushed earlier cloud builds past their limits.
 
-WORKDIR /tmp
+FROM python:3.12-slim AS builder
 
-# Install build dependencies
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --upgrade pip setuptools wheel
-
-# Copy requirements and create wheels (explicit packaging for slowapi/limits)
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir --upgrade pip && \
-    pip install --user --no-cache-dir -r requirements.txt && \
-    pip install --user --no-cache-dir 'packaging>=20.0' 'passlib>=1.7'
-
-# Stage 2: Runtime
-FROM python:3.12-slim
-
-WORKDIR /
-
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    python3-packaging \
-    python3-passlib \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure Python can find system site-packages (packaging for slowapi)
-ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
+WORKDIR /build
 
-# Create non-root user
+# The backend requirements are the trimmed app-runtime set. The repo-root
+# requirements.txt is the Docker/CI superset and is deliberately not used here.
+COPY requirements.txt .
+RUN pip install --prefix=/install -r requirements.txt
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
 RUN useradd -m -u 1000 appuser
 
-# Copy Python packages from builder
-COPY --from=builder /root/.local /home/appuser/.local
+WORKDIR /app
 
-# Copy application code
-COPY quant-app-v1/backend/app ./app
+# Application code, plus the instrument catalogue that /catalogue and
+# /stocks/search read at run time.
+COPY app ./app
+COPY data ./data
 
-# Set environment
-ENV PATH=/home/appuser/.local/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+# Writable state lives under GATEWAY_DATA_DIR, never beside the modules.
+RUN mkdir -p /app/runtime && chown -R appuser:appuser /app
+ENV GATEWAY_DATA_DIR=/app/runtime
 
-# Switch to non-root user
 USER appuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)" || exit 1
-
-# Expose port
 EXPOSE 8000
 
-# Run app
+# Uses the stdlib: slim images carry neither curl nor httpx guarantees.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -134,8 +134,9 @@ def test_ccxt_symbol_mapping_forms() -> None:
 
     Non-crypto symbols are allowed through the mapper on purpose — the
     exchange itself rejects them (``does not have market symbol``) and the
-    provider wraps that as ProviderUnavailableError so /history falls back
-    to yfinance.  Covered by the provider test below.
+    provider wraps that as ProviderUnavailableError, which /history surfaces
+    as an error rather than substituting another source.  Covered by the
+    provider test below.
     """
     assert to_exchange_symbol("BTC-USD") == "BTC/USD"
     assert to_exchange_symbol("BTC-USDT") == "BTC/USDT"
@@ -222,7 +223,7 @@ async def test_history_raises_when_both_sources_fail(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(main, "_ccxt_history_backup_sync", lambda t, tf: None)
 
     with pytest.raises(HTTPException) as exc:
-        await main.get_history("AAPL", tf="1d", limit=10, provider="Yahoo Finance")
+        await main.get_history("BTC-USD", tf="1d", limit=10, provider="Yahoo Finance")
     assert exc.value.status_code == 502
     assert "ccxt" in str(exc.value.detail)
 
