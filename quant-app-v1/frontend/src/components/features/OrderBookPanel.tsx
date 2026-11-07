@@ -200,6 +200,13 @@ export function OrderBookPanel({ symbol }: { symbol: string }) {
   }, [book]);
 
   const maxSize = Math.max(1, ...rows.map((row) => row.size));
+  // Visible depth per side: the sizes the engine actually returned, summed.
+  const depth = useMemo(() => {
+    const levels = book?.levels ?? [];
+    const sum = (side: "bid" | "ask") =>
+      levels.filter((level) => level.side === side).reduce((total, level) => total + level.size, 0);
+    return { bid: sum("bid"), ask: sum("ask") };
+  }, [book]);
   const selectedLevel = book?.levels.find((level) => `${level.side}:${level.price}` === selected) ?? null;
   const update = (key: keyof typeof controls, value: string) =>
     setControls((current) => ({ ...current, [key]: value }));
@@ -294,7 +301,16 @@ export function OrderBookPanel({ symbol }: { symbol: string }) {
               <small>Best ask</small> <strong>{fmt(book.best_ask)}</strong>
             </span>
             <span>
-              <small>Spread</small> <strong>{book.spread_ticks === null ? "—" : `${book.spread_ticks} ticks`}</strong>
+              <small>Spread</small>{" "}
+              <strong>
+                {book.spread === null ? "—" : `${fmt(book.spread)} · ${(book.spread_ticks ?? 0).toLocaleString()} ticks`}
+              </strong>
+            </span>
+            <span>
+              <small>Bid depth</small> <strong>{fmt(depth.bid, 0)}</strong>
+            </span>
+            <span>
+              <small>Ask depth</small> <strong>{fmt(depth.ask, 0)}</strong>
             </span>
             <span>
               <small>Agents · seed</small>{" "}
@@ -320,7 +336,18 @@ export function OrderBookPanel({ symbol }: { symbol: string }) {
             ))}
           </div>
 
-          <div className="ob-ladder" role="list" aria-label="Simulated bid and ask ladder, price descending">
+          <div
+            className="ob-ladder"
+            role="list"
+            aria-label="Simulated bid and ask ladder, price descending"
+            data-simulated={book.simulated ? "true" : "false"}
+            data-engine={book.engine_version}
+            data-levels={book.levels.length}
+            data-best-bid={book.best_bid ?? ""}
+            data-best-ask={book.best_ask ?? ""}
+            data-spread-ticks={book.spread_ticks ?? ""}
+            data-seed={book.seed}
+          >
             <div className="ob-ruler">
               <span>bid size</span>
               <span>price</span>
