@@ -76,7 +76,7 @@ def _to_event(item: dict[str, Any], tz) -> Optional[EconomicEvent]:
     currency = str(item.get("Currency") or "USD").upper()[:4]
     impact = str(item.get("Impact") or "low").strip().lower()
     natural = f"{name}|{date_raw}|{currency}"
-    event_id = "jb-" + hashlib.sha1(natural.encode("utf-8")).hexdigest()[:16]
+    event_id = "jb-" + hashlib.sha1(natural.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
     feed = _FEED.replace("-", " ").title()
     return EconomicEvent(

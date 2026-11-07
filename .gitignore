@@ -44,3 +44,5 @@ quant-app-v1/backend/app/settings/
 quant-app-v1/backend/vendor/
 .vercel
 .env*
+.env.docker
+!.env.docker.example

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from app.models import OrderSide, OrderStatus, OrderType
-from app.auth import decode_token
+from app.auth import CurrentUser, decode_token
 from app.services.database import (
     create_portfolio,
     get_portfolio,
@@ -79,8 +79,7 @@ class ReportType(StrEnum):
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
-DEFAULT_PORTFOLIO_ID = "paper_default"
-DEFAULT_USER_ID = "default_user"
+DEFAULT_PORTFOLIO_PREFIX = "paper_"
 
 _fill_simulator = FillSimulator()
 
@@ -111,11 +110,28 @@ class PortfolioResponse(BaseModel):
     recent_fills: list[dict[str, Any]]
 
 
-def _get_default_portfolio() -> str:
-    portfolio = get_portfolio(DEFAULT_PORTFOLIO_ID)
-    if not portfolio:
-        create_portfolio(DEFAULT_PORTFOLIO_ID, DEFAULT_USER_ID)
-    return DEFAULT_PORTFOLIO_ID
+def _get_default_portfolio(user_id: str) -> str:
+    """Return the signed-in user's paper portfolio, creating it on first use.
+
+    The id embeds the verified user id so two accounts can never resolve to the
+    same book (SRS NFR-6). A row with that id but a different owner is treated
+    as a conflict, never exposed.
+    """
+    portfolio_id = f"{DEFAULT_PORTFOLIO_PREFIX}{user_id}"
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        create_portfolio(portfolio_id, user_id)
+        portfolio = get_portfolio(portfolio_id)
+    if portfolio is None or portfolio.get("user_id") != user_id:
+        raise HTTPException(status_code=409, detail="Portfolio ownership conflict")
+    return portfolio_id
+
+
+def _require_owned_portfolio(portfolio_id: str, user_id: str) -> dict[str, Any]:
+    portfolio = get_portfolio(portfolio_id)
+    if not portfolio or portfolio.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return portfolio
 
 
 def _get_current_price(instrument: str) -> float | None:
@@ -127,8 +143,8 @@ def _get_current_price(instrument: str) -> float | None:
 
 
 @router.get("", response_model=PortfolioResponse)
-async def get_portfolio_state() -> PortfolioResponse:
-    portfolio_id = _get_default_portfolio()
+async def get_portfolio_state(user: CurrentUser) -> PortfolioResponse:
+    portfolio_id = _get_default_portfolio(user.id)
     portfolio = get_portfolio(portfolio_id)
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -144,20 +160,20 @@ async def get_portfolio_state() -> PortfolioResponse:
 
 
 @router.get("/history")
-async def get_portfolio_history_endpoint(limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
-    portfolio_id = _get_default_portfolio()
+async def get_portfolio_history_endpoint(user: CurrentUser, limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
+    portfolio_id = _get_default_portfolio(user.id)
     return get_portfolio_history(portfolio_id, limit)
 
 
 @router.post("/orders", response_model=OrderResponse)
-async def submit_order(request: OrderRequest) -> OrderResponse:
+async def submit_order(request: OrderRequest, user: CurrentUser) -> OrderResponse:
     """Admit one simulated order through the shared gate (FR-T2).
 
     The route deliberately contains no risk logic of its own: it calls
     :func:`admit_order`, the same path the bot runner uses, so the kill switch
     and cash reservation cannot be bypassed by one caller.
     """
-    portfolio_id = _get_default_portfolio()
+    portfolio_id = _get_default_portfolio(user.id)
     if not get_portfolio(portfolio_id):
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -213,8 +229,8 @@ class MarketStatusResponse(BaseModel):
 
 
 @router.post("/orders/{order_id}/simulate-fill", response_model=FillSimulationResponse)
-async def simulate_fill_endpoint(order_id: str) -> FillSimulationResponse:
-    portfolio_id = _get_default_portfolio()
+async def simulate_fill_endpoint(order_id: str, user: CurrentUser) -> FillSimulationResponse:
+    portfolio_id = _get_default_portfolio(user.id)
     result = _fill_simulator.try_fill_order(portfolio_id, order_id)
     if result:
         return FillSimulationResponse(
@@ -284,8 +300,8 @@ class ReconciliationResponse(BaseModel):
 
 
 @router.post("/reconcile", response_model=ReconciliationResponse)
-async def run_reconciliation(request: ReconciliationRequest) -> ReconciliationResponse:
-    portfolio_id = _get_default_portfolio()
+async def run_reconciliation(request: ReconciliationRequest, user: CurrentUser) -> ReconciliationResponse:
+    portfolio_id = _get_default_portfolio(user.id)
     portfolio = get_portfolio(portfolio_id)
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -327,8 +343,8 @@ async def run_reconciliation(request: ReconciliationRequest) -> ReconciliationRe
 
 
 @router.get("/reconcile/eod", response_model=ReconciliationResponse)
-async def run_eod_reconciliation_endpoint() -> ReconciliationResponse:
-    portfolio_id = _get_default_portfolio()
+async def run_eod_reconciliation_endpoint(user: CurrentUser) -> ReconciliationResponse:
+    portfolio_id = _get_default_portfolio(user.id)
     result = run_eod_reconciliation(portfolio_id)
     return ReconciliationResponse(
         portfolio_id=result.portfolio_id,
@@ -359,8 +375,8 @@ class AuditTrailFilter(BaseModel):
 
 
 @router.post("/audit-trail")
-async def get_audit_trail(filters: AuditTrailFilter) -> list[dict]:
-    portfolio_id = _get_default_portfolio()
+async def get_audit_trail(filters: AuditTrailFilter, user: CurrentUser) -> list[dict]:
+    portfolio_id = _get_default_portfolio(user.id)
     service = AuditTrailService(portfolio_id)
 
     start = datetime.fromisoformat(filters.start_date).date() if filters.start_date else None
@@ -370,8 +386,8 @@ async def get_audit_trail(filters: AuditTrailFilter) -> list[dict]:
 
 
 @router.get("/audit-trail/trace/{fill_id}")
-async def trace_fill(fill_id: str) -> dict:
-    portfolio_id = _get_default_portfolio()
+async def trace_fill(fill_id: str, user: CurrentUser) -> dict:
+    portfolio_id = _get_default_portfolio(user.id)
     service = AuditTrailService(portfolio_id)
     result = service.trace_fill_to_strategy(fill_id)
     if not result:
@@ -379,8 +395,12 @@ async def trace_fill(fill_id: str) -> dict:
     return result
 
 
-_strategy_paper_service = StrategyPaperService(_get_default_portfolio())
-_comparator = PaperVsBacktestComparator(_get_default_portfolio())
+def _strategy_paper_service(user_id: str) -> StrategyPaperService:
+    return StrategyPaperService(_get_default_portfolio(user_id))
+
+
+def _comparator(user_id: str) -> PaperVsBacktestComparator:
+    return PaperVsBacktestComparator(_get_default_portfolio(user_id))
 
 
 class StrategyActivationRequest(BaseModel):
@@ -400,8 +420,8 @@ class StrategyLinkResponse(BaseModel):
 
 
 @router.post("/strategies/activate", response_model=StrategyLinkResponse)
-async def activate_strategy(request: StrategyActivationRequest) -> StrategyLinkResponse:
-    link = _strategy_paper_service.activate_strategy(
+async def activate_strategy(request: StrategyActivationRequest, user: CurrentUser) -> StrategyLinkResponse:
+    link = _strategy_paper_service(user.id).activate_strategy(
         request.strategy_id,
         request.strategy_version_id,
         request.config,
@@ -418,8 +438,8 @@ async def activate_strategy(request: StrategyActivationRequest) -> StrategyLinkR
 
 
 @router.post("/strategies/{strategy_version_id}/deactivate", response_model=StrategyLinkResponse)
-async def deactivate_strategy(strategy_version_id: str) -> StrategyLinkResponse:
-    link = _strategy_paper_service.deactivate_strategy(strategy_version_id)
+async def deactivate_strategy(strategy_version_id: str, user: CurrentUser) -> StrategyLinkResponse:
+    link = _strategy_paper_service(user.id).deactivate_strategy(strategy_version_id)
     if not link:
         raise HTTPException(status_code=404, detail="Strategy link not found")
     return StrategyLinkResponse(
@@ -434,8 +454,8 @@ async def deactivate_strategy(strategy_version_id: str) -> StrategyLinkResponse:
 
 
 @router.get("/strategies/active", response_model=list[StrategyLinkResponse])
-async def get_active_strategies() -> list[StrategyLinkResponse]:
-    links = _strategy_paper_service.get_active_strategies()
+async def get_active_strategies(user: CurrentUser) -> list[StrategyLinkResponse]:
+    links = _strategy_paper_service(user.id).get_active_strategies()
     return [
         StrategyLinkResponse(
             strategy_id=link.strategy_id,
@@ -457,18 +477,20 @@ class ComparisonRequest(BaseModel):
 
 
 @router.post("/strategies/compare", response_model=dict)
-async def compare_paper_vs_backtest(request: ComparisonRequest) -> dict:
+async def compare_paper_vs_backtest(request: ComparisonRequest, user: CurrentUser) -> dict:
     from datetime import date
     start = date.fromisoformat(request.start_date) if request.start_date else None
     end = date.fromisoformat(request.end_date) if request.end_date else None
 
-    metrics = _comparator.compare(request.strategy_version_id, start, end)
-    return _comparator.generate_comparison_report(metrics)
+    comparator = _comparator(user.id)
+    metrics = comparator.compare(request.strategy_version_id, start, end)
+    return comparator.generate_comparison_report(metrics)
 
 
 @router.get("/strategies/{strategy_version_id}/paper-trades")
 async def get_paper_trades(
     strategy_version_id: str,
+    user: CurrentUser,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> list[dict]:
@@ -476,7 +498,7 @@ async def get_paper_trades(
     start = date.fromisoformat(start_date) if start_date else None
     end = date.fromisoformat(end_date) if end_date else None
 
-    trades = _comparator.get_paper_trades(strategy_version_id, start, end)
+    trades = _comparator(user.id).get_paper_trades(strategy_version_id, start, end)
     return [
         {
             "order_id": t.order_id,
@@ -590,29 +612,27 @@ class AddPortfolioToGroupRequest(BaseModel):
 
 
 @router.post("", response_model=dict)
-async def create_portfolio_endpoint(request: CreatePortfolioRequest) -> dict:
-    user_id = DEFAULT_USER_ID
+async def create_portfolio_endpoint(request: CreatePortfolioRequest, user: CurrentUser) -> dict:
+    user_id = user.id
     portfolio = _multi_portfolio.create_portfolio(user_id, request.name, request.initial_cash)
     return portfolio
 
 
 @router.get("/my", response_model=list[dict])
-async def get_my_portfolios() -> list[dict]:
-    user_id = DEFAULT_USER_ID
+async def get_my_portfolios(user: CurrentUser) -> list[dict]:
+    user_id = user.id
     return _multi_portfolio.get_user_portfolios(user_id)
 
 
 @router.get("/{portfolio_id}", response_model=dict)
-async def get_portfolio_detail(portfolio_id: str) -> dict:
-    portfolio = get_portfolio(portfolio_id)
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return portfolio
+async def get_portfolio_detail(portfolio_id: str, user: CurrentUser) -> dict:
+    return _require_owned_portfolio(portfolio_id, user.id)
 
 
 @router.post("/{portfolio_id}/members", response_model=dict)
-async def add_portfolio_member(portfolio_id: str, request: AddMemberRequest) -> dict:
-    user_id = DEFAULT_USER_ID
+async def add_portfolio_member(portfolio_id: str, request: AddMemberRequest, user: CurrentUser) -> dict:
+    _require_owned_portfolio(portfolio_id, user.id)
+    user_id = user.id
     perms = None
     if request.custom_permissions:
         perms = set(Permission(p) for p in request.custom_permissions)
@@ -634,7 +654,8 @@ async def add_portfolio_member(portfolio_id: str, request: AddMemberRequest) -> 
 
 
 @router.delete("/{portfolio_id}/members/{user_id}")
-async def remove_portfolio_member(portfolio_id: str, user_id: str) -> dict:
+async def remove_portfolio_member(portfolio_id: str, user_id: str, user: CurrentUser) -> dict:
+    _require_owned_portfolio(portfolio_id, user.id)
     success = _multi_portfolio.remove_member(portfolio_id, user_id)
     if not success:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -642,7 +663,8 @@ async def remove_portfolio_member(portfolio_id: str, user_id: str) -> dict:
 
 
 @router.put("/{portfolio_id}/members/{user_id}/role", response_model=dict)
-async def update_member_role(portfolio_id: str, user_id: str, request: UpdateMemberRoleRequest) -> dict:
+async def update_member_role(portfolio_id: str, user_id: str, request: UpdateMemberRoleRequest, user: CurrentUser) -> dict:
+    _require_owned_portfolio(portfolio_id, user.id)
     member = _multi_portfolio.update_member_role(portfolio_id, user_id, request.role)
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -657,7 +679,8 @@ async def update_member_role(portfolio_id: str, user_id: str, request: UpdateMem
 
 
 @router.get("/{portfolio_id}/members", response_model=list[dict])
-async def get_portfolio_members(portfolio_id: str) -> list[dict]:
+async def get_portfolio_members(portfolio_id: str, user: CurrentUser) -> list[dict]:
+    _require_owned_portfolio(portfolio_id, user.id)
     members = _multi_portfolio.get_portfolio_members(portfolio_id)
     return [
         {
@@ -673,7 +696,8 @@ async def get_portfolio_members(portfolio_id: str) -> list[dict]:
 
 
 @router.get("/{portfolio_id}/permissions/{user_id}", response_model=list[str])
-async def get_user_permissions(portfolio_id: str, user_id: str) -> list[str]:
+async def get_user_permissions(portfolio_id: str, user_id: str, user: CurrentUser) -> list[str]:
+    _require_owned_portfolio(portfolio_id, user.id)
     member = _multi_portfolio.get_member(portfolio_id, user_id)
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -681,8 +705,8 @@ async def get_user_permissions(portfolio_id: str, user_id: str) -> list[str]:
 
 
 @router.post("/groups", response_model=dict)
-async def create_group(request: CreateGroupRequest) -> dict:
-    user_id = DEFAULT_USER_ID
+async def create_group(request: CreateGroupRequest, user: CurrentUser) -> dict:
+    user_id = user.id
     group = _multi_portfolio.create_group(request.name, user_id, request.description)
     return {
         "id": group.id,
@@ -695,7 +719,8 @@ async def create_group(request: CreateGroupRequest) -> dict:
 
 
 @router.post("/groups/{group_id}/portfolios", response_model=dict)
-async def add_portfolio_to_group(group_id: str, request: AddPortfolioToGroupRequest) -> dict:
+async def add_portfolio_to_group(group_id: str, request: AddPortfolioToGroupRequest, user: CurrentUser) -> dict:
+    _require_owned_portfolio(request.portfolio_id, user.id)
     success = _multi_portfolio.add_portfolio_to_group(group_id, request.portfolio_id)
     if not success:
         raise HTTPException(status_code=400, detail="Portfolio already in group or invalid")
@@ -703,7 +728,8 @@ async def add_portfolio_to_group(group_id: str, request: AddPortfolioToGroupRequ
 
 
 @router.delete("/groups/{group_id}/portfolios/{portfolio_id}")
-async def remove_portfolio_from_group(group_id: str, portfolio_id: str) -> dict:
+async def remove_portfolio_from_group(group_id: str, portfolio_id: str, user: CurrentUser) -> dict:
+    _require_owned_portfolio(portfolio_id, user.id)
     success = _multi_portfolio.remove_portfolio_from_group(group_id, portfolio_id)
     if not success:
         raise HTTPException(status_code=404, detail="Portfolio not in group")
@@ -711,9 +737,9 @@ async def remove_portfolio_from_group(group_id: str, portfolio_id: str) -> dict:
 
 
 @router.get("/groups/{group_id}", response_model=dict)
-async def get_group(group_id: str) -> dict:
+async def get_group(group_id: str, user: CurrentUser) -> dict:
     group = _multi_portfolio.get_group(group_id)
-    if not group:
+    if not group or group.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Group not found")
     return {
         "id": group.id,
@@ -726,8 +752,8 @@ async def get_group(group_id: str) -> dict:
 
 
 @router.get("/groups", response_model=list[dict])
-async def get_my_groups() -> list[dict]:
-    user_id = DEFAULT_USER_ID
+async def get_my_groups(user: CurrentUser) -> list[dict]:
+    user_id = user.id
     groups = _multi_portfolio.get_user_groups(user_id)
     return [
         {
@@ -755,8 +781,8 @@ class ReportRequest(BaseModel):
 
 
 @router.post("/reports", response_model=dict)
-async def generate_report(request: ReportRequest) -> dict:
-    portfolio_id = _get_default_portfolio()
+async def generate_report(request: ReportRequest, user: CurrentUser) -> dict:
+    portfolio_id = _get_default_portfolio(user.id)
     service = ReportingService(portfolio_id)
 
     from datetime import date
@@ -774,11 +800,12 @@ async def generate_report(request: ReportRequest) -> dict:
 
 @router.get("/reports/performance", response_model=dict)
 async def get_performance_report(
+    user: CurrentUser,
     report_type: ReportType = ReportType.MONTHLY,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict:
-    portfolio_id = _get_default_portfolio()
+    portfolio_id = _get_default_portfolio(user.id)
     service = ReportingService(portfolio_id)
 
     from datetime import date
@@ -791,10 +818,11 @@ async def get_performance_report(
 
 @router.get("/reports/risk", response_model=dict)
 async def get_risk_report(
+    user: CurrentUser,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict:
-    portfolio_id = _get_default_portfolio()
+    portfolio_id = _get_default_portfolio(user.id)
     service = ReportingService(portfolio_id)
 
     from datetime import date
@@ -826,11 +854,12 @@ async def get_risk_report(
 
 @router.get("/reports/attribution", response_model=dict)
 async def get_attribution_report(
+    user: CurrentUser,
     start_date: str | None = None,
     end_date: str | None = None,
     benchmark_returns: dict[str, float] | None = None,
 ) -> dict:
-    portfolio_id = _get_default_portfolio()
+    portfolio_id = _get_default_portfolio(user.id)
     service = ReportingService(portfolio_id)
 
     from datetime import date

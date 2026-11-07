@@ -13,6 +13,8 @@ import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
 import { BacktestReports } from "../features/BacktestReports";
+import { OptionsCalculator } from "../features/OptionsCalculator";
+import { OrderBookPanel } from "../features/OrderBookPanel";
 import { TradeJournal } from "./TradeJournal";
 import { ProviderSettings } from "./ProviderSettings";
 import { LastUpdated } from "../../lib/LastUpdated";
@@ -101,6 +103,32 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
       );
     case "backtests":
       return <BacktestReports />;
+    case "orderbook":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Order book</h1>
+            <p className="view-description">
+              A simulated ladder for {selectedSymbol} built from its last daily bars — a model output,
+              not exchange data.
+            </p>
+          </div>
+          <OrderBookPanel symbol={selectedSymbol} />
+        </div>
+      );
+    case "options":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Options pricing</h1>
+            <p className="view-description">
+              European Black-Scholes value, greeks and implied volatility — a calculator over inputs you supply,
+              not an options feed.
+            </p>
+          </div>
+          <OptionsCalculator />
+        </div>
+      );
     case "agentic-lab":
       return (
         <div className="canvas-view canvas-view-wide">

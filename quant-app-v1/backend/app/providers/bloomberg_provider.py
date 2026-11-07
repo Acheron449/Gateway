@@ -121,7 +121,7 @@ def _build_event(
 
 
 def _stable_id(prefix: str, natural: str) -> str:
-    return prefix + hashlib.sha1(natural.encode("utf-8")).hexdigest()[:16]
+    return prefix + hashlib.sha1(natural.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 class _WidgetParser(HTMLParser):

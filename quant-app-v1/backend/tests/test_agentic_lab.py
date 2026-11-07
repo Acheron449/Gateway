@@ -21,7 +21,7 @@ from app.services import research_store as research
 
 
 def test_tradingagents_routes_are_removed_without_removing_shared_lab_or_llm():
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
+    paths = set(app.openapi()["paths"])
     assert not {"/agents/trading-agents", "/agents/trading-agents/run", "/agents/jobs", "/agents/jobs/{job_id}"} & paths
     assert "/agentic-lab/backtest" in paths and "/llm/providers" in paths
     assert "/agentic-lab/monte-carlo" in paths and "/agentic-lab/research-jobs" in paths
@@ -170,10 +170,13 @@ def test_run_backtest_persists_full_resolution_bar_returns(monkeypatch):
 
 def test_visible_runs_and_delete_are_owner_scoped(monkeypatch, tmp_path):
     monkeypatch.setattr(lab, "_SETTINGS_FILE", tmp_path / "runs.json")
-    lab._store_run({"id": "shared"}); lab._store_run({"id": "a", "owner_user_id": "user-a"}); lab._store_run({"id": "b", "owner_user_id": "user-b"})
-    assert {r["id"] for r in lab.visible_runs(None)} == {"shared"} and {r["id"] for r in lab.visible_runs("user-a")} == {"shared", "a"}
+    lab._store_run({"id": "legacy"}); lab._store_run({"id": "a", "owner_user_id": "user-a"}); lab._store_run({"id": "b", "owner_user_id": "user-b"})
+    # Ownerless legacy rows are quarantined, never shared with signed-in users.
+    assert lab.visible_runs(None) == [] and {r["id"] for r in lab.visible_runs("user-a")} == {"a"}
+    assert lab.get_run_for_user("legacy", "user-a") is None and lab.get_run_for_user("legacy", None) is None
     assert not lab.delete_run("b", owner_user_id="user-a") and lab.delete_run("a", owner_user_id="user-a")
-    assert lab.delete_run("shared", owner_user_id="user-a")
+    assert not lab.delete_run("legacy", owner_user_id="user-a") and not lab.delete_run("a", owner_user_id=None)
+    assert lab.visible_runs("user-a") == []
 
 
 def test_research_store_roundtrip(monkeypatch, tmp_path):
@@ -212,8 +215,8 @@ async def test_private_collection_filters_and_monte_carlo_api(monkeypatch, tmp_p
     lab._store_run({"id": "bob-log", "owner_user_id": "bob", "kind": "llm", "symbol": "TEST", "strategy": "Bob strategy", "created_at": datetime.now(timezone.utc).isoformat(), "decisions": [{"time": timestamp, "action": "short", "price": 100, "reason": "other private log"}]})
     alice_runs = await lab_api.get_runs(user=User(id="alice", email="a@example.test"))
     bob_runs = await lab_api.get_runs(user=User(id="bob", email="b@example.test"))
-    assert {run["id"] for run in alice_runs["runs"]} == {"shared", "private", "alice-log"}
-    assert {run["id"] for run in bob_runs["runs"]} == {"shared", "bob-log"}
+    assert {run["id"] for run in alice_runs["runs"]} == {"private", "alice-log"}
+    assert {run["id"] for run in bob_runs["runs"]} == {"bob-log"}
     assert all("owner_user_id" not in run for run in alice_runs["runs"])
     alice_log = await lab_api.get_trading_log(user=User(id="alice", email="a@example.test"))
     bob_log = await lab_api.get_trading_log(user=User(id="bob", email="b@example.test"))

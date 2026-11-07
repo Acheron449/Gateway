@@ -15,9 +15,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+from app.api.rate_limit import limiter
 
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.agentic_lab import router as agentic_lab_router
@@ -31,7 +33,6 @@ from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
 from app.api.v1.llm import router as llm_router
 from app.api.v1.news import quote_router, router as news_router
-from app.api.openbb_routes import router as openbb_router
 from app.api.openstock_routes import router as openstock_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.api.v1.risk import router as risk_router
@@ -65,14 +66,32 @@ def _yf():
 
     return yf
 
-# Rate limiter — generous defaults: the dashboard polls several endpoints
-# (ticker strip + parallel inspector fetches) per view change, and a tight
-# per-IP budget reads as random "Failed to fetch" errors in the UI.
-limiter = Limiter(key_func=get_remote_address, default_limits=["240/minute", "3000/hour"])
+# Rate limiter — configured in app.api.rate_limit so route modules can add
+# stricter per-route budgets without importing this module.
 
 # Security headers middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+
+
+def content_security_policy(env: str | None = None) -> str:
+    """Build the CSP for an environment profile.
+
+    Production does not run Vite's development client, so its script policy
+    drops to ``'self'``. Local and test builds keep ``'unsafe-inline'`` and
+    ``'unsafe-eval'`` because Vite's HMR client and React refresh runtime
+    require them. ``env`` defaults to ``GATEWAY_ENV`` (falling back to local).
+    """
+    profile = (env or os.getenv("GATEWAY_ENV", "local")).lower()
+    script_src = "'self'" if profile in ("production", "prod") else "'self' 'unsafe-inline' 'unsafe-eval'"
+    return (
+        "default-src 'self'; "
+        f"script-src {script_src}; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:;"
+    )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -89,15 +108,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         env = os.getenv("GATEWAY_ENV", "local").lower()
         if env in ("production", "prod"):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Content Security Policy
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:; "
-            "font-src 'self' data:; "
-            "connect-src 'self' ws: wss:;"
-        )
+        # Content Security Policy (production excludes inline/eval scripts)
+        response.headers["Content-Security-Policy"] = content_security_policy(env)
         return response
 
 
@@ -421,6 +433,10 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(PrivateDataGateMiddleware)
 
+# Enforce the shared limiter's default budget. Registered before the header
+# and CORS middlewares so those still wrap 429 responses.
+app.add_middleware(SlowAPIMiddleware)
+
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -466,7 +482,6 @@ app.include_router(vault_router, dependencies=[Depends(get_current_user_optional
 app.include_router(ai_trading_router, dependencies=[Depends(get_current_user_optional)])  # AI auto-trading (also gated until owner isolation)
 app.include_router(llm_router)  # BYOK/chat gated until durable owner store is deployed
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
-app.include_router(openbb_router)  # OpenBB Data Integration
 app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment
 
 # Protected routes (authentication required)

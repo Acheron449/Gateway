@@ -275,3 +275,100 @@ async def test_calendar_sources_advertise_yahoo_as_keyless_best_effort(monkeypat
     assert yahoo["available"] is True
     assert yahoo["requires_api_key"] is False
     assert "best effort" in yahoo["detail"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_stops_at_aggregate_reply_cap(monkeypatch):
+    import json
+
+    from app.api.v1 import llm as llm_api
+    from app.auth import User
+
+    emitted: list[str] = []
+
+    async def fake_stream(*args, **kwargs):
+        for _ in range(5):
+            emitted.append("chunk")
+            yield {"type": "delta", "text": "abcdefghij"}
+        yield {"type": "done", "usage": None}
+
+    monkeypatch.setattr(llm_api.svc, "stream_chat", fake_stream)
+    monkeypatch.setattr(llm_api, "MAX_REPLY_CHARS", 15)
+
+    response = await llm_api.chat(
+        llm_api.ChatRequest(
+            provider="openrouter",
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+        ),
+        User(id="cap-user", email="cap@example.test"),
+        object(),
+    )
+    raw = b"".join(
+        [
+            chunk if isinstance(chunk, bytes) else chunk.encode()
+            async for chunk in response.body_iterator
+        ]
+    ).decode()
+    events = [json.loads(line.removeprefix("data: ")) for line in raw.splitlines() if line.startswith("data: ")]
+
+    deltas = [event for event in events if event["type"] == "delta"]
+    assert "".join(event["text"] for event in deltas) == "abcdefghijabcde"
+    assert events[-1]["type"] == "error"
+    assert "aggregate limit" in events[-1]["message"]
+    # The provider stream was abandoned at the boundary, not drained.
+    assert len(emitted) == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_cap_streams_through_http_when_private_gate_is_lifted(monkeypatch):
+    """Same cap, but over the real SSE route rather than the handler object.
+
+    The production app still answers 503 for /llm/chat behind the private-data
+    gate, so this mounts the router without that middleware and overrides the
+    two auth dependencies — the state the route will run in once the gate is
+    lifted.
+    """
+    from fastapi import FastAPI
+
+    from app.api.v1 import llm as llm_api
+    from app.auth import User, get_current_user, private_data_unavailable
+
+    emitted: list[str] = []
+
+    async def fake_stream(*args, **kwargs):
+        for _ in range(5):
+            emitted.append("chunk")
+            yield {"type": "delta", "text": "abcdefghij"}
+        yield {"type": "done", "usage": None}
+
+    monkeypatch.setattr(llm_api.svc, "stream_chat", fake_stream)
+    monkeypatch.setattr(llm_api, "MAX_REPLY_CHARS", 25)
+
+    ungated = FastAPI()
+    ungated.include_router(llm_api.router)
+    ungated.dependency_overrides[get_current_user] = lambda: User(
+        id="sse-user", email="sse@example.test"
+    )
+    ungated.dependency_overrides[private_data_unavailable] = lambda: None
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=ungated), base_url="http://test") as client:
+        async with client.stream(
+            "POST",
+            "/llm/chat",
+            json={
+                "provider": "openrouter",
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            raw = "".join([chunk async for chunk in response.aiter_text()])
+
+    events = [json.loads(line[len("data: "):]) for line in raw.splitlines() if line.startswith("data: ")]
+    deltas = [event for event in events if event["type"] == "delta"]
+    assert "".join(event["text"] for event in deltas) == "abcdefghijabcdefghijabcde"
+    assert events[-1]["type"] == "error"
+    assert "aggregate limit" in events[-1]["message"]
+    assert len(emitted) == 3

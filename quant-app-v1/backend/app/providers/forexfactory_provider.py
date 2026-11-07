@@ -119,7 +119,7 @@ def parse_forexfactory_calendar(html: str) -> list[EconomicEvent]:
         previous_cell = cell_with_class(row, "calendar__previous")
         event_id_attr = str(row.attrs.get("data-event-id") or "")
         natural = f"{event_id_attr}|{title}|{naive.isoformat()}|{currency}"
-        event_id = "ff-" + hashlib.sha1(natural.encode("utf-8")).hexdigest()[:16]
+        event_id = "ff-" + hashlib.sha1(natural.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
         events.append(
             EconomicEvent(

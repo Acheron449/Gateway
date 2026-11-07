@@ -1,8 +1,9 @@
 import os
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
+from app.api.rate_limit import limiter
 from app.models.user import User, UserPreferences
 from app.auth import create_access_token, get_current_user, CurrentUser, local_auth_enabled
 from app.services.database import (
@@ -42,7 +43,8 @@ def _require_local_auth():
 
 
 @router.post("/register")
-def register(payload: RegisterRequest):
+@limiter.limit("10/minute")
+def register(request: Request, payload: RegisterRequest):
     _require_local_auth()
     email = payload.email.strip().lower()
     if get_user_by_email(email):
@@ -56,7 +58,8 @@ def register(payload: RegisterRequest):
 
 
 @router.post("/login")
-def login(payload: LoginRequest):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginRequest):
     _require_local_auth()
     email = payload.email.strip().lower()
     user = get_user_by_email(email)

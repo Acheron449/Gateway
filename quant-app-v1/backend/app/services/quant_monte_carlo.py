@@ -36,14 +36,21 @@ DEFAULT_RUIN_FRACTION = 0.5
 DEFAULT_PERIODS_PER_YEAR = 252
 MAX_SIZING_MULTIPLIER = 3.0
 SIZING_STEP = 0.05
+# Upper bound on observed return/equity points per request. The simulated
+# point guard below bounds paths × horizon; this bounds the input history too.
+MAX_OBSERVATIONS = 20_000
 # Upper bound on simulated points in memory; refused rather than OOM'd.
 MAX_POINTS = 8_000_000
 CHUNK = 4_000
 
 
-def _validate_series(values: list[float], *, label: str, floor: float) -> np.ndarray:
+def _validate_series(
+    values: list[float], *, label: str, floor: float, max_length: int = MAX_OBSERVATIONS
+) -> np.ndarray:
     if not isinstance(values, list) or not values:
         raise ValueError(f"{label} must be a non-empty list of numbers")
+    if len(values) > max_length:
+        raise ValueError(f"{label} must contain at most {max_length:,} observations")
     try:
         array = np.asarray([float(value) for value in values], dtype=np.float64)
     except (TypeError, ValueError) as exc:

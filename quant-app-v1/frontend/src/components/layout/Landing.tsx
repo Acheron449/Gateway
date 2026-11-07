@@ -37,7 +37,7 @@ const FEATURES = [
 ];
 
 const WORKFLOW = [
-  { step: "01", title: "Connect your data", copy: "Bring your own API keys (Finnhub, Alpaca, OpenBB) — encrypted at rest on your own server." },
+  { step: "01", title: "Connect your data", copy: "Bring your own API keys (Finnhub, Alpaca) — encrypted at rest on your own server." },
   { step: "02", title: "Chart & scan", copy: "Watch the ticker strip, open a native candle chart, scan for setups across your watchlists." },
   { step: "03", title: "Backtest the idea", copy: "Run it against history with reproducible receipts before a single real dollar moves." },
   { step: "04", title: "Journal the result", copy: "Log every trade on the calendar, review the thesis, and let the stats compound." },

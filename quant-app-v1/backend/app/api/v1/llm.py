@@ -205,6 +205,12 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+# Aggregate bound on assistant text streamed to one client, across all tool
+# rounds. max_tokens caps a single completion; this caps the response as a
+# whole so a looping or misbehaving provider cannot stream without limit.
+MAX_REPLY_CHARS = 100_000
+
+
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
@@ -217,9 +223,8 @@ async def chat(
     Events: ``{"type":"delta","text":…}`` repeatedly, then one terminal
     ``{"type":"done","usage":…}`` or ``{"type":"error","message":…}``.
     """
-    del user  # Authentication is enforced by the dependency; no private data is read here.
-
     async def event_stream():
+        emitted_chars = 0
         messages: list[dict[str, Any]] = []
         for message in request.messages:
             entry = message.model_dump(exclude_none=True)
@@ -250,6 +255,26 @@ async def chat(
                         collected.append(event)
                     elif event.get("type") == "done":
                         completion_event = event
+                    elif event.get("type") == "delta" and isinstance(event.get("text"), str):
+                        remaining = MAX_REPLY_CHARS - emitted_chars
+                        text = event["text"]
+                        if remaining <= 0:
+                            yield _sse({
+                                "type": "error",
+                                "message": f"Reply exceeded the {MAX_REPLY_CHARS:,}-character aggregate limit",
+                            })
+                            return
+                        if len(text) > remaining:
+                            emitted_chars += remaining
+                            if remaining:
+                                yield _sse({"type": "delta", "text": text[:remaining]})
+                            yield _sse({
+                                "type": "error",
+                                "message": f"Reply exceeded the {MAX_REPLY_CHARS:,}-character aggregate limit",
+                            })
+                            return
+                        emitted_chars += len(text)
+                        yield _sse(event)
                     else:
                         yield _sse(event)
                 if not collected:
@@ -381,7 +406,9 @@ def _indicators_text(candles: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def _build_section(section_id: str, symbol: str, tf: str) -> dict[str, Any]:
+async def _build_section(
+    section_id: str, symbol: str, tf: str, user: CurrentUser
+) -> dict[str, Any]:
     """Build one context section, never raising — failures degrade to 'unavailable'."""
     try:
         if section_id == "quote":
@@ -457,7 +484,7 @@ async def _build_section(section_id: str, symbol: str, tf: str) -> dict[str, Any
         if section_id == "portfolio":
             from app.api.v1.portfolio import get_portfolio_state
 
-            state = await get_portfolio_state()
+            state = await get_portfolio_state(user=user)
             lines = [f"Cash: {state.cash:,.2f} · Equity: {state.equity:,.2f}"]
             for position in state.positions[:15]:
                 instrument = position.get("instrument_id") or position.get("symbol") or "?"
@@ -516,6 +543,7 @@ def assemble_context(symbol: str, sections: list[dict[str, Any]]) -> str:
 
 @router.get("/context")
 async def get_context(
+    user: CurrentUser,
     symbol: str = "AAPL",
     sections: str = "quote,candles,indicators,news",
     tf: str = "1d",
@@ -532,7 +560,7 @@ async def get_context(
     built: list[dict[str, Any]] = []
     for section_id in CONTEXT_SECTIONS:
         if section_id in wanted:
-            built.append(await _build_section(section_id, symbol, tf))
+            built.append(await _build_section(section_id, symbol, tf, user))
     return {
         "symbol": symbol,
         "tf": tf,

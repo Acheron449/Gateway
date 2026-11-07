@@ -27,7 +27,8 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from loguru import logger
 from pydantic import BaseModel
 
@@ -125,7 +126,7 @@ def decode_token(token: str) -> TokenData | None:
     as a local token, which only verifies in the development profiles.
     """
     try:
-        claims = jwt.get_unverified_claims(token)
+        claims = jwt.decode(token, options={"verify_signature": False})
     except Exception as exc:  # malformed token — fail closed
         logger.debug("Token rejected before dispatch: {}", exc)
         return None
@@ -155,7 +156,7 @@ def _decode_local_token(token: str) -> TokenData | None:
             issuer="gateway:local",
             subject=user_id,
         )
-    except (JWTError, TypeError, ValueError, OSError):
+    except (InvalidTokenError, TypeError, ValueError, OSError):
         return None
 
 

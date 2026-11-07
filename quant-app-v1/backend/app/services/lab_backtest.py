@@ -202,21 +202,39 @@ def list_runs(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def visible_runs(user_id: str | None, limit: int = MAX_RUNS) -> list[dict[str, Any]]:
-    """Return shared legacy runs plus private runs owned by the verified user."""
+    """Return only runs owned by the verified user.
+
+    Rows written before ownership existed (``owner_user_id`` is null) are
+    quarantined legacy data: no account may see them until an operator
+    migration assigns an owner (SRS DR-6/DR-7). Never treat a missing owner
+    as "shared with everyone" (SRS NFR-19).
+    """
+    if not user_id:
+        return []
     runs = _load().get("runs", [])
-    visible = [run for run in runs if not run.get("owner_user_id") or run.get("owner_user_id") == user_id]
-    return visible[:limit]
+    return [run for run in runs if run.get("owner_user_id") == user_id][:limit]
 
 
 def get_run_for_user(run_id: str, user_id: str | None) -> dict[str, Any] | None:
-    return next((run for run in _load().get("runs", []) if run.get("id") == run_id and (not run.get("owner_user_id") or run.get("owner_user_id") == user_id)), None)
+    if not user_id:
+        return None
+    return next(
+        (
+            run
+            for run in _load().get("runs", [])
+            if run.get("id") == run_id and run.get("owner_user_id") == user_id
+        ),
+        None,
+    )
 
 
 def delete_run(run_id: str, owner_user_id: str | None = None) -> bool:
+    if not owner_user_id:
+        return False
     data = _load()
     runs = data.get("runs", [])
     target = next((run for run in runs if run.get("id") == run_id), None)
-    if target is None or (target.get("owner_user_id") and target.get("owner_user_id") != owner_user_id):
+    if target is None or target.get("owner_user_id") != owner_user_id:
         return False
     data["runs"] = [run for run in runs if run.get("id") != run_id]
     _save(data)

@@ -407,7 +407,7 @@ async def test_history_routes_use_provider_source_catalogue_and_omit_openbb_hist
     monkeypatch.setattr("app.api.main._alltick_available", lambda: False)
     monkeypatch.setattr("app.api.main._ccxt_available", lambda: False)
     monkeypatch.setattr("app.api.main._lse_available", lambda: False)
-    route_paths = {route.path for route in app.routes if hasattr(route, "path")}
+    route_paths = set(app.openapi()["paths"])
     assert "/history/{ticker}" in route_paths
     assert "/openbb/equity" not in route_paths
     assert "/openbb/crypto" not in route_paths

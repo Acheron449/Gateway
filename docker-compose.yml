@@ -21,6 +21,8 @@ services:
       JWT_SECRET_KEY: "${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env next to docker-compose.yml}"
       # Supabase Auth is the only identity provider (SRS FR-A6); access tokens
       # are verified by introspection, so no project secret ships to the app.
+    # Real secrets live only in the operator's untracked .env.docker, created
+    # from the committed .env.docker.example (see .gitignore).
     env_file:
       - .env.docker
     secrets:

@@ -15,7 +15,7 @@ import time
 
 import httpx
 import pytest
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 import app.auth as auth
 from app.services.database import get_user_by_id, get_connection

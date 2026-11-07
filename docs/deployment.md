@@ -32,6 +32,7 @@ Build-time environment variables (Pages → Settings → Environment variables):
 | Variable | Value |
 | --- | --- |
 | `VITE_API_BASE` | `https://api.<your-domain>` |
+| `VITE_SITE_URL` | canonical Pages origin, e.g. `https://<project>.pages.dev` or `https://app.<your-domain>` — used to generate `robots.txt` and `sitemap.xml` |
 | `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | the publishable anon key (public by design) |
 
@@ -40,6 +41,11 @@ Build-time environment variables (Pages → Settings → Environment variables):
 ```
 /*    /index.html   200
 ```
+
+`robots.txt` and `sitemap.xml` are generated into `dist/` at build time from
+`VITE_SITE_URL` (see `vite.config.ts`); unset builds fall back to the local
+dev origin, so a production build must set it. There is no repository-path
+disallow and no placeholder host.
 
 **Workers Builds is retired.** `wrangler.toml` was removed in phase P1, so Pages is the single hosting path (SRS AR-2). Unknown paths return `index.html` with HTTP 200 instead of 404.
 
@@ -122,9 +128,11 @@ no silent fallback); otherwise local SQLite on `GATEWAY_DATA_DIR`.
 | `GATEWAY_DATA_DIR` | API | writable path for SQLite / job scratch |
 | `GATEWAY_OPERATOR_IDS` | API | comma-separated ids allowed global actions; empty ⇒ deny |
 | `GATEWAY_PROVIDER_KEY` | API | Fernet key for stored provider keys and the vault |
+| `OPENROUTER_API_KEY` (or another provider's `*_API_KEY`) | API | optional live LLM credential; stored keys are encrypted with `GATEWAY_PROVIDER_KEY`. Without one, chat requests report a provider error and the live smoke test cannot run. |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | API | auth introspection, server-side writes |
 | `SUPABASE_RPC_SECRET` | API | guards the SECURITY DEFINER RPCs |
 | `VITE_API_BASE` | Pages build | API origin |
+| `VITE_SITE_URL` | Pages build | canonical public origin for robots.txt and sitemap.xml |
 | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Pages build | Supabase client |
 | `GATEWAY_QUOTES_TTL` / `GATEWAY_PRICE_TTL` | API | quote and fill-price cache seconds (default 10) |
 
@@ -160,6 +168,25 @@ select u.email, p.theme, p.watchlists
 from gateway_preferences p join gateway_users u on u.id = p.user_id
 order by u.created_at desc limit 5;
 ```
+
+### Live chat SSE smoke test
+
+The offline suite mocks the provider. To confirm real streaming and the NFR-15
+aggregate cap, set one provider key on the API host (or in the repo-root `.env`
+for a local run) and execute:
+
+```bash
+cd quant-app-v1/backend
+PYTHONPATH=. ../../.venv/bin/python scripts/smoke_chat_stream.py \
+  --provider openrouter --model <model> --max-chars 400
+```
+
+The script mounts the chat router with the private-data gate bypassed, streams a
+real completion, and exits 0 only when the response is `text/event-stream`, real
+deltas arrive, and the stream ends with exactly `--max-chars` characters plus
+the aggregate-limit error. Exit 2 means no usable provider key; exit 1 means the
+provider errored or produced less than the cap (retry with a longer prompt). It
+is deliberately not part of CI.
 
 ## 6. Gates
 
