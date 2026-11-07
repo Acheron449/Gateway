@@ -400,6 +400,10 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
         operator_prefixes = ("/risk", "/settings/providers")
         private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
         operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
+        # The Risk Dashboard reads only the signed-in account's own paper
+        # portfolio, so this route is owner-scoped (like /portfolio itself will
+        # be); every other private route stays fail-closed behind the gate.
+        owner_scoped_paths = {"/portfolio/risk"}
         if path.startswith("/forecast/kronos/install/") or path == "/forecast/kronos/install":
             return await call_next(request)
         if not private and not operator_only:
@@ -420,6 +424,9 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
                 content={"detail": "Invalid or expired token"},
             )
+
+        if path in owner_scoped_paths:
+            return await call_next(request)
 
         if operator_only:
             if (token_data.issuer, token_data.subject) not in _operator_identities():

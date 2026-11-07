@@ -1,431 +1,342 @@
-import { useState, useEffect, useCallback } from "react";
-import { API_BASE } from "../../lib/constants";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-interface RiskMetrics {
-  portfolio_value: number;
-  cash: number;
+import { API_BASE } from "../../lib/constants";
+import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
+
+/**
+ * Risk Dashboard — equity, drawdown and exposure for the signed-in account's
+ * paper portfolio. Every number comes from `GET /portfolio/risk`, which
+ * replays the portfolio's own ledger and fill events server-side; nothing on
+ * this page is generated in the browser.
+ */
+
+interface EquityPoint {
+  time: string;
   equity: number;
+  cash: number;
+}
+
+interface DrawdownPoint {
+  time: string;
+  drawdown: number;
+}
+
+interface RiskPosition {
+  instrument_id: string;
+  quantity: number;
+  avg_cost: number;
+  market_value: number;
+  unrealized_pnl: number;
+  realized_pnl: number;
+  pct_of_equity: number;
+}
+
+interface PortfolioRisk {
+  portfolio_id: string;
+  generated_at: string;
+  equity: number;
+  cash: number;
   buying_power: number;
   daily_pnl: number;
   daily_pnl_pct: number;
+  total_return_pct: number;
   max_drawdown: number;
   current_drawdown: number;
   open_positions: number;
   gross_exposure: number;
   net_exposure: number;
-  concentration_risk: { symbol: string; pct: number }[];
   var_95: number;
   var_99: number;
+  var_95_amount: number;
+  var_99_amount: number;
+  concentration_risk: { symbol: string; pct: number }[];
+  equity_curve: EquityPoint[];
+  drawdown_curve: DrawdownPoint[];
+  positions: RiskPosition[];
+  series_note: string;
 }
 
-interface RiskAlert {
-  id: string;
-  type: "warning" | "critical" | "info";
-  message: string;
-  timestamp: string;
-  acknowledged: boolean;
+function money(value: number): string {
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  });
 }
 
-interface RiskConfig {
-  max_position_pct: number;
-  max_sector_pct: number;
-  max_gross_exposure: number;
-  max_drawdown_pct: number;
-  daily_loss_limit_pct: number;
-  var_limit_95: number;
-  kill_switch_active: boolean;
+function signedPct(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-const ALERT_TYPE_COLORS = {
-  warning: "bg-yellow-100 text-yellow-800 border-yellow-300",
-  critical: "bg-red-100 text-red-800 border-red-300",
-  info: "bg-blue-100 text-blue-800 border-blue-300",
-};
+function toneClass(value: number): string {
+  if (value > 0) return "up";
+  if (value < 0) return "down";
+  return "";
+}
+
+function shortDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** Equity path with the first value as a dashed reference. */
+function EquityChart({ points }: { points: EquityPoint[] }) {
+  if (points.length < 2) {
+    return <p className="report-empty">No equity path recorded yet — place a simulated fill to start the curve.</p>;
+  }
+  const values = points.map((point) => point.equity);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || Math.max(max * 0.01, 1);
+  const width = 720;
+  const height = 170;
+  const x = (index: number) => (index / (points.length - 1)) * width;
+  const y = (value: number) => height - ((value - min) / span) * (height - 14) - 7;
+  const path = points.map((point, index) => `${x(index).toFixed(1)},${y(point.equity).toFixed(1)}`).join(" ");
+  const baseline = y(points[0]!.equity);
+  const up = points[points.length - 1]!.equity >= points[0]!.equity;
+
+  return (
+    <svg
+      className="report-chart risk-chart risk-equity-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="Equity curve"
+      data-equity-points={points.length}
+    >
+      <line x1={0} y1={baseline} x2={width} y2={baseline} className="report-chart-base" />
+      <polyline points={path} className={`report-chart-line ${up ? "" : "down"}`} />
+    </svg>
+  );
+}
+
+/** Drawdown from the running peak, drawn downward from zero. */
+function DrawdownChart({ points }: { points: DrawdownPoint[] }) {
+  if (points.length < 2) {
+    return <p className="report-empty">No drawdown path recorded yet.</p>;
+  }
+  const worst = Math.min(...points.map((point) => point.drawdown));
+  const span = Math.abs(worst) || 1;
+  const width = 720;
+  const height = 120;
+  const path = points
+    .map((point, index) => {
+      const x = (index / (points.length - 1)) * width;
+      const y = (Math.abs(point.drawdown) / span) * (height - 10) + 4;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const area = `0,0 ${path} ${width},0`;
+
+  return (
+    <svg
+      className="report-chart report-drawdown risk-chart risk-drawdown-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="Drawdown curve"
+      data-drawdown-points={points.length}
+    >
+      <polygon points={area} className="report-drawdown-area" />
+      <polyline points={path} className="report-chart-line down" />
+    </svg>
+  );
+}
+
+function Metric({ label, value, note, tone }: { label: string; value: string; note?: string; tone?: string }) {
+  return (
+    <div className="risk-metric">
+      <span className="risk-metric-label">{label}</span>
+      <span className={`risk-metric-value ${tone ?? ""}`}>{value}</span>
+      {note && <span className="risk-metric-note">{note}</span>}
+    </div>
+  );
+}
 
 export function RiskDashboard() {
-  const [metrics, setMetrics] = useState<RiskMetrics | null>(null);
-  const [alerts, setAlerts] = useState<RiskAlert[]>([]);
-  const [config, setConfig] = useState<RiskConfig | null>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "positions" | "alerts" | "config">("overview");
+  const { token, isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
+  const [risk, setRisk] = useState<PortfolioRisk | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchMetrics = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/risk/metrics`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setMetrics(data);
-    } catch (err) {
-      console.error("Failed to load metrics:", err);
+  const loadRisk = useCallback(async () => {
+    if (!token) {
+      setRisk(null);
+      return;
     }
-  }, []);
-
-  const fetchAlerts = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const res = await fetch(`${API_BASE}/risk/alerts`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setAlerts(data.alerts);
+      const response = await fetch(`${API_BASE}/portfolio/risk`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(payload?.detail || `HTTP ${response.status}`);
+      }
+      setRisk((await response.json()) as PortfolioRisk);
     } catch (err) {
-      console.error("Failed to load alerts:", err);
+      setError(err instanceof Error ? err.message : "Could not load the risk series");
+    } finally {
+      setLoading(false);
     }
-  }, []);
-
-  const fetchConfig = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/risk/config`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setConfig(data);
-    } catch (err) {
-      console.error("Failed to load config:", err);
-    }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
-    fetchMetrics();
-    fetchAlerts();
-    fetchConfig();
-    // Refresh metrics every 30 seconds
-    const interval = setInterval(fetchMetrics, 30000);
-    return () => clearInterval(interval);
-  }, [fetchMetrics, fetchAlerts, fetchConfig]);
+    void loadRisk();
+  }, [loadRisk]);
 
-  const acknowledgeAlert = async (alertId: string) => {
-    try {
-      await fetch(`${API_BASE}/risk/alerts/${alertId}/acknowledge`, { method: "POST" });
-      setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, acknowledged: true } : a));
-    } catch (err) {
-      console.error("Failed to acknowledge alert:", err);
-    }
-  };
-
-  const updateConfig = async (updates: Partial<RiskConfig>) => {
-    if (!config) return;
-    try {
-      const res = await fetch(`${API_BASE}/risk/config`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...config, ...updates }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setConfig({ ...config, ...updates });
-    } catch (err) {
-      console.error("Failed to update config:", err);
-    }
-  };
-
-  const toggleKillSwitch = async () => {
-    if (!config) return;
-    try {
-      await fetch(`${API_BASE}/risk/kill-switch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: !config.kill_switch_active }),
-      });
-      setConfig({ ...config, kill_switch_active: !config.kill_switch_active });
-    } catch (err) {
-      console.error("Failed to toggle kill switch:", err);
-    }
-  };
-
-  const criticalAlerts = alerts.filter(a => a.type === "critical" && !a.acknowledged);
-  const warningAlerts = alerts.filter(a => a.type === "warning" && !a.acknowledged);
-  const infoAlerts = alerts.filter(a => a.type === "info" && !a.acknowledged);
+  const concentration = useMemo(() => risk?.concentration_risk ?? [], [risk]);
+  const positions = useMemo(() => risk?.positions ?? [], [risk]);
 
   return (
-    <div className="risk-dashboard">
-      <div className="dashboard-header">
-        <h1>Risk Dashboard</h1>
-        <div className="dashboard-actions">
-          {config?.kill_switch_active && (
-            <div className="kill-switch-banner">
-              ⚠ KILL SWITCH ACTIVE - All new orders blocked
-            </div>
-          )}
-          <div className="dashboard-tabs">
-            <button className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
-            <button className={activeTab === "positions" ? "active" : ""} onClick={() => setActiveTab("positions")}>Positions</button>
-            <button className={activeTab === "alerts" ? "active" : ""} onClick={() => setActiveTab("alerts")}>Alerts ({criticalAlerts.length + warningAlerts.length})</button>
-            <button className={activeTab === "config" ? "active" : ""} onClick={() => setActiveTab("config")}>Config</button>
-          </div>
-        </div>
+    <div className="canvas-view risk-dashboard">
+      <div className="view-header">
+        <h1>Risk</h1>
+        <p className="view-description">
+          Equity, drawdown and exposure for your paper portfolio, replayed from its recorded fills and cash
+          flows — no hypothetical numbers.
+        </p>
       </div>
 
-      {activeTab === "overview" && metrics && (
-        <div className="dashboard-overview">
-          <div className="metrics-grid">
-            <MetricCard
-              label="Portfolio Value"
-              value={`$${metrics.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              change={metrics.daily_pnl_pct}
-              changeLabel="Daily P&L"
-            />
-            <MetricCard
-              label="Cash"
-              value={`$${metrics.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            />
-            <MetricCard
-              label="Buying Power"
-              value={`$${metrics.buying_power.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            />
-            <MetricCard
+      {!isAuthenticated && (
+        <section className="risk-signin" aria-label="Sign in required">
+          <h2>Sign in to see your risk</h2>
+          <p>The equity curve and drawdown path belong to your own paper portfolio, so they need an account.</p>
+          <button type="button" className="btn-primary" onClick={() => openAuth("login")}>
+            Sign in
+          </button>
+        </section>
+      )}
+
+      {isAuthenticated && loading && !risk && <p className="risk-note">Loading risk series…</p>}
+
+      {isAuthenticated && error && (
+        <section className="risk-error" role="alert">
+          <strong>Could not load the risk series.</strong>
+          <span>{error}</span>
+          <button type="button" className="btn-secondary" onClick={() => void loadRisk()}>
+            Retry
+          </button>
+        </section>
+      )}
+
+      {isAuthenticated && risk && (
+        <>
+          <div className="risk-metrics">
+            <Metric label="Portfolio equity" value={money(risk.equity)} note={risk.portfolio_id} />
+            <Metric label="Cash" value={money(risk.cash)} note={`Buying power ${money(risk.buying_power)}`} />
+            <Metric
               label="Daily P&L"
-              value={`$${metrics.daily_pnl >= 0 ? "+" : ""}${metrics.daily_pnl.toFixed(2)}`}
-              subValue={`${metrics.daily_pnl_pct >= 0 ? "+" : ""}${metrics.daily_pnl_pct.toFixed(2)}%`}
-              isPositive={metrics.daily_pnl >= 0}
+              value={money(risk.daily_pnl)}
+              note={signedPct(risk.daily_pnl_pct)}
+              tone={toneClass(risk.daily_pnl)}
             />
-            <MetricCard
-              label="Current Drawdown"
-              value={`${metrics.current_drawdown.toFixed(2)}%`}
-              subValue={`Max: ${metrics.max_drawdown.toFixed(2)}%`}
-              isPositive={metrics.current_drawdown < metrics.max_drawdown * 0.5}
+            <Metric
+              label="Total return"
+              value={signedPct(risk.total_return_pct)}
+              tone={toneClass(risk.total_return_pct)}
             />
-            <MetricCard
+            <Metric
+              label="Current drawdown"
+              value={`${risk.current_drawdown.toFixed(2)}%`}
+              note={`Max ${risk.max_drawdown.toFixed(2)}%`}
+              tone={risk.current_drawdown > 0 ? "down" : ""}
+            />
+            <Metric
+              label="Gross exposure"
+              value={`${(risk.gross_exposure * 100).toFixed(1)}%`}
+              note={`Net ${(risk.net_exposure * 100).toFixed(1)}% · ${risk.open_positions} open`}
+            />
+            <Metric
               label="VaR (95%)"
-              value={`$${metrics.var_95.toLocaleString()}`}
-            />
-            <MetricCard
-              label="Open Positions"
-              value={metrics.open_positions.toString()}
-            />
-            <MetricCard
-              label="Gross Exposure"
-              value={`${(metrics.gross_exposure * 100).toFixed(1)}%`}
-              isPositive={metrics.gross_exposure < (config?.max_gross_exposure || 1)}
+              value={money(risk.var_95_amount)}
+              note={`${risk.var_95.toFixed(2)}% daily · 99% ${risk.var_99.toFixed(2)}%`}
             />
           </div>
 
-          <div className="charts-section">
-            <div className="chart-card">
-              <h3>Equity Curve</h3>
-              <div className="chart-placeholder">Equity curve chart would go here</div>
-            </div>
-            <div className="chart-card">
-              <h3>Drawdown</h3>
-              <div className="chart-placeholder">Drawdown chart would go here</div>
-            </div>
+          <div className="risk-charts">
+            <figure>
+              <figcaption>Equity curve</figcaption>
+              <EquityChart points={risk.equity_curve} />
+              <div className="risk-chart-axis">
+                <span>{shortDate(risk.equity_curve[0]!.time)}</span>
+                <span>{shortDate(risk.equity_curve[risk.equity_curve.length - 1]!.time)}</span>
+              </div>
+            </figure>
+            <figure>
+              <figcaption>Drawdown from peak</figcaption>
+              <DrawdownChart points={risk.drawdown_curve} />
+              <div className="risk-chart-axis">
+                <span>{risk.max_drawdown.toFixed(2)}% worst</span>
+                <span>{risk.current_drawdown.toFixed(2)}% current</span>
+              </div>
+            </figure>
           </div>
-        </div>
-      )}
 
-      {activeTab === "positions" && metrics && (
-        <div className="positions-tab">
-          <h2>Position Risk Analysis</h2>
-          <div className="positions-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Quantity</th>
-                  <th>Entry</th>
-                  <th>Current</th>
-                  <th>Unrealized P&L</th>
-                  <th>% of Portfolio</th>
-                  <th>Risk</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metrics.concentration_risk.map(pos => (
-                  <tr key={pos.symbol}>
-                    <td className="symbol-cell">{pos.symbol}</td>
-                    <td>Long</td>
-                    <td>—</td>
-                    <td>—</td>
-                    <td>—</td>
-                    <td>—</td>
-                    <td>{pos.pct.toFixed(2)}%</td>
-                    <td>
-                      <span className={pos.pct > 10 ? "risk-high" : pos.pct > 5 ? "risk-medium" : "risk-low"}>
-                        {pos.pct > 10 ? "High" : pos.pct > 5 ? "Medium" : "Low"}
-                      </span>
-                    </td>
+          <p className="risk-note">{risk.series_note}</p>
+
+          <section className="risk-positions" aria-label="Open positions">
+            <h2>Positions</h2>
+            {positions.length === 0 ? (
+              <p className="report-empty">No open positions in this portfolio.</p>
+            ) : (
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Quantity</th>
+                    <th>Avg cost</th>
+                    <th>Market value</th>
+                    <th>Unrealized</th>
+                    <th>% of equity</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="exposure-summary">
-            <h3>Exposure Summary</h3>
-            <div className="exposure-metrics">
-              <div className="metric">
-                <span>Gross Exposure</span>
-                <span>{(metrics.gross_exposure * 100).toFixed(1)}%</span>
-                <span className={metrics.gross_exposure < (config?.max_gross_exposure || 1) ? "ok" : "warning"}>
-                  {metrics.gross_exposure < (config?.max_gross_exposure || 1) ? "Within Limit" : "EXCEEDS LIMIT"}
-                </span>
-              </div>
-              <div className="metric">
-                <span>Net Exposure</span>
-                <span>{(metrics.net_exposure * 100).toFixed(1)}%</span>
-              </div>
-              <div className="metric">
-                <span>Largest Position</span>
-                <span>{metrics.concentration_risk[0]?.pct.toFixed(2) || 0}%</span>
-                <span className={(metrics.concentration_risk[0]?.pct || 0) > 10 ? "warning" : "ok"}>
-                  {(metrics.concentration_risk[0]?.pct || 0) > 10 ? "High Concentration" : "OK"}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "alerts" && (
-        <div className="alerts-tab">
-          <div className="alerts-header">
-            <h2>Risk Alerts</h2>
-            <div className="alert-summary">
-              <span className="alert-count critical">{criticalAlerts.length} Critical</span>
-              <span className="alert-count warning">{warningAlerts.length} Warning</span>
-              <span className="alert-count info">{infoAlerts.length} Info</span>
-            </div>
-          </div>
-
-          <div className="alerts-list">
-            {[
-              ...criticalAlerts.map(a => ({...a, priority: 0})),
-              ...warningAlerts.map(a => ({...a, priority: 1})),
-              ...infoAlerts.map(a => ({...a, priority: 2})),
-            ].sort((a, b) => a.priority - b.priority).map(alert => (
-              <div key={alert.id} className={`alert-item ${ALERT_TYPE_COLORS[alert.type]} ${alert.acknowledged ? "acknowledged" : ""}`}>
-                <div className="alert-content">
-                  <span className="alert-type">{alert.type.toUpperCase()}</span>
-                  <span className="alert-message">{alert.message}</span>
-                  <span className="alert-time">{new Date(alert.timestamp).toLocaleString()}</span>
-                </div>
-                {!alert.acknowledged && (
-                  <button className="btn-acknowledge" onClick={() => acknowledgeAlert(alert.id)}>
-                    Acknowledge
-                  </button>
-                )}
-              </div>
-            ))}
-            {alerts.length === 0 && (
-              <div className="empty-state">No active alerts</div>
+                </thead>
+                <tbody>
+                  {positions.map((position) => (
+                    <tr key={position.instrument_id}>
+                      <th scope="row">{position.instrument_id}</th>
+                      <td>{position.quantity.toLocaleString()}</td>
+                      <td>{money(position.avg_cost)}</td>
+                      <td>{money(position.market_value)}</td>
+                      <td className={toneClass(position.unrealized_pnl)}>{money(position.unrealized_pnl)}</td>
+                      <td>{position.pct_of_equity.toFixed(2)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
-          </div>
-        </div>
+          </section>
+
+          <section className="risk-positions" aria-label="Concentration">
+            <h2>Concentration</h2>
+            {concentration.length === 0 ? (
+              <p className="report-empty">Nothing held, so there is no concentration to report.</p>
+            ) : (
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>% of equity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {concentration.map((row) => (
+                    <tr key={row.symbol}>
+                      <th scope="row">{row.symbol}</th>
+                      <td>{row.pct.toFixed(2)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        </>
       )}
-
-      {activeTab === "config" && config && (
-        <div className="config-tab">
-          <h2>Risk Configuration</h2>
-          
-          <div className="config-section">
-            <h3>Position Limits</h3>
-            <div className="config-grid">
-              <ConfigInput
-                label="Max Position %"
-                value={config.max_position_pct * 100}
-                step={0.1}
-                onChange={v => updateConfig({ max_position_pct: v / 100 })}
-                suffix="%"
-              />
-              <ConfigInput
-                label="Max Sector %"
-                value={config.max_sector_pct * 100}
-                step={0.1}
-                onChange={v => updateConfig({ max_sector_pct: v / 100 })}
-                suffix="%"
-              />
-              <ConfigInput
-                label="Max Gross Exposure"
-                value={config.max_gross_exposure * 100}
-                step={0.1}
-                onChange={v => updateConfig({ max_gross_exposure: v / 100 })}
-                suffix="%"
-              />
-            </div>
-          </div>
-
-          <div className="config-section">
-            <h3>Loss Limits</h3>
-            <div className="config-grid">
-              <ConfigInput
-                label="Max Drawdown %"
-                value={config.max_drawdown_pct * 100}
-                step={0.1}
-                onChange={v => updateConfig({ max_drawdown_pct: v / 100 })}
-                suffix="%"
-              />
-              <ConfigInput
-                label="Daily Loss Limit %"
-                value={config.daily_loss_limit_pct * 100}
-                step={0.1}
-                onChange={v => updateConfig({ daily_loss_limit_pct: v / 100 })}
-                suffix="%"
-              />
-              <ConfigInput
-                label="VaR Limit (95%)"
-                value={config.var_limit_95}
-                step={1000}
-                onChange={v => updateConfig({ var_limit_95: v })}
-              />
-            </div>
-          </div>
-
-          <div className="config-section">
-            <h3>Kill Switch</h3>
-            <div className="kill-switch-control">
-              <label className={`kill-switch ${config.kill_switch_active ? "active" : ""}`}>
-                <input
-                  type="checkbox"
-                  checked={config.kill_switch_active}
-                  onChange={() => toggleKillSwitch()}
-                />
-                <span className="slider"></span>
-                <span className="kill-switch-label">
-                  {config.kill_switch_active ? "ACTIVE - All orders blocked" : "INACTIVE - Normal operation"}
-                </span>
-              </label>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MetricCard({ label, value, subValue, change, changeLabel, isPositive = true }: {
-  label: string;
-  value: string;
-  subValue?: string;
-  change?: number;
-  changeLabel?: string;
-  isPositive?: boolean;
-}) {
-  return (
-    <div className="metric-card">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      {subValue && <div className="metric-sub">{subValue}</div>}
-      {change !== undefined && changeLabel && (
-        <div className={`metric-change ${isPositive ? "positive" : "negative"}`}>
-          {change >= 0 ? "+" : ""}{change.toFixed(2)}% {changeLabel}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ConfigInput({ label, value, step, onChange, suffix }: {
-  label: string;
-  value: number;
-  step: number;
-  onChange: (v: number) => void;
-  suffix?: string;
-}) {
-  return (
-    <div className="config-input-group">
-      <label>{label}{suffix && <span className="suffix">{suffix}</span>}</label>
-      <input
-        type="number"
-        step={step}
-        value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-      />
     </div>
   );
 }

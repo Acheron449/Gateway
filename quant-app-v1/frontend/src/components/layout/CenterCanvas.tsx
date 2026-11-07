@@ -15,6 +15,7 @@ import { StrategyStudio } from "./StrategyStudio";
 import { BacktestReports } from "../features/BacktestReports";
 import { OptionsCalculator } from "../features/OptionsCalculator";
 import { OrderBookPanel } from "../features/OrderBookPanel";
+import { RiskDashboard } from "./RiskDashboard";
 import { TradeJournal } from "./TradeJournal";
 import { ProviderSettings } from "./ProviderSettings";
 import { LastUpdated } from "../../lib/LastUpdated";
@@ -148,6 +149,8 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <PaperTrading selectedSymbol={selectedSymbol} />
         </div>
       );
+    case "risk":
+      return <RiskDashboard />;
     case "live-trading":
       return (
         <div className="canvas-view canvas-view-wide canvas-view-trading">

@@ -15,6 +15,7 @@ from app.services.database import (
 )
 from app.services.fill_simulator import FillSimulator, get_market_session, is_market_open
 from app.services.paper_portfolio import PaperPortfolioService
+from app.services.portfolio_risk import build_portfolio_risk
 from app.services.risk_engine import RiskCheckResult, get_risk_engine
 
 # Stub missing services for Phase 2 compatibility
@@ -134,6 +135,59 @@ def _require_owned_portfolio(portfolio_id: str, user_id: str) -> dict[str, Any]:
     return portfolio
 
 
+class EquityCurvePoint(BaseModel):
+    time: str
+    equity: float
+    cash: float
+
+
+class DrawdownCurvePoint(BaseModel):
+    time: str
+    drawdown: float
+
+
+class ConcentrationRow(BaseModel):
+    symbol: str
+    pct: float
+
+
+class RiskPositionRow(BaseModel):
+    instrument_id: str
+    quantity: float
+    avg_cost: float
+    market_value: float
+    unrealized_pnl: float
+    realized_pnl: float
+    pct_of_equity: float
+
+
+class PortfolioRiskResponse(BaseModel):
+    """Owner-scoped risk payload, replayed from this portfolio's own records."""
+
+    portfolio_id: str
+    generated_at: str
+    equity: float
+    cash: float
+    buying_power: float
+    daily_pnl: float
+    daily_pnl_pct: float
+    total_return_pct: float
+    max_drawdown: float
+    current_drawdown: float
+    open_positions: int
+    gross_exposure: float
+    net_exposure: float
+    var_95: float
+    var_99: float
+    var_95_amount: float
+    var_99_amount: float
+    concentration_risk: list[ConcentrationRow]
+    equity_curve: list[EquityCurvePoint]
+    drawdown_curve: list[DrawdownCurvePoint]
+    positions: list[RiskPositionRow]
+    series_note: str
+
+
 def _get_current_price(instrument: str) -> float | None:
     """Last trade price for risk checks and market-order validation."""
     from app.services.market_data import get_quote_triplet_sync
@@ -163,6 +217,17 @@ async def get_portfolio_state(user: CurrentUser) -> PortfolioResponse:
 async def get_portfolio_history_endpoint(user: CurrentUser, limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
     portfolio_id = _get_default_portfolio(user.id)
     return get_portfolio_history(portfolio_id, limit)
+
+
+@router.get("/risk", response_model=PortfolioRiskResponse)
+async def get_portfolio_risk(user: CurrentUser) -> PortfolioRiskResponse:
+    """Equity curve, drawdown path and risk metrics for the caller's book.
+
+    Derived from the owner-scoped paper portfolio's ledger and fill events, so
+    the dashboard charts real recorded history instead of demo numbers.
+    """
+    portfolio_id = _get_default_portfolio(user.id)
+    return PortfolioRiskResponse(**build_portfolio_risk(portfolio_id))
 
 
 @router.post("/orders", response_model=OrderResponse)

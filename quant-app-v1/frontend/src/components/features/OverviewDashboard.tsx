@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE } from "../../lib/constants";
 import { LastUpdated } from "../../lib/LastUpdated";
 import { NewsPage } from "../../components/features/NewsPage";
+import { useAuth } from "../../context/AuthContext";
 
 /**
  * Overview dashboard — the quadrant-style market home screen.
@@ -13,7 +14,7 @@ import { NewsPage } from "../../components/features/NewsPage";
  * a risk summary, a watchlist table, and a sector heat map.
  *
  * Every panel is fed by existing public endpoints:
- *   /quotes, /history/{sym}, /news, /filings, /risk/metrics, /risk/alerts
+ *   /quotes, /history/{sym}, /news, /filings and the owner-scoped /portfolio/risk
  * so the page needs no new backend surface beyond /filings.
  */
 
@@ -126,7 +127,7 @@ interface Filing {
 }
 
 interface RiskMetrics {
-  portfolio_value?: number;
+  equity?: number;
   cash?: number;
   daily_pnl?: number;
   daily_pnl_pct?: number;
@@ -136,14 +137,8 @@ interface RiskMetrics {
   net_exposure?: number;
   open_positions?: number;
   var_95?: number;
+  var_95_amount?: number;
   concentration_risk?: { symbol: string; pct: number }[];
-}
-
-interface RiskAlert {
-  id: string;
-  type: string;
-  message: string;
-  acknowledged: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,8 +279,11 @@ function Tabs<T extends string>({
 // Data helpers
 // ---------------------------------------------------------------------------
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`);
+async function fetchJson<T>(path: string, token?: string | null): Promise<T> {
+  const response = await fetch(
+    `${API_BASE}${path}`,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as T;
 }
@@ -323,6 +321,8 @@ function pickSymbol(symbol: string) {
 // ---------------------------------------------------------------------------
 
 export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }) {
+  const { token } = useAuth();
+
   // --- market strip -------------------------------------------------------
   const [stripQuotes, setStripQuotes] = useState<Record<string, Quote>>({});
   const [stripSparks, setStripSparks] = useState<Record<string, number[]>>({});
@@ -353,7 +353,6 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
 
   // --- risk ---------------------------------------------------------------
   const [riskMetrics, setRiskMetrics] = useState<RiskMetrics | null>(null);
-  const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
 
   // --- watchlist ----------------------------------------------------------
   const [watchTab, setWatchTab] = useState("indexes");
@@ -449,20 +448,25 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
     };
   }, []);
 
-  // Risk summary (metrics + alerts from the risk module).
+  // Risk summary: the signed-in account's own paper portfolio, replayed
+  // server-side from recorded cash flows and fills.
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([fetchJson<RiskMetrics>(`/risk/metrics`), fetchJson<{ alerts?: RiskAlert[] }>(`/risk/alerts`)]).then(
-      ([metrics, alerts]) => {
-        if (cancelled) return;
-        if (metrics.status === "fulfilled") setRiskMetrics(metrics.value);
-        if (alerts.status === "fulfilled") setRiskAlerts(alerts.value.alerts ?? []);
-      },
-    );
+    if (!token) {
+      setRiskMetrics(null);
+      return;
+    }
+    fetchJson<RiskMetrics>(`/portfolio/risk`, token)
+      .then((payload) => {
+        if (!cancelled) setRiskMetrics(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setRiskMetrics(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [token]);
 
   // Watchlist rows: quotes for the active tab + YTD from daily history.
   const loadWatchTab = useCallback(async (tabId: string) => {
@@ -550,12 +554,12 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
     const items: { label: string; ok: boolean; note: string }[] = [
       { label: "Concentration", ok: worst <= 10, note: worst ? `Top position ${worst.toFixed(1)}%` : "No open positions" },
       { label: "Leverage", ok: (riskMetrics?.gross_exposure ?? 0) <= 0.8, note: `${((riskMetrics?.gross_exposure ?? 0) * 100).toFixed(0)}% gross exposure` },
-      { label: "Drawdown", ok: (riskMetrics?.current_drawdown ?? 0) < (riskMetrics?.max_drawdown ?? 100), note: `${(riskMetrics?.current_drawdown ?? 0).toFixed(1)}% of ${(riskMetrics?.max_drawdown ?? 0).toFixed(1)}% limit` },
+      { label: "Drawdown", ok: (riskMetrics?.current_drawdown ?? 0) < (riskMetrics?.max_drawdown ?? 100), note: `${(riskMetrics?.current_drawdown ?? 0).toFixed(1)}% vs ${(riskMetrics?.max_drawdown ?? 0).toFixed(1)}% worst` },
       { label: "Daily P&L", ok: (riskMetrics?.daily_pnl_pct ?? 0) > -3, note: pct(riskMetrics?.daily_pnl_pct) },
-      { label: "Alerts", ok: !riskAlerts.some((a) => !a.acknowledged && a.type === "critical"), note: riskAlerts.length ? `${riskAlerts.filter((a) => !a.acknowledged).length} unacknowledged` : "None active" },
+      { label: "Value at risk", ok: (riskMetrics?.var_95 ?? 0) <= 3, note: `${(riskMetrics?.var_95 ?? 0).toFixed(2)}% daily (95%)` },
     ];
     return items;
-  }, [riskMetrics, riskAlerts]);
+  }, [riskMetrics]);
 
   // --- render -------------------------------------------------------------
   return (
@@ -727,15 +731,17 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
             <div className="ov-risk-metrics">
               {riskMetrics ? (
                 <>
-                  <div className="ov-risk-row"><span>Portfolio value</span><strong>${(riskMetrics.portfolio_value ?? 0).toLocaleString()}</strong></div>
+                  <div className="ov-risk-row"><span>Portfolio equity</span><strong>${(riskMetrics.equity ?? 0).toLocaleString()}</strong></div>
                   <div className="ov-risk-row"><span>Daily P&L</span><strong className={(riskMetrics.daily_pnl ?? 0) >= 0 ? "up" : "down"}>{pct(riskMetrics.daily_pnl_pct)}</strong></div>
                   <div className="ov-risk-row"><span>Max drawdown</span><strong className="down">{(riskMetrics.max_drawdown ?? 0).toFixed(1)}%</strong></div>
                   <div className="ov-risk-row"><span>Current drawdown</span><strong>{(riskMetrics.current_drawdown ?? 0).toFixed(1)}%</strong></div>
                   <div className="ov-risk-row"><span>Gross exposure</span><strong>{((riskMetrics.gross_exposure ?? 0) * 100).toFixed(0)}%</strong></div>
-                  <div className="ov-risk-row"><span>VaR (95%)</span><strong>${(riskMetrics.var_95 ?? 0).toLocaleString()}</strong></div>
+                  <div className="ov-risk-row"><span>VaR (95%)</span><strong>${(riskMetrics.var_95_amount ?? 0).toLocaleString()}</strong></div>
                 </>
               ) : (
-                <div className="empty-state">Loading risk metrics…</div>
+                <div className="empty-state">
+                  {token ? "Loading risk metrics…" : "Sign in to see your paper risk."}
+                </div>
               )}
               {(riskMetrics?.concentration_risk ?? []).length > 0 && (
                 <div className="ov-concentration">
