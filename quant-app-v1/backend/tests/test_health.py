@@ -32,8 +32,8 @@ async def test_health_reports_readiness_and_machine_readable_components() -> Non
         assert body["status"] == "ok"
         assert body["service"] == "gateway-api"
         assert body["version"] == api_main.app.version
-        assert body["environment"] == "local"
-        assert body["execution_mode"] == "paper"
+        assert body["environment"] == api_main.settings.environment.value
+        assert body["execution_mode"] == api_main.settings.execution_mode
         assert body["capabilities"]["paper_execution"] is True
         assert body["capabilities"]["live_execution"] is False
 

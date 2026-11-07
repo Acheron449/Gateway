@@ -104,6 +104,25 @@ function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), hi);
 }
 
+function defaultChartView(len: number): { start: number; end: number } {
+  const span = Math.max(DEFAULT_VISIBLE, MIN_SPAN);
+  return { start: len - span, end: len };
+}
+
+function isUsableChartView(
+  view: { start: number; end: number },
+  len: number,
+): boolean {
+  return (
+    Number.isFinite(view.start) &&
+    Number.isFinite(view.end) &&
+    view.start < len &&
+    view.end > view.start &&
+    view.end - view.start >= MIN_SPAN &&
+    view.end <= len
+  );
+}
+
 interface PaneBox {
   top: number;
   height: number;
@@ -134,6 +153,7 @@ export function MainChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const barsRef = useRef<HistoryCandle[]>([]);
+  const previousLenRef = useRef(0);
   const computedRef = useRef<ComputedIndicator[]>([]);
   const patternMarkersRef = useRef<ChartMarker[]>([]);
   const viewRef = useRef<{ start: number; end: number } | null>(null);
@@ -224,22 +244,31 @@ export function MainChart({
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, width, height);
 
-    // View window
+    // View window. Do not create a viewport before bars exist: the first
+    // draw runs with an empty list, and a zero-width view must not survive
+    // into the first real series (it would pin one candle to the left edge).
     const len = bars.length;
-    let view = viewRef.current;
-    if (!view) {
-      view = { start: Math.max(0, len - DEFAULT_VISIBLE), end: len };
-      viewRef.current = view;
-    }
     if (len === 0) {
       drawTimeAxisAndFrame(ctx, width, height, plotW, TIME_AXIS_H);
       return;
+    }
+    let view = viewRef.current;
+    if (!view || !isUsableChartView(view, len)) {
+      view = defaultChartView(len);
+      viewRef.current = view;
     }
     const span = Math.max(view.end - view.start, MIN_SPAN);
     const barW = plotW / span;
     const xOf = (i: number): number => (i - view.start + 0.5) * barW;
     const i0 = clamp(Math.floor(view.start), 0, len - 1);
     const i1 = clamp(Math.ceil(view.end), 0, len - 1);
+
+    // Expose the live window for browser regressions against the chart's
+    // framing (notably the empty-first-draw case above).
+    container.dataset.chartBars = String(len);
+    container.dataset.visibleStart = String(view.start);
+    container.dataset.visibleEnd = String(view.end);
+    container.dataset.visibleBars = String(Math.max(0, i1 - i0 + 1));
 
     const hoverIndex = crossRef.current?.index ?? null;
     const legendIndex = hoverIndex ?? i1;
@@ -515,14 +544,22 @@ export function MainChart({
   // --- data / prop sync ----------------------------------------------------
 
   useEffect(() => {
+    const previousLen = previousLenRef.current;
     barsRef.current = [...historyData];
+    const len = barsRef.current.length;
     const view = viewRef.current;
     if (view) {
-      const len = barsRef.current.length;
-      if (view.end > len || view.start > len - MIN_SPAN) {
-        viewRef.current = null; // data shrank (timeframe/symbol change) — recenter
+      const followingLatest = previousLen > 0 && view.end >= previousLen - 0.5;
+      if (!isUsableChartView(view, len)) {
+        viewRef.current = null;
+      } else if (len > previousLen && followingLatest) {
+        // Polling appended bars: keep the window width but follow the latest
+        // bar. A user who panned away from the end keeps their view.
+        const span = view.end - view.start;
+        viewRef.current = { start: len - span, end: len };
       }
     }
+    previousLenRef.current = len;
     scheduleDraw();
   }, [historyData]);
 
@@ -591,31 +628,22 @@ export function MainChart({
     const plotWidth = (): number => Math.max(container.clientWidth - PRICE_AXIS_W, 40);
 
     const ensureView = (): { start: number; end: number } => {
-      const view = viewRef.current;
-      if (view) return view;
       const len = barsRef.current.length;
-      const fresh = { start: Math.max(0, len - DEFAULT_VISIBLE), end: len };
-      viewRef.current = fresh;
+      const view = viewRef.current;
+      if (view && isUsableChartView(view, len)) return view;
+      const fresh = defaultChartView(len);
+      if (len > 0) viewRef.current = fresh;
       return fresh;
     };
 
     const clampView = (view: { start: number; end: number }): void => {
       const len = barsRef.current.length;
       if (len === 0) return;
-      let span = view.end - view.start;
-      if (span < MIN_SPAN) span = MIN_SPAN;
-      if (span > Math.max(len, MIN_SPAN)) span = Math.max(len, MIN_SPAN);
-      let start = view.start;
-      let end = start + span;
-      if (end > len) {
-        end = len;
-        start = end - span;
-      }
-      if (start < 0) {
-        start = 0;
-        end = span;
-      }
-      viewRef.current = { start, end: Math.min(end, len) };
+      const span = clamp(view.end - view.start, MIN_SPAN, Math.max(len, MIN_SPAN));
+      // Short series get left padding so the latest bar still sits at the
+      // right edge instead of collapsing into the first few pixels.
+      const start = clamp(view.start, Math.min(0, len - span), Math.max(0, len - span));
+      viewRef.current = { start, end: Math.min(start + span, len) };
     };
 
     const onWheel = (event: WheelEvent): void => {
