@@ -35,20 +35,22 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
-  pages-root:
-    name: Pages root build
+  cloudflare-root:
+    name: Cloudflare root build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Assert root is not a Python project
         run: test ! -f requirements.txt && test ! -f requirements-dev.txt && test ! -f Pipfile && test ! -f pyproject.toml
       - name: Build from repository root
         run: npm run build
-      - name: Verify Pages output
+      - name: Verify static output
         run: test -f dist/index.html && test -f dist/_redirects
+      - name: Validate Wrangler deploy config
+        run: npx --yes wrangler@4.158.0 versions upload --dry-run
 
   frontend:
     name: Frontend build

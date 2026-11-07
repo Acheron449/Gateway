@@ -78,15 +78,15 @@ A third module, the **simulated order book**, visualises the hypothetical partic
 | SPA | React 18 + Vite 6 + TypeScript | `quant-app-v1/frontend` |
 | API | FastAPI + pandas/statsmodels | `quant-app-v1/backend` |
 | Auth + Postgres | Supabase (GoTrue + RLS) | hosted |
-| Static hosting | **Cloudflare Pages** | `app.<domain>` |
+| Static hosting | **Cloudflare Workers static assets** (Pages-compatible) | `app.<domain>` |
 | API hosting | Container behind Cloudflare proxy | `api.<domain>` |
 
 ### 3.2 Deployment topology (normative)
 
-Cloudflare Pages serves **static assets only** and cannot execute Python. The deployment is therefore:
+Cloudflare serves **static assets only** and cannot execute Python. The deployment is therefore:
 
 ```
-browser ──► Cloudflare Pages (SPA, SPA-fallback 200 → index.html)
+browser ──► Cloudflare static assets (SPA, SPA-fallback 200 → index.html)
    │
    └─────► api.<domain> (Cloudflare proxy) ──► FastAPI container
                                                   │
@@ -95,21 +95,21 @@ browser ──► Cloudflare Pages (SPA, SPA-fallback 200 → index.html)
 
 | ID | Requirement |
 | --- | --- |
-| AR-1 | Pages builds from either root: at the repository root, `npm run build` installs/builds the frontend into root `dist`; at `quant-app-v1/frontend`, `npm ci && npm run build` emits `dist`. Both produce `dist/index.html` and `dist/_redirects` without installing Python dependencies. |
-| AR-2 | Pages performs SPA fallback: unknown paths return `index.html` with HTTP 200. |
+| AR-1 | Cloudflare builds from the repository root: root `wrangler.jsonc` runs `npm run build` and uploads root `dist`; Pages can also build at the root or at `quant-app-v1/frontend`. The root and frontend paths produce `dist/index.html` and `dist/_redirects` without installing Python dependencies. |
+| AR-2 | Cloudflare static-asset serving performs SPA fallback: unknown paths return `index.html` with HTTP 200. |
 | AR-3 | `VITE_API_BASE` is set to the API origin **at build time** for every non-localhost environment. It is the only deployment-specific frontend configuration. |
 | AR-4 | No Vercel artifacts remain: root `vercel.json`, `quant-app-v1/frontend/vercel.json`, `.vercelignore`, `.vercel/`. |
 | AR-5 | The API is a single container image, not a serverless Python bundle, and has no function-size ceiling. |
-| AR-6 | The API sets CORS to an explicit origin allowlist (the Pages origin and localhost dev only); wildcard origins are rejected. |
-| AR-7 | WebSocket upgrades reach the API host directly; they are not proxied through Pages. |
+| AR-6 | The API sets CORS to an explicit origin allowlist (the deployed frontend origin and localhost dev only); wildcard origins are rejected. |
+| AR-7 | WebSocket upgrades reach the API host directly; they are not proxied through Cloudflare static assets. |
 
 ### 3.3 Environments
 
 | Env | Frontend | API | Data |
 | --- | --- | --- | --- |
 | `local` | Vite dev `:5173` | uvicorn `:8000` | local SQLite |
-| `preview` | Pages preview deployment | preview container | Supabase (preview project) |
-| `production` | Pages production | production container | Supabase (production project) |
+| `preview` | Workers preview version (or Pages preview) | preview container | Supabase (preview project) |
+| `production` | Workers production (or Pages) | production container | Supabase (production project) |
 | `test` | build only | pytest | ephemeral SQLite |
 
 `GATEWAY_EXECUTION_MODE=paper` is required in all four. Startup fails if it is set to anything else.
@@ -120,7 +120,7 @@ Measured on 2026-11-07 in `quant-app-v1/frontend`: `tsc --noEmit` exit 0; `npm r
 
 | ID | Requirement |
 | --- | --- |
-| AR-8 | The Pages build completes in ≤ 2 minutes on the smallest available builder. |
+| AR-8 | The Cloudflare build completes in ≤ 2 minutes on the smallest available builder. |
 | AR-9 | Total built JS after gzip stays ≤ 5 MB; if a single chunk exceeds 500 KB, it is split — the warning is not suppressed. |
 | AR-10 | The API container image is ≤ 600 MB and builds in ≤ 10 minutes; the 405 MB model weights and 36 MB vendored tree are **not** in the build context. |
 | AR-11 | Repository payload (clone) is ≤ 200 MB. |
@@ -513,7 +513,7 @@ Removed from the product, not merely deferred. Removing them is what makes the b
 | **Live broker execution** (Alpaca live, order placement, `/live` router, activation gates) | The product is a demo harness. No broker integration exists in v1. |
 | **Phase 4/5 reconciliation evidence** (≥ 1 000 settled fills, < 0.1% discrepancy, independent comparator, durable order intent) | Gate only exists to protect live capital, which v1 does not touch. |
 | **Auth0** — `lib/auth0.ts`, `Auth0Button.tsx`, `Auth0Bridge.tsx`, `context` branches, backend RS256 path, `AUTH0_*` / `VITE_AUTH0_*` | Supabase Auth is the only identity provider. No compatibility shim, no dormant code. |
-| **Vercel** — root `vercel.json`, `frontend/vercel.json`, `.vercelignore`, `.vercel/` | Pages cannot host Python; Vercel is no longer the provider. |
+| **Vercel** — root `vercel.json`, `frontend/vercel.json`, `.vercelignore`, `.vercel/` | Cloudflare cannot host Python; Vercel is no longer the provider. |
 | **Kronos** — 405 MB of weights under `backend/models/`, installer route, forecast endpoint | Largest single cause of build failure; a probabilistic price forecast is not required to backtest rules. |
 | **OpenBB** — context provider, context server, `/openbb/*` routes, AGPL review | Removed with the provider chain; the remaining modules, flags, routes and CLI were deleted on 2026-11-07. The retained history provider covers v1. |
 | **Stripe, Resend** | No paid tier, no transactional email in v1. |
@@ -534,14 +534,14 @@ Each phase ends with an exit gate. A gate is pass/fail against the listed criter
 
 **Status: complete except the API image measurement (2026-11-07).**
 
-**Goal:** a Pages deployment that builds in minutes and an API that deploys as a container.
+**Goal:** a Cloudflare deployment that builds in minutes and an API that deploys as a container.
 **Depends on:** nothing.
 
-Deliverables: Pages project configured (AR-1..AR-3); delete Vercel artifacts (AR-4, §8); remove `backend/models/` and `backend/vendor/` from the repository and build context (AR-10, AR-11); `Dockerfile` producing the API image; `wrangler.toml` reduced to the Pages-compatible form or deleted; CI runs frontend build only for the SPA job.
+Deliverables: Workers Builds config (`wrangler.jsonc`) and Pages project configured (AR-1..AR-3); delete Vercel artifacts (AR-4, §8); remove `backend/models/` and `backend/vendor/` from the repository and build context (AR-10, AR-11); `Dockerfile` producing the API image; CI runs the root and frontend builds for the SPA.
 
-**Exit gate:** Pages production build ≤ 2 min at ≤ 5 MB gzip; API image ≤ 600 MB and boots to `/health`; `git clone` ≤ 200 MB; zero Vercel files; no build step compiles Python.
+**Exit gate:** Cloudflare production build ≤ 2 min at ≤ 5 MB gzip; API image ≤ 600 MB and boots to `/health`; `git clone` ≤ 200 MB; zero Vercel files; no build step compiles Python.
 
-**Record (2026-11-07):** Vercel and Workers artifacts deleted, the 5 255 committed `node_modules` files untracked, `public/_redirects` added, and the Dockerfile rebased on the `backend/` context with `models/` and `vendor/` excluded and the instrument catalogue copied. The root `package.json` now builds the SPA into root `dist`, and the Python manifests live under `quant-app-v1/backend/requirements-full.txt` and `requirements-dev.txt`, so a root-rooted Pages build does not detect or install Python. Pages build measured at ~1.5 s and 312 KB gzip. The API image size is **unmeasured** — `docker` is not installed on the development machine — so that clause stays open until CI or a local Docker run reports it.
+**Record (2026-11-07):** Vercel artifacts deleted, the 5 255 committed `node_modules` files untracked, `public/_redirects` added, and the Dockerfile rebased on the `backend/` context with `models/` and `vendor/` excluded and the instrument catalogue copied. Root `wrangler.jsonc` targets the existing `gateway` Worker, runs `npm run build` during `wrangler deploy`/`versions upload`, and uploads root `dist`; a `wrangler versions upload --dry-run` passed from a clean output directory. The root `package.json` also supports Pages at either root, and the Python manifests live under `quant-app-v1/backend/requirements-full.txt` and `requirements-dev.txt`, so Cloudflare does not detect or install Python. The frontend build measured at ~1.2 s and 233 KB gzip; the API image size is **unmeasured** — `docker` is not installed on the development machine — so that clause stays open until CI or a local Docker run reports it.
 
 ### P2 — Identity and isolation
 
@@ -619,7 +619,7 @@ Deliverables: §5.1 with FR-M1..M7; §5.2 with FR-O1..O6; §5.3 with FR-L1..L6; 
 
 Deliverables: NFR-6..NFR-19 (security baseline, including the carried-forward remediation items); NFR-20..NFR-22; NFR-23..NFR-26; NFR-27..NFR-30; dependency audit; `robots.txt` + minimal sitemap.
 
-**Exit gate:** security checklist signed off item by item; foreign-origin mutation returns 403; operator allowlist fails closed when empty; disclaimers present on every results surface; audit clean; the site is reachable over HTTPS on the Pages domain with the API on its own origin.
+**Exit gate:** security checklist signed off item by item; foreign-origin mutation returns 403; operator allowlist fails closed when empty; disclaimers present on every results surface; audit clean; the site is reachable over HTTPS on the deployed frontend origin with the API on its own origin.
 
 **Status (2026-11-07): NFR-6..NFR-19 audited and every finding remediated — 12 pass, 0 partial, 0 fail, 2 pass with caveat. OpenBB is recorded as removed, not as an error-text target. The NFR-20..NFR-30 audit is complete — all 11 pass; Phase D is closed.**
 
@@ -669,7 +669,7 @@ No NFR-27..NFR-30 item is credential-blocked; the only outstanding deployment no
 7. **Unbounded inputs (NFR-12): applied** — Monte Carlo accepts at most 20 000 return/equity observations, and Kronos accepts at most 2 000 history candles in both service paths.
 8. **Portfolio principal (NFR-6): applied** — every portfolio handler takes `CurrentUser`; the default book is `paper_<user.id>` with an ownership check, cross-owner lookups 404, and the LLM context feeder uses the same principal. The HTTP gate still answers 503 until owner-scoped repositories ship.
 
-**P6 deliverable check:** `robots.txt` and `sitemap.xml` are generated into the Pages build output (`dist/`) by `quant-app-v1/frontend/vite.config.ts` from `VITE_SITE_URL`, so the committed placeholder-host copies under the unserved root `public/` are gone. Robots allows `/` and disallows only `/secrets/` and `/admin/` — the repository-path disallow was removed — and the sitemap lists only SPA routes under the configured origin. Neither the HTTPS Pages origin nor foreign-origin 403 could be measured in this audit; both need a running deployed stack. The same audit added `scripts/smoke_chat_stream.py` for a live SSE run; it is blocked on a provider key, as recorded in `docs/deployment.md` §5 and [`PLAN.md`](PLAN.md).
+**P6 deliverable check:** `robots.txt` and `sitemap.xml` are generated into the Cloudflare build output (`dist/`) by `quant-app-v1/frontend/vite.config.ts` from `VITE_SITE_URL`, so the committed placeholder-host copies under the unserved root `public/` are gone. Robots allows `/` and disallows only `/secrets/` and `/admin/` — the repository-path disallow was removed — and the sitemap lists only SPA routes under the configured origin. Neither the HTTPS frontend origin nor foreign-origin 403 could be measured in this audit; both need a running deployed stack. The same audit added `scripts/smoke_chat_stream.py` for a live SSE run; it is blocked on a provider key, as recorded in `docs/deployment.md` §5 and [`PLAN.md`](PLAN.md).
 
 ---
 
@@ -679,7 +679,7 @@ No NFR-27..NFR-30 item is credential-blocked; the only outstanding deployment no
 
 | # | Decision | Status | Impact if unresolved |
 | --- | --- | --- | --- |
-| O-1 | **Which container host runs the API.** Cloudflare cannot execute Python; Pages is static-only. Requirements: HTTP + WebSocket, custom domain behind Cloudflare proxy, ≤ 600 MB image, low fixed cost, single region acceptable. | **Open** — provider catalogue returned no viable candidate; do not select by default | P1 blocks; everything downstream blocks |
+| O-1 | **Which container host runs the API.** Cloudflare cannot execute Python; its static hosting is static-only. Requirements: HTTP + WebSocket, custom domain behind Cloudflare proxy, ≤ 600 MB image, low fixed cost, single region acceptable. | **Open** — provider catalogue returned no viable candidate; do not select by default | P1 blocks; everything downstream blocks |
 | O-2 | Which single market-data source is supported at launch (Yahoo keyless vs. a keyed provider with a free tier). | **Open**, default Yahoo (`yfinance`) | FR-D1 wording |
 | O-3 | Whether the AI harness / Agentic Lab is deleted or kept disabled after P6. | **Deferred** to P6 review | Repo size, not correctness |
 

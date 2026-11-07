@@ -43,8 +43,9 @@ Start the frontend and backend from the repository root:
 cd quant-app-v1/frontend
 npm install
 npm run dev                                  # Vite on http://127.0.0.1:5173
-# Cloudflare Pages: `npm run build` at the repo root emits root `dist/`;
-# `npm ci && npm run build` here emits this directory's `dist/`.
+# Cloudflare Workers Builds: root `wrangler.jsonc` runs `npm run build` and
+# uploads root `dist/`; Pages can use `npm run build` at the repo root, or
+# `npm ci && npm run build` here for this directory's `dist/`.
 
 # backend (second terminal)
 cd quant-app-v1/backend

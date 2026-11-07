@@ -2,7 +2,7 @@
   "name": "gateway-pages",
   "private": true,
   "version": "0.0.0",
-  "description": "Cloudflare Pages build entry for the Gateway SPA",
+  "description": "Cloudflare Workers/Pages build entry for the Gateway SPA",
   "engines": {
     "node": ">=20"
   },

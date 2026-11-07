@@ -29,7 +29,7 @@ proven on a real stack before P6 can be signed off.
 | --- | --- | --- |
 | A1 | Review the staged diff and commit it (no push without owner approval). | `git diff --cached --stat`, clean tree |
 | A2 | Rotate `JWT_SECRET_KEY` and the Postgres password; purge history if the repo was ever public. | new values in the host's secret store, SRS NFR-14 caveat closed |
-| A3 | Choose the API container host (O-1), then deploy API, Pages and Supabase; set `VITE_API_BASE`, `VITE_SITE_URL`, `VITE_SUPABASE_*`, `GATEWAY_PROVIDER_KEY` and one provider key. | `/health` 200, sign-in works |
+| A3 | Choose the API container host (O-1), then deploy API, the Cloudflare frontend and Supabase; set `VITE_API_BASE`, `VITE_SITE_URL`, `VITE_SUPABASE_*`, `GATEWAY_PROVIDER_KEY` and one provider key. | `/health` 200, sign-in works |
 | A4 | Run the live chat smoke test and record the result. | `scripts/smoke_chat_stream.py … --max-chars 400` exits 0 |
 | A5 | Update SRS NFR-15 to plain **Pass** once A4 passes. | SRS table and tally |
 
@@ -47,7 +47,7 @@ Exit 2 means the provider key is missing or unusable; do not mark NFR-15 closed.
 
 | # | Check | Passing result |
 | --- | --- | --- |
-| B1 | Production CSP and generated SEO files on the Pages origin. | `script-src 'self'` with no `unsafe-*`; `robots.txt`/`sitemap.xml` use the deployed host and no repo path |
+| B1 | Production CSP and generated SEO files on the deployed frontend origin. | `script-src 'self'` with no `unsafe-*`; `robots.txt`/`sitemap.xml` use the deployed host and no repo path |
 | B2 | Foreign-origin mutation gate. | `POST $API/portfolio/orders` with `origin: https://evil.example` returns 403 |
 | B3 | Supabase RLS isolation with two real accounts. | account B cannot read or mutate account A's rows; direct table reads return none |
 | B4 | Deploy smoke test from `docs/deployment.md` §5. | health, SPA fallback, register/login, `/auth/me` all pass |
@@ -83,8 +83,8 @@ None needs credentials or a deployed stack.
 
 | Risk | Mitigation |
 | --- | --- |
-| Pages build rooted at the repository instead of the SPA | The root `package.json` builds the SPA into root `dist`; Python manifests now live under `quant-app-v1/backend`, so Pages does not run pip. Documented root and `quant-app-v1/frontend` configurations both build. |
+| Cloudflare build rooted at the repository instead of the SPA | Root `wrangler.jsonc` builds `dist` before upload; the root `package.json` also supports Pages. Python manifests live under `quant-app-v1/backend`, so Cloudflare does not run pip. |
 | No provider key, so NFR-15 stays caveated | A3/A4; the runner already fails closed with exit 2 |
-| O-1 host undecided, blocking all deployment checks | decide the container host first; Pages/Supabase work is independent |
+| O-1 host undecided, blocking all deployment checks | decide the container host first; Cloudflare/Supabase work is independent |
 | Secrets in git history | rotate before any deployment; purge if public |
 | Large staged diff hides an unrelated change | review `git diff --cached` per area before committing |

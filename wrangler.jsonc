@@ -1,0 +1,14 @@
+{
+  "name": "gateway",
+  "compatibility_date": "2026-11-04",
+  // Workers Builds runs this before both `wrangler deploy` and
+  // `wrangler versions upload`, so the dashboard does not need a separate
+  // build command. It writes the SPA to ./dist (see package.json).
+  "build": {
+    "command": "npm run build"
+  },
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}

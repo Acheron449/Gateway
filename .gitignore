@@ -20,6 +20,7 @@ quant-app-v1/frontend/dist/
 /dist/
 quant-app-v1/frontend/node_modules/
 node_modules/
+.wrangler/
 
 # IDE and editor directories
 .idea/
