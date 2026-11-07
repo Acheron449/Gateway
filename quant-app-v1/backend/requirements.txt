@@ -1,8 +1,8 @@
-# Vercel backend service requirements (service root: quant-app-v1/backend/).
+# API service requirements (service root: quant-app-v1/backend/).
 #
-# This is intentionally a TRIMMED subset of the repo-root requirements.txt
-# (Docker/CI source of truth), because Vercel's Python function bundle limit
-# is 500MB uncompressed and the full set (llvmlite/numba/scipy + sklearn +
+# This is intentionally a TRIMMED subset of requirements-full.txt in this
+# directory (the CI/local source of truth). The old serverless bundle limit was
+# 500 MB uncompressed, and the full set (llvmlite/numba/scipy + sklearn +
 # skfolio/plotly + ccxt + ...) exceeded it. Only packages actually imported
 # by app/ at runtime are kept; everything below has zero import sites or is
 # wrapped in try/except and degrades gracefully when absent.
@@ -10,7 +10,7 @@
 # Vercel's parser rejects '-r' includes and inline comments after pins, so
 # every comment sits on its own line.
 #
-# Divergences from the root requirements.txt (keep root intact for Docker/CI):
+# Divergences from requirements-full.txt (keep that file intact for CI/local):
 #   DROPPED (unused or lazy+guarded in app/):
 #     Flask, flask_session      — no import sites in app/
 #     scikit-learn, skfolio     — no import sites in app/ (skfolio pulls

@@ -1,3 +1,8 @@
+# Full CI/local dependency set for the API and supporting tooling.
+# The API container uses the trimmed requirements.txt next to this file. These
+# manifests live under the backend so a Pages build cannot mistake the
+# repository root for a Python project and run pip install.
+
 # --- Web Server & API Framework ---
 # The core web framework (updated from 0.110.0 - fixes starlette CVEs)
 fastapi==0.162.0

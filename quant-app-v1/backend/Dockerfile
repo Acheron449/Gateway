@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# The backend requirements are the trimmed app-runtime set. The repo-root
-# requirements.txt is the Docker/CI superset and is deliberately not used here.
+# requirements.txt is the trimmed app-runtime set. requirements-full.txt is the
+# CI/local superset and is deliberately not used here.
 COPY requirements.txt .
 RUN pip install --prefix=/install -r requirements.txt
 

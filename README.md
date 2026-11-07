@@ -9,7 +9,7 @@ Gateway currently supports **US-equities research and paper trading only**. Live
 Start the backend from the repository root:
 
 ```sh
-pip install -r requirements.txt
+pip install -r quant-app-v1/backend/requirements-full.txt
 export GATEWAY_ENV=local                 # local | test | paper | production
 export GATEWAY_EXECUTION_MODE=paper      # required in every profile
 export ALPACA_API_KEY=...                # optional; needed for /history
@@ -43,6 +43,8 @@ Start the frontend and backend from the repository root:
 cd quant-app-v1/frontend
 npm install
 npm run dev                                  # Vite on http://127.0.0.1:5173
+# Cloudflare Pages: `npm run build` at the repo root emits root `dist/`;
+# `npm ci && npm run build` here emits this directory's `dist/`.
 
 # backend (second terminal)
 cd quant-app-v1/backend
@@ -53,10 +55,10 @@ export ALPACA_SECRET_KEY=...
 PYTHONPATH=. uvicorn app.main:app --reload --port 8000
 ```
 
-Developer tests are declared in `requirements-dev.txt`:
+Developer tests are declared in `quant-app-v1/backend/requirements-dev.txt`:
 
 ```sh
-pip install -r requirements-dev.txt
+pip install -r quant-app-v1/backend/requirements-dev.txt
 python -m pytest quant-app-v1/backend/tests/
 ```
 

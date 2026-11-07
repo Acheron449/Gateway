@@ -83,6 +83,7 @@ None needs credentials or a deployed stack.
 
 | Risk | Mitigation |
 | --- | --- |
+| Pages build rooted at the repository instead of the SPA | The root `package.json` builds the SPA into root `dist`; Python manifests now live under `quant-app-v1/backend`, so Pages does not run pip. Documented root and `quant-app-v1/frontend` configurations both build. |
 | No provider key, so NFR-15 stays caveated | A3/A4; the runner already fails closed with exit 2 |
 | O-1 host undecided, blocking all deployment checks | decide the container host first; Pages/Supabase work is independent |
 | Secrets in git history | rotate before any deployment; purge if public |

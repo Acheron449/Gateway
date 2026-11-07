@@ -1,4 +1,4 @@
--r requirements.txt
+-r requirements-full.txt
 pytest
 pytest-asyncio
 pip-audit>=2.10.1,<3

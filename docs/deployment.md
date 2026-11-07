@@ -18,20 +18,40 @@ it is unset, a non-localhost build assumes same-origin proxying
 
 ## 1. Frontend — Cloudflare Pages
 
-Create a Pages project connected to `Acheron449/Gateway`:
+Both of these Pages configurations are supported and produce the same SPA
+output. Use whichever root the project already has.
 
-| Setting | Value |
-| --- | --- |
-| Root directory | `quant-app-v1/frontend` |
-| Build command | `npm ci && npm run build` |
-| Output directory | `dist` |
-| Node version | `20` (set `NODE_VERSION=20` if the default differs) |
+| Setting | Repository root | Frontend directory |
+| --- | --- | --- |
+| Root directory | blank or `.` | `quant-app-v1/frontend` |
+| Build command | `npm run build` | `npm ci && npm run build` |
+| Output directory | `dist` | `dist` |
+| Node version | `20` (`NODE_VERSION=20`) | `20` (`NODE_VERSION=20`) |
+
+The repository-root `package.json` is deliberately a thin Pages entry: it
+installs the frontend lockfile, runs the frontend's `tsc && vite build`, and
+writes the result to root `dist/`. The Python manifests now live at
+`quant-app-v1/backend/requirements-full.txt` and
+`quant-app-v1/backend/requirements-dev.txt`; the repository root contains no
+`requirements.txt`, so Pages does not detect a Python project or run `pip`.
+
+Create a Pages project connected to `Acheron449/Gateway`, save the settings
+above, and use **Retry deployment** (or push a new commit). A correct log
+installs Node dependencies from `quant-app-v1/frontend/package-lock.json`, runs
+`tsc && vite build`, and uploads `dist`. It never mentions `pip` or
+`requirements.txt`.
+
+> If a Pages log still shows `Installing project dependencies: pip install -r
+> requirements.txt`, the deployment is using an old commit or a different
+> Pages project; the current repository root has no Python requirement file.
+> Pages has no Python runtime, and the API (`quant-app-v1/backend`) still
+> builds and runs separately as the container in §2.
 
 Build-time environment variables (Pages → Settings → Environment variables):
 
 | Variable | Value |
 | --- | --- |
-| `VITE_API_BASE` | `https://api.<your-domain>` |
+| `VITE_API_BASE` | `https://api.<your-domain>` — **required**; Pages serves static files only and does not proxy the API |
 | `VITE_SITE_URL` | canonical Pages origin, e.g. `https://<project>.pages.dev` or `https://app.<your-domain>` — used to generate `robots.txt` and `sitemap.xml` |
 | `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | the publishable anon key (public by design) |
@@ -49,9 +69,9 @@ disallow and no placeholder host.
 
 **Workers Builds is retired.** `wrangler.toml` was removed in phase P1, so Pages is the single hosting path (SRS AR-2). Unknown paths return `index.html` with HTTP 200 instead of 404.
 
-Reference numbers from a local run (2026-11-07): `npm ci && npm run build`
-finishes in ~6 s, emitting 1.01 MB JS (287 KB gzip) and 157 KB CSS. The SRS
-budget is 2 minutes and 5 MB gzip (AR-8, AR-9).
+Reference numbers from the repository-root run (2026-11-07): `npm run build`
+finishes in ~2 s after dependency install, emitting 816 KB JS (233 KB gzip) and
+171 KB CSS. The SRS budget is 2 minutes and 5 MB gzip (AR-8, AR-9).
 
 ## 2. API — container
 

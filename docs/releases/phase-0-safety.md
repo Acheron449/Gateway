@@ -19,4 +19,4 @@ Live execution, structured news/calendar data, a durable instrument catalogue, s
 
 ## Developer migration
 
-Use `requirements-dev.txt` for test dependencies. Set `GATEWAY_EXECUTION_MODE=paper` (or leave its paper default) and configure Alpaca paper credentials only when historical data is needed.
+Use `quant-app-v1/backend/requirements-dev.txt` for test dependencies. Set `GATEWAY_EXECUTION_MODE=paper` (or leave its paper default) and configure Alpaca paper credentials only when historical data is needed.
