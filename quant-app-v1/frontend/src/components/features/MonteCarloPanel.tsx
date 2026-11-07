@@ -4,7 +4,8 @@ import { API_BASE } from "../../lib/constants";
 
 /* §5.1 Monte Carlo surface (FR-M1..M7): percentile fan, drawdown histogram,
    tail risk, ruin probability and the sizing suggestion. Everything rendered
-   here is a resampling of the selected run's own past returns. */
+   here is a resampling of the source's own past returns — either a stored
+   backtest run's equity curve or a series the caller derived from real bars. */
 
 interface FanPoint {
   step: number;
@@ -62,8 +63,20 @@ interface McResponse {
   disclaimer: string;
 }
 
+export interface MonteCarloSeries {
+  /** Simple per-bar returns derived from real closes; the API log-transforms them. */
+  returns: number[];
+  /** The last observed close the simulated paths start from. */
+  startEquity: number;
+  /** Human-readable provenance, e.g. "daily returns of AAPL". */
+  label: string;
+}
+
 interface Props {
-  runId: string;
+  /** A stored run to resample; mutually exclusive with `series`. */
+  runId?: string;
+  /** A series derived from real market bars, used when there is no stored run. */
+  series?: MonteCarloSeries;
   token: string | null;
   initialCapital?: number;
   bars?: number;
@@ -166,7 +179,7 @@ function DrawdownHistogram({ histogram }: { histogram: Histogram }) {
   );
 }
 
-export function MonteCarloPanel({ runId, token, initialCapital, bars }: Props) {
+export function MonteCarloPanel({ runId, series, token, initialCapital, bars }: Props) {
   const defaultHorizon = Math.min(250, Math.max(20, (bars ?? 250) - 1));
   const [method, setMethod] = useState<"bootstrap" | "gbm">("bootstrap");
   const [paths, setPaths] = useState(10_000);
@@ -178,6 +191,12 @@ export function MonteCarloPanel({ runId, token, initialCapital, bars }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(async () => {
+    const source = runId
+      ? { run_id: runId }
+      : series
+        ? { returns: series.returns, start_equity: series.startEquity }
+        : null;
+    if (!source) return;
     setLoading(true);
     setError(null);
     try {
@@ -188,7 +207,7 @@ export function MonteCarloPanel({ runId, token, initialCapital, bars }: Props) {
         method: "POST",
         headers,
         body: JSON.stringify({
-          run_id: runId,
+          ...source,
           method,
           paths,
           horizon,
@@ -220,22 +239,34 @@ export function MonteCarloPanel({ runId, token, initialCapital, bars }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [budget, horizon, method, paths, runId, seed, token]);
+  }, [budget, horizon, method, paths, runId, seed, series, token]);
 
   useEffect(() => {
-    if (!runId) return;
+    if (!runId && !series) return;
     setResult(null);
     void run();
-    // A new run selection re-simulates with the current controls.
+    // A new run selection or a new bar-derived series re-simulates with the current controls.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+  }, [runId, series]);
 
   const sizing = result?.sizing;
 
   return (
-    <div className="report-section mc-panel">
+    <div
+      className="report-section mc-panel"
+      data-source={result?.source}
+      data-engine={result?.engine_version}
+      data-paths={result?.paths}
+      data-horizon={result?.horizon}
+      data-seed={result?.seed}
+      data-method={result?.method}
+      data-observations={result?.observations}
+      data-start-equity={result?.start_equity}
+      data-output-hash={result?.output_hash}
+    >
       <p className="mc-disclaimer">
-        <strong>Simulation, not a forecast.</strong> These paths resample this strategy's own past returns
+        <strong>Simulation, not a forecast.</strong> These paths resample the past{" "}
+        {series ? series.label : "returns of this strategy"}
         {result ? ` (${result.observations} observations, engine ${result.engine_version})` : ""}; they do not
         predict future prices and do not prove the strategy will keep working.
       </p>

@@ -14,6 +14,7 @@ import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
 import { BacktestReports } from "../features/BacktestReports";
 import { OptionsCalculator } from "../features/OptionsCalculator";
+import { MonteCarloView } from "../features/MonteCarloView";
 import { OrderBookPanel } from "../features/OrderBookPanel";
 import { RiskDashboard } from "./RiskDashboard";
 import { TradeJournal } from "./TradeJournal";
@@ -115,6 +116,19 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
             </p>
           </div>
           <OrderBookPanel symbol={selectedSymbol} />
+        </div>
+      );
+    case "monte-carlo":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Monte Carlo</h1>
+            <p className="view-description">
+              Percentile fan, tail loss, drawdown and ruin risk from resampling {selectedSymbol}'s own daily
+              returns — a simulation, not a forecast.
+            </p>
+          </div>
+          <MonteCarloView symbol={selectedSymbol} />
         </div>
       );
     case "options":
