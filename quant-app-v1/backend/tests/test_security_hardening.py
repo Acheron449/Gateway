@@ -97,6 +97,15 @@ async def test_login_has_a_stricter_route_limit() -> None:
     assert statuses[10] == 429
 
 
+def _is_absent(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is None
+    except ModuleNotFoundError:
+        # A missing parent package (app.cli was deleted with the OpenBB CLI)
+        # already proves the module itself cannot be imported.
+        return True
+
+
 def test_openbb_integration_is_removed() -> None:
     paths = set(api_main.app.openapi()["paths"])
     assert not any(path == "/openbb" or path.startswith("/openbb/") for path in paths)
@@ -107,7 +116,7 @@ def test_openbb_integration_is_removed() -> None:
         "app.providers.openbb_server_provider",
         "app.cli.openbb_cli",
     ):
-        assert importlib.util.find_spec(module) is None
+        assert _is_absent(module)
 
     capabilities = api_main.settings.capabilities
     assert "openbb_data" not in capabilities

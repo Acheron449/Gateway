@@ -63,7 +63,19 @@ export function TopBar({ activeView, selectedSymbol, onSymbolSelect, onOpenSearc
 
   return (
     <header className="top-bar" role="banner">
-      <div className="top-bar-brand" onClick={() => navigate("/app/overview")} title="Overview">
+      <div
+        className="top-bar-brand"
+        role="button"
+        tabIndex={0}
+        onClick={() => navigate("/app/overview")}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            navigate("/app/overview");
+          }
+        }}
+        title="Overview"
+      >
         <span className="app-icon">⚡</span>
         <span className="app-name">Gateway</span>
       </div>

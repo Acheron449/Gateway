@@ -208,3 +208,29 @@ def test_compare_returns_metric_deltas(temp_db):
     comparison = asyncio.run(compare_runs(type("P", (), {"run_ids": [left["run_id"], right["run_id"]]})(), USER))
     assert comparison["deltas"]["net_pnl"] < 0
     assert comparison["left"]["run_id"] == left["run_id"]
+
+
+def test_receipts_are_insert_only(temp_db):
+    """NFR-18: a re-used run id is refused and the stored receipt is unchanged."""
+    kwargs = dict(
+        run_id="run-immutable",
+        owner_id=USER.id,
+        status="completed",
+        symbol="TEST",
+        timeframe="1h",
+        data_hash="hash-1",
+        receipt={"version": 1},
+        metrics={"net_pnl": 1},
+    )
+    database.save_backtest_receipt(**kwargs)
+
+    with pytest.raises(ValueError, match="already exists"):
+        database.save_backtest_receipt(
+            **{**kwargs, "data_hash": "hash-2", "receipt": {"version": 2}, "metrics": {"net_pnl": 999}}
+        )
+
+    stored = database.get_backtest_receipt("run-immutable", USER.id)
+    assert stored is not None
+    assert stored["receipt"] == {"version": 1}
+    assert stored["data_hash"] == "hash-1"
+    assert stored["metrics"] == {"net_pnl": 1}

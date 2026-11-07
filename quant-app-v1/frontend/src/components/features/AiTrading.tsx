@@ -241,7 +241,7 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                 onChange={(e) => setForm({ ...form, route: e.target.value as AiConfig["route"] })}
               >
                 <option value="paper">Paper portfolio (simulated funds)</option>
-                <option value="live">LIVE broker (real funds!)</option>
+                <option value="live" disabled>Live broker (unavailable)</option>
               </select>
             </label>
           </div>
@@ -267,8 +267,7 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
 
           {form.route === "live" && (
             <p className="ai-live-warning">
-              ⚠ Live route sends <strong>real orders</strong> sized by your limits. The broker kill
-              switch still applies — the agent refuses to trade while it is active.
+              Live execution is unavailable. Only the paper portfolio can place simulated orders.
             </p>
           )}
 

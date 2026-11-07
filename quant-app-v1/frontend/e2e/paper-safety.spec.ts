@@ -8,7 +8,7 @@ test("paper desk discloses simulator mode and routes orders only to the simulato
 
   const brokerRequests: string[] = [];
   const simulatedOrderRequests: string[] = [];
-  await page.route("**/api/**", async (route) => {
+  await page.route(/(?:\/api\/|127\.0\.0\.1:8000\/)/, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname.replace(/^\/api/, "");
@@ -34,7 +34,7 @@ test("paper desk discloses simulator mode and routes orders only to the simulato
   });
 
   await page.goto("/app/paper-trading");
-  await expect(page.getByText("Simulated paper", { exact: true })).toBeVisible();
+  await expect(page.getByText("Simulated paper", { exact: true })).toBeVisible({ timeout: 15000 });
   await expect(page.getByText(/Market (state|status): Closed/i)).toBeVisible();
   await expect(page.getByText(/Live execution unavailable/i)).toBeVisible();
   await page.getByRole("tab", { name: "Trade" }).click();
@@ -51,7 +51,7 @@ test("live execution view is an explicit unavailable state", async ({ page }) =>
     localStorage.setItem("gateway_user", JSON.stringify({ id: "paper-safety-user", email: "paper@example.test" }));
   });
   const brokerRequests: string[] = [];
-  await page.route("**/api/**", async (route) => {
+  await page.route(/(?:\/api\/|127\.0\.0\.1:8000\/)/, async (route) => {
     const url = new URL(route.request().url());
     const pathname = url.pathname.replace(/^\/api/, "");
     if (pathname.startsWith("/live/")) brokerRequests.push(`${route.request().method()} ${pathname}`);

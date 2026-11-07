@@ -8,7 +8,7 @@ import { AiTrading } from "../../components/features/AiTrading";
 import { CalendarView } from "./CalendarView";
 import { AiHarness } from "./AiHarness";
 import { AgenticLab } from "./AgenticLab";
-import { type BtRun } from "./Backtester";
+import { type BtRun } from "../../lib/backtestTypes";
 import { OverviewDashboard } from "../../components/features/OverviewDashboard";
 import { ScannerV2 } from "../../components/features/ScannerV2";
 import { StrategyStudio } from "./StrategyStudio";
@@ -102,7 +102,7 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
         </div>
       );
     case "backtests":
-      return <BacktestReports />;
+      return <BacktestReports selectedSymbol={selectedSymbol} />;
     case "orderbook":
       return (
         <div className="canvas-view">

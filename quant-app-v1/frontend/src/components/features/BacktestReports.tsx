@@ -4,6 +4,8 @@ import { useParams } from "react-router-dom";
 import { API_BASE } from "../../lib/constants";
 import { useAuth } from "../../context/AuthContext";
 import { useAuthUI } from "../../context/AuthUIContext";
+import { BacktestLauncher } from "./BacktestLauncher";
+import { MonteCarloComparison } from "./MonteCarloComparison";
 import { MonteCarloPanel } from "./MonteCarloPanel";
 
 /* The P4 run report: equity + drawdown, metrics, trades, receipt, CSV and a
@@ -237,7 +239,7 @@ function DrawdownChart({ series }: { series: { time: string; drawdown: number }[
   );
 }
 
-export function BacktestReports() {
+export function BacktestReports({ selectedSymbol = "AAPL" }: { selectedSymbol?: string }) {
   const { token, isAuthenticated } = useAuth();
   const { openAuth } = useAuthUI();
   const params = useParams();
@@ -257,6 +259,7 @@ export function BacktestReports() {
   const [comparing, setComparing] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [toolsRefresh, setToolsRefresh] = useState(0);
 
   const authHeaders = useMemo<Record<string, string>>(() => {
     const headers: Record<string, string> = {};
@@ -458,6 +461,17 @@ export function BacktestReports() {
         </div>
       )}
 
+      <section className="report-tools" aria-label="Backtest tools">
+        <BacktestLauncher
+          initialSymbol={selectedSymbol}
+          onComplete={async () => {
+            setToolsRefresh((current) => current + 1);
+            await loadRuns();
+          }}
+        />
+        <MonteCarloComparison token={token} refreshKey={toolsRefresh} />
+      </section>
+
       <div className="report-layout">
         <aside className="report-list" aria-label="Backtest runs">
           <div className="report-list-head">
@@ -466,7 +480,7 @@ export function BacktestReports() {
           </div>
           {runs.length === 0 && !loading && !error && (
             <p className="report-empty">
-              No runs yet. Start one from Strategy Studio or <code>POST /backtest/run</code>; receipts appear here.
+              No runs yet. Start a model backtest above, or use Strategy Studio / <code>POST /backtest/run</code>; receipts appear here.
             </p>
           )}
           <ul>

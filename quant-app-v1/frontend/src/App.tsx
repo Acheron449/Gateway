@@ -9,6 +9,7 @@ import { CommandPalette } from "./components/layout/CommandPalette";
 import { Landing } from "./components/layout/Landing";
 import { ResizeHandle } from "./components/layout/ResizeHandle";
 import { AuthModal } from "./components/auth/AuthModal";
+import { LegalNotice, NoticeAcceptanceGate } from "./components/layout/LegalNotice";
 import { AuthUIProvider, useAuthUI } from "./context/AuthUIContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { isView } from "./lib/views";
@@ -31,6 +32,19 @@ function readWidth(key: string, fallback: number, min: number, max: number): num
     /* ignore */
   }
   return fallback;
+}
+
+function useNarrowLayout(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 1024px)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1024px)");
+    const onChange = () => setNarrow(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
 }
 
 function LandingRedirect() {
@@ -62,6 +76,7 @@ function AppShell() {
   const [rightWidth, setRightWidth] = useState(() =>
     readWidth("gateway_ui_right_width", RIGHT_DEFAULT, RIGHT_COLLAPSED, 480),
   );
+  const narrowLayout = useNarrowLayout();
 
   const activeView = isView(viewParam) ? viewParam : "overview";
 
@@ -97,7 +112,7 @@ function AppShell() {
       />
       <div className="app-body">
         <div className="side-panel left-panel-shell" style={{ width: leftWidth }}>
-          <LeftSidebar activeView={activeView} collapsed={leftWidth <= LEFT_COLLAPSED} />
+          <LeftSidebar activeView={activeView} collapsed={narrowLayout || leftWidth <= LEFT_COLLAPSED} />
           <ResizeHandle
             side="left"
             width={leftWidth}
@@ -117,7 +132,7 @@ function AppShell() {
             its "Overview" tab, so the standalone shell is suppressed there. */}
         {activeView !== "paper-trading" && (
           <div className="side-panel right-panel-shell" style={{ width: rightWidth }}>
-            <RightInspector activeView={activeView} selectedSymbol={selectedSymbol} collapsed={rightWidth <= RIGHT_COLLAPSED} />
+            <RightInspector activeView={activeView} selectedSymbol={selectedSymbol} collapsed={narrowLayout || rightWidth <= RIGHT_COLLAPSED} />
             <ResizeHandle
               side="right"
               width={rightWidth}
@@ -145,6 +160,8 @@ function AppShell() {
           />
         )}
       </div>
+      <LegalNotice />
+      <NoticeAcceptanceGate />
     </div>
   );
 }

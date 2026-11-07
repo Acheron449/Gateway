@@ -20,6 +20,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.rate_limit import limiter
+from app.api.observability import RequestLoggingMiddleware
+from app.api.error_aggregation import ErrorAggregator, scrub_error_text
 
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.agentic_lab import router as agentic_lab_router
@@ -45,6 +47,8 @@ from app.api.v1.filings import router as filings_router
 from app.api.v1.watchlists import router as watchlists_router
 from app.api.v1.layouts import router as layouts_router
 from app.api.v1.preferences import router as preferences_router
+from app.api.v1.notices import router as notices_router
+from app.services import database
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
 from app.quant.technicals import calculate_wilder_rsi
@@ -461,11 +465,35 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+
+# Registered last so it is the outermost middleware: every response, including
+# 401/403/429 and CORS preflight, is logged and carries X-Request-ID (NFR-21).
+app.add_middleware(RequestLoggingMiddleware)
 
 # Add rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+error_aggregator = ErrorAggregator.from_env()
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Fixed 500 envelope; optional aggregation gets only scrubbed text."""
+    aggregator_event = error_aggregator.capture(request, exc)
+    request_id = getattr(request.state, "request_id", None)
+    logger.bind(
+        request_id=request_id,
+        error_type=type(exc).__name__,
+        error_id=aggregator_event.error_id if aggregator_event else None,
+    ).error("unhandled request error: {}", scrub_error_text(f"{type(exc).__name__}: {exc}"))
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+        headers={"X-Request-ID": request_id} if request_id else None,
+    )
 
 # Public routes (no authentication required)
 app.include_router(auth_router)
@@ -488,6 +516,7 @@ app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentime
 app.include_router(watchlists_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(layouts_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(preferences_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(notices_router)
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
@@ -509,15 +538,62 @@ def home() -> dict:
     return {"status": "Quant Engine Running"}
 
 
-@app.get("/health")
-@limiter.limit("30/minute")
-async def health(request: Request) -> dict:
+def _database_component() -> dict[str, Any]:
+    """Readiness probe for the SQLite store: open it and run a trivial query.
+
+    The failure body carries a fixed message, never the exception text, so a
+    path, DSN or driver detail cannot leak (NFR-11).
+    """
+    started = time.perf_counter()
+    try:
+        with database.get_connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        status = "ok"
+    except Exception:
+        logger.warning("health: database readiness check failed")
+        status = "failed"
     return {
-        "status": "ok",
-        "environment": settings.environment,
-        "execution_mode": settings.execution_mode,
-        "capabilities": settings.capabilities,
+        "status": status,
+        "detail": None if status == "ok" else "database unavailable",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
+
+
+def _health_report() -> tuple[dict[str, Any], bool]:
+    components = {"database": _database_component()}
+    ready = all(component["status"] == "ok" for component in components.values())
+    return (
+        {
+            "status": "ok" if ready else "degraded",
+            "service": "gateway-api",
+            "version": app.version,
+            "environment": settings.environment,
+            "execution_mode": settings.execution_mode,
+            "capabilities": settings.capabilities,
+            "components": components,
+        },
+        ready,
+    )
+
+
+@app.get("/health/live")
+async def health_live() -> dict[str, Any]:
+    """Liveness: the process is serving requests; never touches dependencies."""
+    return {"status": "ok", "service": "gateway-api", "version": app.version}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness: 200 only when every probed dependency answers."""
+    body, ready = _health_report()
+    return JSONResponse(status_code=200 if ready else 503, content=body)
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Readiness plus the environment and capability report required by NFR-20."""
+    body, ready = _health_report()
+    return JSONResponse(status_code=200 if ready else 503, content=body)
 
 
 TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '5h': 18000, '1d': 86400}

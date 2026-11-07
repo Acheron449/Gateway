@@ -436,6 +436,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS watchlists (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, symbols TEXT, created_at TEXT)")
         cur.execute("CREATE TABLE IF NOT EXISTS layouts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, symbol TEXT, tab TEXT, timeframe TEXT, indicators TEXT, inspector_width INTEGER, UNIQUE(user_id, symbol))")
         cur.execute("CREATE TABLE IF NOT EXISTS preferences (user_id TEXT PRIMARY KEY, theme TEXT, default_timezone TEXT, watchlists TEXT, saved_layouts TEXT)")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS notice_acceptances ("
+            "user_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at TEXT NOT NULL)"
+        )
         # Account deletion requests (item 19) — an audit queue, not an instant
         # delete: an operator reviews and fulfils each ticket.
         cur.execute(
@@ -1495,6 +1499,52 @@ def upsert_preferences(user_id: str, *, theme: str | None = None, default_timezo
 _RESERVING_STATUSES = "('pending_new', 'accepted', 'partially_filled')"
 
 
+def get_notice_acceptance(user_id: str) -> dict | None:
+    """Return the recorded notice acceptance for one user, if any."""
+    if _supabase_enabled():
+        row = _sb_rpc("gw_get_notice_acceptance", {"p_user_id": user_id})
+        if not row:
+            return None
+        return {"version": row["version"], "accepted_at": row["accepted_at"]}
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT version, accepted_at FROM notice_acceptances WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_notice_acceptance(user_id: str, version: str) -> dict:
+    """Record (or refresh) one user's acceptance of the current notice."""
+    if _supabase_enabled():
+        row = _sb_rpc(
+            "gw_accept_notice",
+            {"p_user_id": user_id, "p_version": version},
+        )
+        if not row or "version" not in row or "accepted_at" not in row:
+            raise RuntimeError("Supabase RPC gw_accept_notice returned no acceptance")
+        return {"version": row["version"], "accepted_at": row["accepted_at"]}
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO notice_acceptances (user_id, version, accepted_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET version = excluded.version,
+               accepted_at = excluded.accepted_at""",
+            (user_id, version, now),
+        )
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT version, accepted_at FROM notice_acceptances WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row)
+
+
 def get_open_reserved_total(portfolio_id: str) -> float:
     """Cash currently held by live, unfilled orders."""
     init_db()
@@ -1584,19 +1634,26 @@ def save_backtest_receipt(
     run_id: str, owner_id: str, status: str, symbol: str | None, timeframe: str | None,
     data_hash: str, receipt: dict, result: dict | None = None, metrics: dict | None = None,
 ) -> None:
-    """Persist one run and prune this owner's oldest receipts beyond the cap."""
+    """Persist one run and prune this owner's oldest receipts beyond the cap.
+
+    Receipts are insert-only (NFR-18): a re-used run id is refused rather than
+    silently overwriting the stored run and breaking replay provenance.
+    """
     init_db()
     now = __import__('datetime').datetime.utcnow().isoformat()
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """INSERT OR REPLACE INTO backtest_receipts
-               (id, owner_id, status, symbol, timeframe, data_hash, receipt, result, metrics, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run_id, owner_id, status, symbol, timeframe, data_hash,
-             json.dumps(receipt), json.dumps(result) if result is not None else None,
-             json.dumps(metrics) if metrics is not None else None, now),
-        )
+        try:
+            cur.execute(
+                """INSERT INTO backtest_receipts
+                   (id, owner_id, status, symbol, timeframe, data_hash, receipt, result, metrics, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, owner_id, status, symbol, timeframe, data_hash,
+                 json.dumps(receipt), json.dumps(result) if result is not None else None,
+                 json.dumps(metrics) if metrics is not None else None, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Receipt {run_id} already exists and cannot be replaced") from exc
         cur.execute(
             """DELETE FROM backtest_receipts WHERE owner_id = ? AND id NOT IN (
                    SELECT id FROM backtest_receipts WHERE owner_id = ?

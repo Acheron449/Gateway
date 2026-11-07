@@ -18,6 +18,7 @@ POLICY_RE = re.compile(r"create policy (\w+)\s+on\s+(\w+)(.*?);", re.IGNORECASE 
 EXPECTED_TABLES = {
     "profiles",
     "preferences",
+    "notice_acceptances",
     "strategies",
     "strategy_versions",
     "backtest_runs",

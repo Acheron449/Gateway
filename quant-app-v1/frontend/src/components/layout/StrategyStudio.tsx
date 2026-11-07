@@ -272,7 +272,20 @@ export function StrategyStudio() {
           </div>
           <div className="strategy-cards">
             {strategies.map(s => (
-              <div key={s.id} className={`strategy-card ${selectedStrategy?.id === s.id ? "selected" : ""}`} onClick={() => handleSelectStrategy(s)}>
+              <div
+                key={s.id}
+                className={`strategy-card ${selectedStrategy?.id === s.id ? "selected" : ""}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selectedStrategy?.id === s.id}
+                onClick={() => handleSelectStrategy(s)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    handleSelectStrategy(s);
+                  }
+                }}
+              >
                 <div className="card-header">
                   <h3>{s.name}</h3>
                   <span className={`status-badge ${s.status}`}>{s.status}</span>
@@ -386,7 +399,20 @@ export function StrategyStudio() {
             <div className="versions-panel">
               <h3>Strategy Versions</h3>
               {versions.map(v => (
-                <div key={v.version} className={`version-row ${selectedVersion?.version === v.version ? "selected" : ""}`} onClick={() => loadVersionSpec(selectedStrategy!.id, v.version)}>
+                <div
+                  key={v.version}
+                  className={`version-row ${selectedVersion?.version === v.version ? "selected" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={selectedVersion?.version === v.version}
+                  onClick={() => loadVersionSpec(selectedStrategy!.id, v.version)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      loadVersionSpec(selectedStrategy!.id, v.version);
+                    }
+                  }}
+                >
                   <span>Version {v.version}</span>
                   <span>{new Date(v.created_at).toLocaleString()}</span>
                   <span className="version-spec-preview">{JSON.stringify(v.spec).slice(0, 80)}...</span>

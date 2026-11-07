@@ -6,10 +6,19 @@ proven on a real stack before P6 can be signed off.
 
 ## Where the work stands
 
-- Backend suite: **464 passed, 0 failed**. `pip-audit`, `bandit -r app -lll` and
-  `npm audit --omit=dev --audit-level=high` are clean and gated in CI.
-- SRS NFR-6..NFR-19: 11 pass, 0 partial, 0 fail, 3 pass with caveat
-  (NFR-14 secret history, NFR-18 replace-not-insert, NFR-15 live-provider SSE).
+- Backend suite: **481 passed, 0 failed**. The full Playwright suite is **13
+  passing**. `pip-audit`, `bandit -r app -lll` and `npm audit --omit=dev
+  --audit-level=high` are clean and gated in CI.
+- NFR-20..NFR-30 all pass, so the Phase D audit is complete. NFR-29's
+  `notice_acceptances` table, RLS policy and RPCs are in `supabase/schema.sql`;
+  applying that schema to the hosted project is part of deployment. No
+  unblocked Phase D item remains.
+- SRS NFR-6..NFR-19: 12 pass, 0 partial, 0 fail, 2 pass with caveat
+  (NFR-14 secret history, NFR-15 live-provider SSE).
+- P4's duplicate read surface is closed: `/app/backtests` hosts the LLM
+  launcher and multi-run Monte Carlo comparison, and the in-lab Backtester
+  panel/tab are removed. The P4 image-size and live-RLS gaps remain deployment
+  checks.
 - All P6 changes are staged in the working tree; there are no commits or pushes.
 - Blockers outside the code: no LLM provider key is configured, the API host is
   still open decision O-1, and the old `.env.docker` secrets remain in history.
@@ -52,6 +61,23 @@ The chat harness and Agentic Lab stay in the tree behind the private-data gate.
 Before enabling them, decide whether to ship owner-scoped repositories or keep
 the gate. If they ship, the live chat smoke test becomes a release gate for
 every provider change. Do not start P7 work until Phase A and B are signed off.
+
+## Phase D — finish the NFR-20..NFR-30 audit
+
+NFR-20..NFR-30 are done: health/readiness, scrubbed request logs, opt-in
+error aggregation, keyboard/contrast/1024 px accessibility, a persistent
+simulated-results/not-advice notice, per-surface scope lines, per-user notice
+acceptance and a claims audit. The Phase D audit is complete; there is no
+unblocked Phase D item left. The next work is the owner decisions in Phase A/B.
+
+| # | Item | Done when |
+| --- | --- | --- |
+| D1 | NFR-20 health payload | **Done 2026-11-07** — `/health` + `/health/ready` readiness (503 `degraded` on DB failure) and dependency-free `/health/live`; `tests/test_health.py` |
+| D2 | NFR-22 error aggregation | **Done 2026-11-07** — `ErrorAggregator` is opt-in via `ERROR_AGGREGATION_ENABLED`, scrubs emails/tokens, and unhandled errors return a fixed 500; `tests/test_error_aggregation.py` |
+| D3 | NFR-23..NFR-26 accessibility | **Done 2026-11-07** — keyboard palette/brand/cards/rows, signed non-colour cues, 52 px rails at ≤1024 px, 5.24:1 muted text and 2 px focus rings; `e2e/accessibility.spec.ts` (3 passing) |
+| D4 | NFR-27..NFR-30 legal | **Done 2026-11-07** — persistent notice, existing per-surface scope lines, `/notices` per-user acceptance and live/profitability claim removal; `tests/test_notice_acceptance.py`, `e2e/legal.spec.ts` |
+
+None needs credentials or a deployed stack.
 
 ## Risks
 

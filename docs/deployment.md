@@ -110,9 +110,12 @@ should assume a specific vendor.
 Tables are RLS-enabled with ownership policies (SRS §7), not open reads. The
 existing auth-state surface uses SECURITY DEFINER RPCs gated by
 `_gw_check(<SUPABASE_RPC_SECRET>)`: `gw_create_user`, `gw_get_user_by_email`,
-`gw_get_user_by_id`, `gw_get_preferences`, `gw_upsert_preferences`. Provider API
-keys use the same shape (`gateway_provider_keys`, Fernet ciphertext only,
-RPCs `gw_list_provider_keys` / `gw_upsert_provider_key` / `gw_delete_provider_key`).
+`gw_get_user_by_id`, `gw_get_preferences`, `gw_upsert_preferences`,
+`gw_get_notice_acceptance`, `gw_accept_notice`. Provider API keys use the same
+shape (`gateway_provider_keys`, Fernet ciphertext only, RPCs
+`gw_list_provider_keys` / `gw_upsert_provider_key` / `gw_delete_provider_key`).
+`notice_acceptances` is owner-scoped under RLS and mirrors local SQLite NFR-29
+acceptance.
 
 `app/services/database.py` switches at call time: all three of `SUPABASE_URL` /
 `SUPABASE_KEY` / `SUPABASE_RPC_SECRET` set ⇒ Supabase (transport errors raise —

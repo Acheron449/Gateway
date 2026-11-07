@@ -32,6 +32,14 @@ create table if not exists preferences (
   updated_at      timestamptz not null default now()
 );
 
+-- NFR-29. The id is text so it can hold either an auth.users UUID or the
+-- lazily provisioned gateway_users id the API already uses.
+create table if not exists notice_acceptances (
+  user_id     text primary key,
+  version     text not null,
+  accepted_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------------------
 -- Research artefacts
 -- ---------------------------------------------------------------------------
@@ -138,6 +146,7 @@ create index if not exists bot_logs_run_idx on bot_logs (bot_run_id, bar_time);
 
 alter table profiles          enable row level security;
 alter table preferences       enable row level security;
+alter table notice_acceptances enable row level security;
 alter table strategies        enable row level security;
 alter table strategy_versions enable row level security;
 alter table backtest_runs     enable row level security;
@@ -154,6 +163,9 @@ create policy profiles_owner on profiles
 
 create policy preferences_owner on preferences
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy notice_acceptances_owner on notice_acceptances
+  for all using (auth.uid()::text = user_id) with check (auth.uid()::text = user_id);
 
 create policy strategies_owner on strategies
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
@@ -215,3 +227,46 @@ create policy bot_logs_owner on bot_logs
 
 -- DR-5 check: an anonymous client must see nothing.
 --   select count(*) from strategies;   -- as anon: 0
+
+-- ---------------------------------------------------------------------------
+-- Notice acceptance RPCs (NFR-29)
+-- ---------------------------------------------------------------------------
+-- Same SECURITY DEFINER + `_gw_check` shape as the auth/preferences RPCs.
+-- The API derives p_user_id from the verified principal, never from the
+-- browser, and the RLS policy above independently scopes direct table reads.
+
+create or replace function public.gw_get_notice_acceptance(p_secret text, p_user_id text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public._gw_check(p_secret);
+  return (
+    select jsonb_build_object('version', n.version, 'accepted_at', n.accepted_at)
+    from public.notice_acceptances n
+    where n.user_id = p_user_id
+    limit 1
+  );
+end;
+$$;
+
+create or replace function public.gw_accept_notice(p_secret text, p_user_id text, p_version text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  result jsonb;
+begin
+  perform public._gw_check(p_secret);
+  insert into notice_acceptances (user_id, version, accepted_at)
+  values (p_user_id, p_version, now())
+  on conflict (user_id) do update
+    set version = excluded.version, accepted_at = excluded.accepted_at
+  returning jsonb_build_object('version', version, 'accepted_at', accepted_at) into result;
+  return result;
+end;
+$$;

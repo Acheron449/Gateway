@@ -622,7 +622,18 @@ export function TradeJournal() {
               {filteredEntries.map((entry) => {
                 const pnl = formatPnL(entry.pnl, entry.pnl_pct);
                 return (
-                  <tr key={entry.id} className={entry.status === "open" ? "open-trade" : ""} onClick={() => openDayDetail(entry)}>
+                  <tr
+                    key={entry.id}
+                    className={entry.status === "open" ? "open-trade" : ""}
+                    tabIndex={0}
+                    onClick={() => openDayDetail(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openDayDetail(entry);
+                      }
+                    }}
+                  >
                     <td>{new Date(entry.entry_time).toLocaleDateString()}</td>
                     <td className="symbol-cell">{entry.symbol}</td>
                     <td>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import Backtester, { type BtRun } from "./Backtester";
+import { type BtRun } from "../../lib/backtestTypes";
 import { ModelPicker } from "./ModelPicker";
 import { API_BASE } from "../../lib/constants";
 import { readProviderCache, writeProviderCache } from "../../lib/providerCache";
@@ -25,7 +25,7 @@ interface ResearchDoc {
 }
 const TABS = [
   { id: "dashboard", label: "LLMs" }, { id: "research", label: "Research" }, { id: "log", label: "Trading Log" },
-  { id: "backtests", label: "Backtests" }, { id: "pairs", label: "Cointegration Pairs" },
+  { id: "pairs", label: "Cointegration Pairs" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 const validTab = (value: string | null): TabId => TABS.some((tab) => tab.id === value) ? value as TabId : "dashboard";
@@ -59,7 +59,6 @@ export function AgenticLab({ selectedSymbol, runs: sharedRuns, error: runsError,
   const { isAuthenticated } = useAuth();
   const { openAuth } = useAuthUI();
   const runs = sharedRuns as LabRun[];
-  const [backtestsLoading, setBacktestsLoading] = useState(true);
   const [tab, setTab] = useState<TabId>(() => validTab(searchParams.get("tab")));
   const sessionHeaders = useCallback((): Record<string, string> => {
     const token = localStorage.getItem("gateway_auth_token");
@@ -92,7 +91,6 @@ export function AgenticLab({ selectedSymbol, runs: sharedRuns, error: runsError,
     return () => { if (pollRef.current) clearTimeout(pollRef.current); if (loopPollRef.current) clearTimeout(loopPollRef.current); };
   }, [refresh]);
   useEffect(() => { const next = validTab(searchParams.get("tab")); if (next !== tab) setTab(next); }, [searchParams, tab]);
-  useEffect(() => { if (!runsError) setBacktestsLoading(false); }, [runsError, sharedRuns]);
   const selectTab = (next: TabId) => { setTab(next); setSearchParams(next === "dashboard" ? {} : { tab: next }, { replace: true }); };
   useEffect(() => {
     const provider = configuredProviders[0]?.id;
@@ -208,7 +206,6 @@ export function AgenticLab({ selectedSymbol, runs: sharedRuns, error: runsError,
       <div className="research-list">{research.length === 0 && <p className="empty-state">No research yet — type, upload, or ask your model.</p>}{research.map((doc) => <div key={doc.id} className="research-card"><button type="button" className="research-card-head" onClick={() => setOpenDoc(openDoc === doc.id ? null : doc.id)}><span className={`research-source ${doc.source}`}>{doc.source === "uploaded" ? "⬆ file" : doc.source === "model" ? "✦ model" : "✍️ typed"}</span><span className="research-title">{doc.title}</span><span className="research-meta">{doc.symbol ? `${doc.symbol} · ` : ""}{doc.created_at?.slice(0, 10)} · {doc.chars} chars</span></button>{openDoc === doc.id && <div className="research-card-body"><pre>{doc.content}</pre><div className="action-buttons"><button className="btn-secondary" onClick={() => { setResearchTitle(doc.title); setResearchBody(doc.content); setResearchMode("type"); }}>Edit</button><button className="btn-danger" onClick={() => void removeResearch(doc)}>Delete</button></div></div>}</div>)}</div>
     </section>}
     {tab === "log" && <section className="lab-section"><div className="lab-section-head"><h2>Trading Log</h2><p>What the models chose over your chosen duration.</p></div><div className="log-controls"><label>Duration<select value={logDays} onChange={(event) => { setLogDays(Number(event.target.value)); setLog(null); }}><option value={1}>Last 24 hours</option><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option><option value={365}>Last year</option></select></label><label>Symbol filter<input value={logSymbol} onChange={(event) => { setLogSymbol(event.target.value.toUpperCase()); setLog(null); }}/></label><button className="btn-primary" onClick={() => void loadLog()} disabled={logLoading}>{logLoading ? "Loading…" : "Refresh"}</button></div>{log && <><div className="log-counts"><span className="log-count long">▲ {log.counts.long} long</span><span className="log-count flat">■ {log.counts.flat} flat</span><span className="log-count short">▼ {log.counts.short} short</span><span className="log-count total">{log.total} decisions · {log.runs_covered} runs</span></div><div className="log-table-wrap"><table className="log-table"><thead><tr><th>When</th><th>Symbol</th><th>Strategy</th><th>Decision</th><th>Price</th><th>Reason</th></tr></thead><tbody>{(log.entries || []).map((entry: any, index: number) => <tr key={`${entry.run_id}-${index}`}><td>{String(entry.time).replace("T", " ").slice(0, 16)}</td><td>{entry.symbol}</td><td>{entry.strategy}</td><td><span className={`action-pill ${entry.action}`}>{entry.action}</span></td><td>{entry.price?.toFixed?.(2) ?? "—"}</td><td>{entry.reason}</td></tr>)}</tbody></table></div></>}</section>}
-    {tab === "backtests" && <><p className="view-description">Stored run receipts, comparisons and CSV export live in <a href="/app/backtests">Run reports</a>. This panel launches runs and samples Monte Carlo paths.</p><Backtester runs={runs} loading={backtestsLoading} error={error || runsError} onRefresh={onRefresh} initialSymbol={selectedSymbol}/></> }
     {tab === "pairs" && <section className="lab-section"><PairsBacktestLauncher initialSymbol={selectedSymbol} onComplete={() => void refresh()}/></section>}
   </div>;
 }

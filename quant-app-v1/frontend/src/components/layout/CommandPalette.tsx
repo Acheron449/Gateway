@@ -56,6 +56,12 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  // Restore focus to whatever opened the palette when it closes (NFR-23).
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => previous?.focus();
+  }, []);
+
   const allCommands: CommandItem[] = [
     ...NAVIGATION_COMMANDS.map((cmd) => ({
       ...cmd,
@@ -146,6 +152,11 @@ export function CommandPalette({
         if (displayCommands[selectedIndex]) {
           displayCommands[selectedIndex].action();
         }
+      } else if (e.key === "Tab") {
+        // The palette is a modal: keep Tab inside it instead of escaping to
+        // controls behind the overlay.
+        e.preventDefault();
+        inputRef.current?.focus();
       }
     };
 
@@ -165,7 +176,13 @@ export function CommandPalette({
   if (displayCommands.length === 0) {
     return (
       <div className="command-palette-overlay" onClick={onClose}>
-        <div className="command-palette" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="command-palette"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Command palette"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="command-palette-header">
             <label htmlFor="command-input" className="sr-only">Command</label>
             <input
@@ -191,7 +208,13 @@ export function CommandPalette({
 
   return (
     <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="command-palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="command-palette-header">
           <label htmlFor="command-input" className="sr-only">Command</label>
           <input
@@ -203,13 +226,18 @@ export function CommandPalette({
             placeholder="Type a command or search..."
             className="command-input"
             autoFocus
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="command-list"
+            aria-activedescendant={displayCommands.length ? `command-option-${selectedIndex}` : undefined}
           />
           <kbd className="command-shortcut">⌘K</kbd>
         </div>
-        <ul className="command-list" ref={listRef} role="listbox" aria-label="Commands">
+        <ul id="command-list" className="command-list" ref={listRef} role="listbox" aria-label="Commands">
           {displayCommands.map((cmd, index) => (
             <li
               key={cmd.id}
+              id={`command-option-${index}`}
               data-index={index}
               className={`command-item ${index === selectedIndex ? "selected" : ""} ${cmd.category}`}
               role="option"

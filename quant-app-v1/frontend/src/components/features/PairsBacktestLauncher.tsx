@@ -101,12 +101,12 @@ export function PairsBacktestLauncher({
         setMessage(job.message ?? `Running… ${Math.round((job.progress ?? 0) * 100)}%`);
         if (job.status === "failed") throw new Error(job.error || job.message || "Pairs backtest failed.");
         if (job.status === "succeeded") {
-          setMessage("Pairs run complete. Results are saved in Backtester history.");
+          setMessage("Pairs run complete. Results are saved in Agentic Lab run history.");
           onComplete();
           return;
         }
       }
-      throw new Error("The run is taking longer than expected; check Backtester history shortly.");
+      throw new Error("The run is taking longer than expected; check Agentic Lab history shortly.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not run pairs backtest.");
     } finally {

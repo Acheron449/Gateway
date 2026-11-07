@@ -783,7 +783,17 @@ export function OverviewDashboard({ selectedSymbol }: { selectedSymbol: string }
                   const row = watchRows[symbol];
                   const quote = row?.quote;
                   return (
-                    <tr key={symbol} onClick={() => pickSymbol(symbol)}>
+                    <tr
+                      key={symbol}
+                      tabIndex={0}
+                      onClick={() => pickSymbol(symbol)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          pickSymbol(symbol);
+                        }
+                      }}
+                    >
                       <td>{label}</td>
                       <td>{quote ? quote.price.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
                       <td className={(quote?.change_pct ?? 0) >= 0 ? "up" : "down"}>{quote ? pct(quote.change_pct) : "—"}</td>
