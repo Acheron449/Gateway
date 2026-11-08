@@ -79,18 +79,23 @@ disallow and no placeholder host.
 
 ### Pages alternative
 
-Pages does not read `wrangler.jsonc`, but the same root build remains usable if
-the project is on Pages. Use one of these configurations. Because the shared
-`dist/` deliberately contains no `_redirects`, a Pages project must configure
-its own SPA fallback (for example, a Pages-only `_redirects` step) rather than
-relying on the Workers setting.
+Pages does not read `wrangler.jsonc` and needs a `_redirects` SPA fallback,
+which Workers rejects. Keep the two artifacts separate:
 
-| Setting | Repository root | Frontend directory |
-| --- | --- | --- |
-| Root directory | blank or `.` | `quant-app-v1/frontend` |
-| Build command | `npm run build` | `npm ci && npm run build` |
-| Output directory | `dist` | `dist` |
-| Node version | `20` (`NODE_VERSION=20`) | `20` (`NODE_VERSION=20`) |
+- Workers: `npm run build` → `dist/`, deliberately no `_redirects`.
+- Pages: `npm run build:pages` → `dist-pages/`, with a generated
+  `/* /index.html 200` rule.
+
+The Pages builder copies `dist/` and refuses to run if `dist/` already contains
+`_redirects`, so a Pages artifact cannot be uploaded to Workers by mistake. Do
+not add `_redirects` to `public/`.
+
+| Setting | Value |
+| --- | --- |
+| Root directory | repository root (blank or `.`) |
+| Build command | `npm run build:pages` |
+| Output directory | `dist-pages` |
+| Node version | `20` (`NODE_VERSION=20`) |
 
 ### Vercel fallback
 

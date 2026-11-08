@@ -44,8 +44,8 @@ cd quant-app-v1/frontend
 npm install
 npm run dev                                  # Vite on http://127.0.0.1:5173
 # Cloudflare Workers Builds: root `wrangler.jsonc` runs `npm run build` and
-# uploads root `dist/`; Pages can use `npm run build` at the repo root, or
-# `npm ci && npm run build` here for this directory's `dist/`.
+# uploads root `dist/`. For Cloudflare Pages, run `npm run build:pages` at the
+# repo root and upload `dist-pages/` (it adds the Pages SPA fallback).
 # Optional Vercel fallback: import the repository root; root `vercel.json`
 # builds this directory and rewrites SPA routes. Set the VITE_* build vars in Vercel.
 

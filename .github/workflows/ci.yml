@@ -49,6 +49,12 @@ jobs:
         run: npm run build
       - name: Verify static output
         run: test -f dist/index.html && test ! -e dist/_redirects
+      - name: Build Pages artifact
+        run: npm run build:pages
+      - name: Verify Pages output
+        run: test -f dist-pages/index.html && test -f dist-pages/_redirects && test ! -e dist/_redirects
+      - name: Enforce JS bundle budgets
+        run: npm run check:bundle
       - name: Validate Wrangler deploy config
         run: npx --yes wrangler@4.158.0 versions upload --dry-run
       - name: Validate Vercel fallback config

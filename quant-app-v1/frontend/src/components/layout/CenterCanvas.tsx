@@ -1,26 +1,69 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE } from "../../lib/constants";
-import { ChartContainer } from "../../components/ChartContainer";
-import { AssetSelector } from "../../components/features/AssetSelector";
-import { PaperTrading } from "../../components/features/PaperTrading";
-import { TradingAccountStatus } from "../../components/features/TradingAccountStatus";
-import { AiTrading } from "../../components/features/AiTrading";
-import { CalendarView } from "./CalendarView";
-import { AiHarness } from "./AiHarness";
-import { AgenticLab } from "./AgenticLab";
 import { type BtRun } from "../../lib/backtestTypes";
-import { OverviewDashboard } from "../../components/features/OverviewDashboard";
-import { ScannerV2 } from "../../components/features/ScannerV2";
-import { StrategyStudio } from "./StrategyStudio";
-import { BacktestReports } from "../features/BacktestReports";
-import { OptionsCalculator } from "../features/OptionsCalculator";
-import { MonteCarloView } from "../features/MonteCarloView";
-import { OrderBookPanel } from "../features/OrderBookPanel";
-import { RiskDashboard } from "./RiskDashboard";
-import { TradeJournal } from "./TradeJournal";
-import { ProviderSettings } from "./ProviderSettings";
 import { LastUpdated } from "../../lib/LastUpdated";
-import { IdleScreen } from "./IdleScreen";
+
+const ChartContainer = lazy(() =>
+  import("../../components/ChartContainer").then((module) => ({ default: module.ChartContainer })),
+);
+const AssetSelector = lazy(() =>
+  import("../../components/features/AssetSelector").then((module) => ({ default: module.AssetSelector })),
+);
+const PaperTrading = lazy(() =>
+  import("../../components/features/PaperTrading").then((module) => ({ default: module.PaperTrading })),
+);
+const TradingAccountStatus = lazy(() =>
+  import("../../components/features/TradingAccountStatus").then((module) => ({
+    default: module.TradingAccountStatus,
+  })),
+);
+const AiTrading = lazy(() =>
+  import("../../components/features/AiTrading").then((module) => ({ default: module.AiTrading })),
+);
+const CalendarView = lazy(() =>
+  import("./CalendarView").then((module) => ({ default: module.CalendarView })),
+);
+const AiHarness = lazy(() =>
+  import("./AiHarness").then((module) => ({ default: module.AiHarness })),
+);
+const AgenticLab = lazy(() =>
+  import("./AgenticLab").then((module) => ({ default: module.AgenticLab })),
+);
+const OverviewDashboard = lazy(() =>
+  import("../../components/features/OverviewDashboard").then((module) => ({
+    default: module.OverviewDashboard,
+  })),
+);
+const ScannerV2 = lazy(() =>
+  import("../../components/features/ScannerV2").then((module) => ({ default: module.ScannerV2 })),
+);
+const StrategyStudio = lazy(() =>
+  import("./StrategyStudio").then((module) => ({ default: module.StrategyStudio })),
+);
+const BacktestReports = lazy(() =>
+  import("../features/BacktestReports").then((module) => ({ default: module.BacktestReports })),
+);
+const OptionsCalculator = lazy(() =>
+  import("../features/OptionsCalculator").then((module) => ({ default: module.OptionsCalculator })),
+);
+const MonteCarloView = lazy(() =>
+  import("../features/MonteCarloView").then((module) => ({ default: module.MonteCarloView })),
+);
+const OrderBookPanel = lazy(() =>
+  import("../features/OrderBookPanel").then((module) => ({ default: module.OrderBookPanel })),
+);
+const RiskDashboard = lazy(() =>
+  import("./RiskDashboard").then((module) => ({ default: module.RiskDashboard })),
+);
+const TradeJournal = lazy(() =>
+  import("./TradeJournal").then((module) => ({ default: module.TradeJournal })),
+);
+const ProviderSettings = lazy(() =>
+  import("./ProviderSettings").then((module) => ({ default: module.ProviderSettings })),
+);
+const IdleScreen = lazy(() =>
+  import("./IdleScreen").then((module) => ({ default: module.IdleScreen })),
+);
 
 interface CenterCanvasProps {
   activeView: string;
@@ -240,6 +283,14 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
   }
 }
 
+function CanvasLoading() {
+  return (
+    <div className="route-loading route-loading--inline" role="status" aria-live="polite">
+      <span>Loading view…</span>
+    </div>
+  );
+}
+
 export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -252,7 +303,9 @@ export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) 
       className={`center-canvas-inner${fixed ? " center-canvas-fixed" : ""}`}
       ref={canvasRef}
     >
-      {getViewComponent(activeView, selectedSymbol)}
+      <Suspense fallback={<CanvasLoading />}>
+        {getViewComponent(activeView, selectedSymbol)}
+      </Suspense>
     </div>
   );
 }
