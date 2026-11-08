@@ -352,13 +352,13 @@ async def lifespan(app: FastAPI):
             "Alpaca credentials and FINNHUB_API_KEY are not set; /ws/trading has no market-data feed."
         )
 
-    # Resume the AI trader if it was left enabled (AI Trading section).
+    # Resume each owner's AI trader if it was left enabled (AI Trading section).
     try:
         from app.services import ai_trading as _ai_trading
 
-        if _ai_trading.get_config().get("enabled"):
-            _ai_trading.start()
-            logger.info("AI trading loop resumed from saved config")
+        resumed = _ai_trading.autostart()
+        if resumed:
+            logger.info("AI trading loops resumed for {} owner(s)", len(resumed))
     except Exception as exc:
         logger.warning("AI trading autostart skipped: {}", exc)
 
@@ -394,11 +394,11 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Authenticate and fail closed for shared stores until ownership ships."""
         path = request.url.path.rstrip("/") or "/"
-        # /strategies, /journal and /portfolio are deliberately absent: every
-        # one of their routes derives its owner from CurrentUser, so they are
-        # scoped per request rather than fail-closed behind the shared-store
-        # gate.
-        private_prefixes = ("/ai-trading", "/vault", "/llm")
+        # /strategies, /journal, /portfolio and /ai-trading are deliberately
+        # absent: every one of their routes derives its owner from CurrentUser,
+        # so they are scoped per request rather than fail-closed behind the
+        # shared-store gate.
+        private_prefixes = ("/vault", "/llm")
         operator_prefixes = ("/risk", "/settings/providers")
         private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
         operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
@@ -509,7 +509,7 @@ app.include_router(risk_router)  # Risk Dashboard (operator-gated global configu
 app.include_router(divergence_router)  # Divergence Scorecards
 app.include_router(settings_router)  # Global provider settings (operator-gated)
 app.include_router(vault_router, dependencies=[Depends(get_current_user_optional)])  # Encrypted secrets vault (also gated until owner isolation)
-app.include_router(ai_trading_router, dependencies=[Depends(get_current_user_optional)])  # AI auto-trading (also gated until owner isolation)
+app.include_router(ai_trading_router)  # AI auto-trading (owner-scoped per request)
 app.include_router(llm_router)  # BYOK/chat gated until durable owner store is deployed
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
 app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment

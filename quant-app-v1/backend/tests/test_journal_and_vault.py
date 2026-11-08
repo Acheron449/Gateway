@@ -213,21 +213,25 @@ class TestAiTradingScoring:
         assert confidence == 0.0
 
     def test_config_roundtrip_and_clamping(self, tmp_path, monkeypatch):
-        from app.services import ai_trading
+        from app.services import ai_trading, database
 
-        monkeypatch.setattr(ai_trading, "_CONFIG_FILE", tmp_path / "ai_trading.json")
+        monkeypatch.setattr(database, "DB_PATH", tmp_path / "ai-trading.db")
         saved = ai_trading.save_config(
+            "config-tester",
             {
                 "symbols": "spy, qqq , ",
                 "confidence_threshold": 5,  # out of range → clamped
                 "cycle_seconds": 1,
                 "strategy": "nonsense",
-            }
+            },
         )
         assert saved["symbols"] == ["SPY", "QQQ"]
         assert saved["confidence_threshold"] == 1.0
         assert saved["cycle_seconds"] == 15
         assert saved["strategy"] == "momentum"
 
-        loaded = ai_trading.get_config()
+        loaded = ai_trading.get_config("config-tester")
         assert loaded["symbols"] == ["SPY", "QQQ"]
+
+        # Another account never sees these settings.
+        assert ai_trading.get_config("someone-else")["symbols"] == ai_trading.DEFAULT_CONFIG["symbols"]

@@ -33,6 +33,7 @@ def _token(subject: str = "stopgap-user") -> str:
         ("/journal", "POST"),
         ("/ai-trading", "GET"),
         ("/ai-trading/start", "POST"),
+        ("/ai-trading/log", "GET"),
         ("/risk/config", "GET"),
         ("/settings/providers", "GET"),
         ("/vault", "GET"),
@@ -49,7 +50,6 @@ async def test_private_routes_require_authentication_before_shared_state(path: s
 @pytest.mark.parametrize(
     ("path", "method"),
     [
-        ("/ai-trading", "GET"),
         ("/vault", "GET"),
         ("/llm/providers", "GET"),
     ],
@@ -75,6 +75,15 @@ async def test_authenticated_journal_is_owner_scoped_instead_of_gated() -> None:
     response = await _request("/journal", token=_token())
     assert response.status_code == 200
     assert response.json() == {"entries": []}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_ai_trading_is_owner_scoped_instead_of_gated() -> None:
+    """The AI trader resolves the caller's own config and book, so it is no longer a shared store."""
+    response = await _request("/ai-trading", token=_token())
+    assert response.status_code == 200
+    assert response.json()["running"] is False
+    assert response.json()["config"]["route"] == "paper"
 
 
 @pytest.mark.asyncio

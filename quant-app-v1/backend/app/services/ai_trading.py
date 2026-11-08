@@ -1,21 +1,21 @@
-"""AI auto-trading engine.
+"""AI auto-trading engine, scoped to the signed-in account.
 
-Evaluates the user's watchlist on a cycle and places orders within the
-user's own allocation limits. Decisions combine:
+Evaluates the owner's watchlist on a cycle and places orders within that
+owner's own allocation limits. Decisions combine:
 
 1. **Market data** — fresh OHLCV from the selected provider (momentum or
    mean-reversion signal with a confidence score).
 2. **Learned experience (past trades)** — per-symbol win rate and realised
-   PnL from the trade journal (paper *and* actual entries) scale confidence
-   up or down, so the agent avoids repeating symbols it has consistently
-   lost on and leans into its proven edge.
-3. **Backtest results** — the average edge of recent local backtests scales
-   confidence globally (a strategy that historically degraded capital
-   tightens the agent's appetite).
+   PnL from the owner's trade journal, so the agent avoids repeating symbols
+   it has consistently lost on and leans into its proven edge.
+3. **Backtest results** — the average edge of that owner's recent backtest
+   receipts scales confidence globally.
 
-Trades route to the paper portfolio by default. Live routing must be
-explicitly enabled in the config and always respects the broker kill
-switch. Every decision is written to ``ai_trading_log`` with its reason.
+Trades route only to ``paper_<owner_id>``. Every decision is written to
+``ai_trading_log`` with its owner and reason. Configuration lives in
+``ai_trading_config``; a pre-ownership JSON file and legacy ownerless rows are
+never read, so an older deployment cannot leak one account's settings or
+history into another's.
 """
 
 from __future__ import annotations
@@ -23,20 +23,15 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
 from app.services.database import get_connection, init_db
 
-_SETTINGS_DIR = Path(__file__).resolve().parents[1] / "settings"
-_CONFIG_FILE = _SETTINGS_DIR / "ai_trading.json"
-
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
-    "route": "paper",  # "paper" | "live"
+    "route": "paper",  # live routing is not available; kept for response shape
     "symbols": ["SPY", "QQQ", "AAPL", "NVDA"],
     "strategy": "momentum",  # "momentum" | "mean_reversion"
     "max_position_notional": 1000.0,
@@ -55,11 +50,24 @@ def _now() -> str:
 
 def _ensure_tables() -> None:
     init_db()
+    from app.services.journal_log import ensure_journal_tables
+
+    ensure_journal_tables()
     with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_trading_config (
+                owner_id TEXT PRIMARY KEY,
+                config TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_trading_log (
                 id TEXT PRIMARY KEY,
+                owner_id TEXT,
                 ts TEXT NOT NULL,
                 symbol TEXT,
                 action TEXT NOT NULL,
@@ -73,62 +81,89 @@ def _ensure_tables() -> None:
             )
             """
         )
+        # Pre-ownership logs have no owner column. Add it as nullable so legacy
+        # rows stay invisible (SRS DR-6/DR-7).
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_trading_log)")}
+        if "owner_id" not in columns:
+            conn.execute("ALTER TABLE ai_trading_log ADD COLUMN owner_id TEXT")
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ai_log_ts ON ai_trading_log(ts)"
+            "CREATE INDEX IF NOT EXISTS idx_ai_log_owner ON ai_trading_log(owner_id, ts DESC)"
         )
         conn.commit()
 
 
-def get_config() -> dict[str, Any]:
-    if not _CONFIG_FILE.exists():
-        return dict(DEFAULT_CONFIG)
-    try:
-        with _CONFIG_FILE.open("r", encoding="utf-8") as handle:
-            stored = json.load(handle)
-        merged = dict(DEFAULT_CONFIG)
-        merged.update(stored if isinstance(stored, dict) else {})
-        # Broker execution is unavailable without real account ownership and
-        # durable intent recovery; old saved `live` preferences cannot reenable it.
-        merged["route"] = "paper"
-        return merged
-    except (OSError, ValueError, TypeError):
-        return dict(DEFAULT_CONFIG)
-
-
-def save_config(config: dict[str, Any]) -> dict[str, Any]:
+def _normalized(config: dict[str, Any]) -> dict[str, Any]:
     merged = dict(DEFAULT_CONFIG)
     merged.update(config)
-    # Clamp to sane bounds — this config spends real (paper) money.
     merged["max_position_notional"] = max(10.0, float(merged["max_position_notional"]))
     merged["confidence_threshold"] = _CLAMP(merged["confidence_threshold"])
     merged["cycle_seconds"] = max(15, int(merged["cycle_seconds"]))
-    # Reject all attempts to restore broker execution through saved AI config.
+    # Live routing was removed with the live-execution scope; old saved values
+    # cannot re-enable it.
     merged["route"] = "paper"
     merged["strategy"] = "mean_reversion" if merged.get("strategy") == "mean_reversion" else "momentum"
     symbols = merged.get("symbols") or []
     if isinstance(symbols, str):
         symbols = [s.strip() for s in symbols.split(",")]
     merged["symbols"] = [str(s).upper() for s in symbols if str(s).strip()][:20]
-
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = _CONFIG_FILE.with_suffix(".json.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(merged, handle, indent=2, sort_keys=True)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, _CONFIG_FILE)
-    try:
-        _CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
     return merged
+
+
+def get_config(owner_id: str) -> dict[str, Any]:
+    _ensure_tables()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT config FROM ai_trading_config WHERE owner_id = ?", (owner_id,)
+        ).fetchone()
+    merged = dict(DEFAULT_CONFIG)
+    if row:
+        try:
+            stored = json.loads(row["config"])
+        except (TypeError, ValueError):
+            stored = None
+        if isinstance(stored, dict):
+            merged.update(stored)
+    merged["route"] = "paper"
+    return merged
+
+
+def save_config(owner_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    merged = _normalized(config)
+    _ensure_tables()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO ai_trading_config (owner_id, config, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(owner_id) DO UPDATE SET
+                 config = excluded.config,
+                 updated_at = excluded.updated_at""",
+            (owner_id, json.dumps(merged, sort_keys=True), _now()),
+        )
+        conn.commit()
+    return merged
+
+
+def enabled_owners() -> list[str]:
+    """Owners whose agent was left enabled, for process-start resumption."""
+    _ensure_tables()
+    with get_connection() as conn:
+        rows = conn.execute("SELECT owner_id, config FROM ai_trading_config").fetchall()
+    owners: list[str] = []
+    for row in rows:
+        try:
+            config = json.loads(row["config"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(config, dict) and config.get("enabled"):
+            owners.append(str(row["owner_id"]))
+    return owners
 
 
 # --- Memory ----------------------------------------------------------------
 
 
-def journal_memory(symbol: str) -> dict[str, Any]:
-    """Closed-trade record for one symbol (paper + actual + manual)."""
+def journal_memory(owner_id: str, symbol: str) -> dict[str, Any]:
+    """Closed-trade record for one symbol from the owner's journal only."""
     _ensure_tables()
     sym = symbol.upper()
     with get_connection() as conn:
@@ -137,8 +172,8 @@ def journal_memory(symbol: str) -> dict[str, Any]:
                       SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
                       COALESCE(SUM(pnl), 0) AS pnl
                FROM journal_entries
-               WHERE symbol = ? AND status = 'closed'""",
-            (sym,),
+               WHERE owner_id = ? AND symbol = ? AND status = 'closed'""",
+            (owner_id, sym),
         ).fetchone()
     closed = int(row["closed"] or 0)
     wins = int(row["wins"] or 0)
@@ -150,22 +185,27 @@ def journal_memory(symbol: str) -> dict[str, Any]:
     }
 
 
-def backtest_edge() -> Optional[float]:
-    """Mean return of the most recent local backtests (None when no runs)."""
-    try:
-        with get_connection() as conn:
-            rows = conn.execute(
-                """SELECT initial_capital, final_capital FROM backtests
-                   WHERE initial_capital > 0 AND final_capital IS NOT NULL
-                   ORDER BY id DESC LIMIT 5"""
-            ).fetchall()
-    except Exception:
-        return None
-    edges = [
-        (float(r["final_capital"]) / float(r["initial_capital"])) - 1.0
-        for r in rows
-        if r["initial_capital"]
-    ]
+def backtest_edge(owner_id: str) -> Optional[float]:
+    """Mean return of the owner's most recent receipts (None when no runs)."""
+    _ensure_tables()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT metrics FROM backtest_receipts
+               WHERE owner_id = ? AND metrics IS NOT NULL
+               ORDER BY created_at DESC, rowid DESC LIMIT 5""",
+            (owner_id,),
+        ).fetchall()
+    edges: list[float] = []
+    for row in rows:
+        try:
+            metrics = json.loads(row["metrics"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metrics, dict):
+            continue
+        pct = metrics.get("total_return_pct")
+        if isinstance(pct, (int, float)):
+            edges.append(float(pct) / 100.0)
     if not edges:
         return None
     return sum(edges) / len(edges)
@@ -212,13 +252,15 @@ def score_symbol(closes: list[float], strategy: str) -> tuple[int, float, str]:
     return signal, confidence, reason
 
 
-def apply_memory(symbol: str, confidence: float, config: dict[str, Any]) -> tuple[float, str]:
-    """Scale confidence with journal + backtest experience."""
+def apply_memory(
+    owner_id: str, symbol: str, confidence: float, config: dict[str, Any]
+) -> tuple[float, str]:
+    """Scale confidence with the owner's journal + backtest experience."""
     notes: list[str] = []
     conf = confidence
 
     if config.get("use_journal_memory", True):
-        memory = journal_memory(symbol)
+        memory = journal_memory(owner_id, symbol)
         if memory["closed"] >= 3 and memory["win_rate"] is not None:
             # 0% win rate → ×0.75, 50% → ×1.0, 100% → ×1.25
             factor = 0.75 + 0.5 * memory["win_rate"]
@@ -231,7 +273,7 @@ def apply_memory(symbol: str, confidence: float, config: dict[str, Any]) -> tupl
             )
 
     if config.get("use_backtest_memory", True):
-        edge = backtest_edge()
+        edge = backtest_edge(owner_id)
         if edge is not None:
             factor = 1.0 + max(-0.3, min(0.3, edge))
             conf *= factor
@@ -243,23 +285,23 @@ def apply_memory(symbol: str, confidence: float, config: dict[str, Any]) -> tupl
 # --- Execution helpers -----------------------------------------------------
 
 
-def _paper_state() -> tuple[str, dict[str, Any]]:
+def _paper_state(owner_id: str) -> tuple[str, dict[str, Any]]:
     from app.services.database import create_portfolio, get_portfolio
 
-    portfolio_id = "paper_default"
+    portfolio_id = f"paper_{owner_id}"
     portfolio = get_portfolio(portfolio_id)
     if not portfolio:
-        create_portfolio(portfolio_id, "default_user")
+        create_portfolio(portfolio_id, owner_id)
         portfolio = get_portfolio(portfolio_id) or {}
     return portfolio_id, portfolio
 
 
-def _place_paper_order(symbol: str, side: str, qty: int) -> dict[str, Any]:
+def _place_paper_order(owner_id: str, symbol: str, side: str, qty: int) -> dict[str, Any]:
     from app.models import OrderSide, OrderType
     from app.services.fill_simulator import FillSimulator
     from app.services.paper_portfolio import PaperPortfolioService
 
-    portfolio_id, _ = _paper_state()
+    portfolio_id, _ = _paper_state(owner_id)
     service = PaperPortfolioService(portfolio_id)
     order = service.submit_order(
         instrument_id=symbol,
@@ -276,24 +318,11 @@ def _place_paper_order(symbol: str, side: str, qty: int) -> dict[str, Any]:
     }
 
 
-def _kill_switch_active() -> bool:
-    try:
-        from app.services.live_gates import get_live_gates
-
-        return bool(get_live_gates().kill_switch.is_active())
-    except Exception:
-        return False
-
-
-async def place_live_order_async(symbol: str, side: str, qty: int) -> dict[str, Any]:
-    """Fail closed: broker submission is unavailable until auth and durable recovery exist."""
-    raise RuntimeError("Live broker execution is unavailable")
-
-
 # --- Cycle -----------------------------------------------------------------
 
 
 def log_decision(
+    owner_id: str,
     symbol: str,
     action: str,
     confidence: float,
@@ -308,10 +337,11 @@ def log_decision(
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO ai_trading_log
-               (id, ts, symbol, action, confidence, reason, price, qty, route, ok, detail)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, owner_id, ts, symbol, action, confidence, reason, price, qty, route, ok, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(uuid4()),
+                owner_id,
                 _now(),
                 symbol,
                 action,
@@ -327,7 +357,7 @@ def log_decision(
         conn.commit()
 
 
-async def evaluate_symbol(symbol: str, config: dict[str, Any]) -> dict[str, Any]:
+async def evaluate_symbol(owner_id: str, symbol: str, config: dict[str, Any]) -> dict[str, Any]:
     """Decide what to do with one symbol (no side effects)."""
     from app.services.market_data import fetch_ohlcv
 
@@ -336,7 +366,7 @@ async def evaluate_symbol(symbol: str, config: dict[str, Any]) -> dict[str, Any]
     price = closes[-1] if closes else None
 
     signal, raw_conf, signal_reason = score_symbol(closes, config["strategy"])
-    confidence, memory_note = apply_memory(symbol, raw_conf, config)
+    confidence, memory_note = apply_memory(owner_id, symbol, raw_conf, config)
 
     return {
         "symbol": symbol,
@@ -347,24 +377,17 @@ async def evaluate_symbol(symbol: str, config: dict[str, Any]) -> dict[str, Any]
     }
 
 
-async def run_cycle() -> dict[str, Any]:
-    """One full evaluation + execution pass over the configured paper simulator."""
-    config = get_config()
-    if config.get("route") != "paper":
-        raise RuntimeError("Live broker execution is unavailable")
+async def run_cycle(owner_id: str) -> dict[str, Any]:
+    """One full evaluation + execution pass over the owner's paper simulator."""
+    config = get_config(owner_id)
     symbols: list[str] = config["symbols"]
-    route: str = config["route"]
     results: list[dict[str, Any]] = []
 
-    portfolio_id, portfolio = _paper_state()
-    positions: dict[str, float] = {}
-    if route == "paper":
-        for p in portfolio.get("positions", []):
-            positions[str(p.get("instrument_id", "")).upper()] = float(p.get("quantity", 0))
-    else:
-        # Live routing was removed with the live-execution scope (SRS P4).
-        log_decision("", "error", 0.0, "live routing is not supported", route=route, ok=False)
-        return {"route": route, "decisions": [{"error": "live routing is not supported"}]}
+    portfolio_id, portfolio = _paper_state(owner_id)
+    positions: dict[str, float] = {
+        str(p.get("instrument_id", "")).upper(): float(p.get("quantity", 0))
+        for p in portfolio.get("positions", [])
+    }
 
     cash = float(portfolio.get("cash") or 0.0)
     threshold = float(config["confidence_threshold"])
@@ -372,9 +395,11 @@ async def run_cycle() -> dict[str, Any]:
 
     for symbol in symbols:
         try:
-            decision = await evaluate_symbol(symbol, config)
+            decision = await evaluate_symbol(owner_id, symbol, config)
         except Exception as exc:
-            log_decision(symbol, "error", 0.0, "evaluation failed", route=route, ok=False, detail=str(exc))
+            log_decision(
+                owner_id, symbol, "error", 0.0, "evaluation failed", ok=False, detail=str(exc)
+            )
             results.append({"symbol": symbol, "action": "error", "detail": str(exc)})
             continue
 
@@ -390,10 +415,7 @@ async def run_cycle() -> dict[str, Any]:
                 if signal < 0:
                     qty = int(abs(held))
                     if qty > 0:
-                        if route == "live":
-                            await place_live_order_async(symbol, "sell", qty)
-                        else:
-                            _place_paper_order(symbol, "sell", qty)
+                        _place_paper_order(owner_id, symbol, "sell", qty)
                         action = "sell"
                         detail = f"closed {qty} @ ~{price:.2f}"
                     else:
@@ -404,11 +426,8 @@ async def run_cycle() -> dict[str, Any]:
                 budget = min(max_notional, cash)
                 qty = int(budget * confidence / price)
                 if qty >= 1 and budget >= price:
-                    if route == "live":
-                        await place_live_order_async(symbol, "buy", qty)
-                    else:
-                        _place_paper_order(symbol, "buy", qty)
-                        cash -= qty * price
+                    _place_paper_order(owner_id, symbol, "buy", qty)
+                    cash -= qty * price
                     action = "buy"
                     detail = f"opened {qty} @ ~{price:.2f} (confidence {confidence:.0%})"
                 else:
@@ -424,13 +443,13 @@ async def run_cycle() -> dict[str, Any]:
                     detail = f"confidence {confidence:.0%} below {threshold:.0%} threshold"
 
             log_decision(
+                owner_id,
                 symbol,
                 action,
                 confidence,
                 decision["reason"],
                 price=price,
                 qty=None,
-                route=route,
                 ok=True,
                 detail=detail,
             )
@@ -445,79 +464,100 @@ async def run_cycle() -> dict[str, Any]:
                 }
             )
         except Exception as exc:
-            log_decision(symbol, action, confidence, decision["reason"], price=price, route=route, ok=False, detail=str(exc))
+            log_decision(
+                owner_id,
+                symbol,
+                action,
+                confidence,
+                decision["reason"],
+                price=price,
+                ok=False,
+                detail=str(exc),
+            )
             results.append({"symbol": symbol, "action": "error", "detail": str(exc)})
 
-    return {"route": route, "decisions": results, "ts": _now()}
+    return {"route": "paper", "decisions": results, "ts": _now()}
 
 
-def recent_log(limit: int = 50) -> list[dict[str, Any]]:
+def recent_log(owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     _ensure_tables()
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM ai_trading_log ORDER BY ts DESC LIMIT ?",
-            (max(1, min(int(limit), 500)),),
+            "SELECT * FROM ai_trading_log WHERE owner_id = ? ORDER BY ts DESC LIMIT ?",
+            (owner_id, max(1, min(int(limit), 500))),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 # --- Background loop -------------------------------------------------------
 
-_loop_task: Optional[asyncio.Task] = None
+_loop_tasks: dict[str, asyncio.Task] = {}
 
 
-def is_running() -> bool:
-    return _loop_task is not None and not _loop_task.done()
+def is_running(owner_id: str) -> bool:
+    task = _loop_tasks.get(owner_id)
+    return task is not None and not task.done()
 
 
-async def _cycle_loop() -> None:
+async def _cycle_loop(owner_id: str) -> None:
     while True:
-        config = get_config()
+        config = get_config(owner_id)
         if not config.get("enabled"):
             break
         try:
-            await run_cycle()
+            await run_cycle(owner_id)
         except Exception as exc:  # keep the loop alive no matter what
-            log_decision("", "error", 0.0, "cycle failed", ok=False, detail=str(exc))
+            log_decision(owner_id, "", "error", 0.0, "cycle failed", ok=False, detail=str(exc))
         await asyncio.sleep(max(15, int(config.get("cycle_seconds", 60))))
 
 
-def start() -> dict[str, Any]:
-    global _loop_task
-    config = get_config()
+def start(owner_id: str) -> dict[str, Any]:
+    config = get_config(owner_id)
     config["enabled"] = True
-    save_config(config)
-    if not is_running():
-        _loop_task = asyncio.get_running_loop().create_task(_cycle_loop())
-    return get_config()
+    save_config(owner_id, config)
+    if not is_running(owner_id):
+        _loop_tasks[owner_id] = asyncio.get_running_loop().create_task(
+            _cycle_loop(owner_id), name=f"ai-trading-{owner_id}"
+        )
+    return get_config(owner_id)
 
 
-def stop() -> dict[str, Any]:
-    global _loop_task
-    config = get_config()
+def stop(owner_id: str) -> dict[str, Any]:
+    config = get_config(owner_id)
     config["enabled"] = False
-    save_config(config)
-    if _loop_task is not None and not _loop_task.done():
-        _loop_task.cancel()
-    _loop_task = None
-    return get_config()
+    save_config(owner_id, config)
+    task = _loop_tasks.pop(owner_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+    return get_config(owner_id)
 
 
 def shutdown() -> None:
-    """Cancel the loop on process exit *without* clearing the saved config,
-    so an enabled AI trader resumes on the next boot."""
-    global _loop_task
-    if _loop_task is not None and not _loop_task.done():
-        _loop_task.cancel()
-    _loop_task = None
+    """Cancel every owner's loop on process exit without clearing config."""
+    for task in list(_loop_tasks.values()):
+        if not task.done():
+            task.cancel()
+    _loop_tasks.clear()
 
 
-def status() -> dict[str, Any]:
-    config = get_config()
+def autostart() -> list[str]:
+    """Resume each owner whose agent was left enabled."""
+    started: list[str] = []
+    for owner_id in enabled_owners():
+        try:
+            start(owner_id)
+            started.append(owner_id)
+        except Exception:
+            continue
+    return started
+
+
+def status(owner_id: str) -> dict[str, Any]:
+    config = get_config(owner_id)
     return {
-        "running": is_running(),
+        "running": is_running(owner_id),
         "config": config,
-        "last_log": recent_log(5),
-        "journal_memory": {s: journal_memory(s) for s in config["symbols"][:8]},
-        "backtest_edge": backtest_edge(),
+        "last_log": recent_log(owner_id, 5),
+        "journal_memory": {s: journal_memory(owner_id, s) for s in config["symbols"][:8]},
+        "backtest_edge": backtest_edge(owner_id),
     }
