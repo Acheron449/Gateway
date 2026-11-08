@@ -51,6 +51,20 @@ jobs:
         run: test -f dist/index.html && test ! -e dist/_redirects
       - name: Validate Wrangler deploy config
         run: npx --yes wrangler@4.158.0 versions upload --dry-run
+      - name: Validate Vercel fallback config
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const config = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
+          const fallback = (config.rewrites || []).some(
+            (rule) => rule.source === "/(.*)" && rule.destination === "/index.html",
+          );
+          if (config.framework !== "vite") throw new Error("Vercel framework must be vite");
+          if (config.outputDirectory !== "quant-app-v1/frontend/dist") throw new Error("Vercel output directory mismatch");
+          if (!fallback) throw new Error("Vercel SPA rewrite is missing");
+          if (!fs.existsSync(".vercelignore")) throw new Error(".vercelignore is missing");
+          console.log("Vercel fallback config is valid");
+          NODE
 
   frontend:
     name: Frontend build

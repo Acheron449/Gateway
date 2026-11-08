@@ -4,7 +4,7 @@
 | --- | --- |
 | Document | `docs/SRS.md` — single source of truth |
 | Version | 1.0 |
-| Date | 2026-11-07 |
+| Date | 2026-11-08 |
 | Status | Approved scope. P1 (build + hosting rescue) and P2 (identity + isolation model) implemented 2026-11-07; P3–P6 not started |
 | Supersedes | `phase-0..9-plan.md`, `phase-5-prerequisites.md`, `phase-8-draft.md`, `gateway-roadmap.md`, `auth0.md`, `status.md` (all moved to [`archive/`](archive/)) |
 | Related, still current | [`deployment.md`](deployment.md) (hosting runbook), [`superpowers/specs/`](superpowers/specs/) (security remediation designs) |
@@ -78,7 +78,8 @@ A third module, the **simulated order book**, visualises the hypothetical partic
 | SPA | React 18 + Vite 6 + TypeScript | `quant-app-v1/frontend` |
 | API | FastAPI + pandas/statsmodels | `quant-app-v1/backend` |
 | Auth + Postgres | Supabase (GoTrue + RLS) | hosted |
-| Static hosting | **Cloudflare Workers static assets** (Pages-compatible) | `app.<domain>` |
+| Static hosting (primary) | **Cloudflare Workers static assets** (Pages-compatible) | `app.<domain>` |
+| Static hosting (fallback) | Vercel static build (`quant-app-v1/frontend`) | Vercel project domain |
 | API hosting | Container behind Cloudflare proxy | `api.<domain>` |
 
 ### 3.2 Deployment topology (normative)
@@ -93,15 +94,17 @@ browser ──► Cloudflare static assets (SPA, SPA-fallback 200 → index.html
                                                   └──► Supabase (Auth + Postgres)
 ```
 
+Vercel may replace the Cloudflare static origin with the same SPA build; the API host and WebSocket path are unchanged.
+
 | ID | Requirement |
 | --- | --- |
 | AR-1 | Cloudflare builds from the repository root: root `wrangler.jsonc` runs `npm run build` and uploads root `dist`; Pages can also build at the root or at `quant-app-v1/frontend`. The build produces `dist/index.html` without installing Python dependencies, and Workers serves the SPA through `assets.not_found_handling: "single-page-application"`; no catch-all `_redirects` file is shipped. |
 | AR-2 | Cloudflare static-asset serving performs SPA fallback: unknown paths return `index.html` with HTTP 200. |
 | AR-3 | `VITE_API_BASE` is set to the API origin **at build time** for every non-localhost environment. It is the only deployment-specific frontend configuration. |
-| AR-4 | No Vercel artifacts remain: root `vercel.json`, `quant-app-v1/frontend/vercel.json`, `.vercelignore`, `.vercel/`. |
+| AR-4 | Vercel is an optional frontend-only fallback: root `vercel.json` builds `quant-app-v1/frontend/dist` and rewrites SPA routes to `index.html`; `.vercelignore` excludes API code, models, vendor, tests, local state and secrets. No Vercel project runs or bundles the Python API. |
 | AR-5 | The API is a single container image, not a serverless Python bundle, and has no function-size ceiling. |
 | AR-6 | The API sets CORS to an explicit origin allowlist (the deployed frontend origin and localhost dev only); wildcard origins are rejected. |
-| AR-7 | WebSocket upgrades reach the API host directly; they are not proxied through Cloudflare static assets. |
+| AR-7 | WebSocket upgrades reach the API host directly; they are not proxied through Cloudflare or Vercel static hosting. |
 
 ### 3.3 Environments
 
@@ -513,7 +516,6 @@ Removed from the product, not merely deferred. Removing them is what makes the b
 | **Live broker execution** (Alpaca live, order placement, `/live` router, activation gates) | The product is a demo harness. No broker integration exists in v1. |
 | **Phase 4/5 reconciliation evidence** (≥ 1 000 settled fills, < 0.1% discrepancy, independent comparator, durable order intent) | Gate only exists to protect live capital, which v1 does not touch. |
 | **Auth0** — `lib/auth0.ts`, `Auth0Button.tsx`, `Auth0Bridge.tsx`, `context` branches, backend RS256 path, `AUTH0_*` / `VITE_AUTH0_*` | Supabase Auth is the only identity provider. No compatibility shim, no dormant code. |
-| **Vercel** — root `vercel.json`, `frontend/vercel.json`, `.vercelignore`, `.vercel/` | Cloudflare cannot host Python; Vercel is no longer the provider. |
 | **Kronos** — 405 MB of weights under `backend/models/`, installer route, forecast endpoint | Largest single cause of build failure; a probabilistic price forecast is not required to backtest rules. |
 | **OpenBB** — context provider, context server, `/openbb/*` routes, AGPL review | Removed with the provider chain; the remaining modules, flags, routes and CLI were deleted on 2026-11-07. The retained history provider covers v1. |
 | **Stripe, Resend** | No paid tier, no transactional email in v1. |
@@ -522,7 +524,7 @@ Removed from the product, not merely deferred. Removing them is what makes the b
 | **Journal, vault, divergence scorecards, multi-portfolio/RBAC groups** | Collaboration and secrets storage are not part of the research loop. |
 | **AI chat harness (11 LLM providers) and Agentic Lab (research/trading-log/LLM tabs)** | Deferred, **not deleted** — see §9 P7 note. The code stays in the tree behind a disabled navigation entry until P6 decides. |
 | **Phase 7 SEO programme** (sitemap of 200 doc URLs, backlink strategy, Lighthouse ≥ 90 on served Markdown) | Replaced by NFR-9/27 and a five-line `robots.txt`/sitemap for the SPA. |
-| **Phase 8/9 external-service layers** | No vendor beyond Supabase, Cloudflare and the data provider. |
+| **Phase 8/9 external-service layers** | No vendor beyond Supabase, Cloudflare, the optional Vercel frontend fallback and the data provider. |
 
 ---
 
@@ -537,11 +539,13 @@ Each phase ends with an exit gate. A gate is pass/fail against the listed criter
 **Goal:** a Cloudflare deployment that builds in minutes and an API that deploys as a container.
 **Depends on:** nothing.
 
-Deliverables: Workers Builds config (`wrangler.jsonc`) and Pages project configured (AR-1..AR-3); delete Vercel artifacts (AR-4, §8); remove `backend/models/` and `backend/vendor/` from the repository and build context (AR-10, AR-11); `Dockerfile` producing the API image; CI runs the root and frontend builds for the SPA.
+Deliverables: Workers Builds config (`wrangler.jsonc`) and Pages project configured (AR-1..AR-3); retain a frontend-only Vercel fallback (AR-4); remove `backend/models/` and `backend/vendor/` from the repository and build context (AR-10, AR-11); `Dockerfile` producing the API image; CI runs the root and frontend builds for the SPA.
 
-**Exit gate:** Cloudflare production build ≤ 2 min at ≤ 5 MB gzip; API image ≤ 600 MB and boots to `/health`; `git clone` ≤ 200 MB; zero Vercel files; no build step compiles Python.
+**Exit gate:** Cloudflare production build ≤ 2 min at ≤ 5 MB gzip; API image ≤ 600 MB and boots to `/health`; `git clone` ≤ 200 MB; the Vercel build produces the SPA without Python; no build step compiles Python.
 
 **Record (2026-11-07):** Vercel artifacts deleted, the 5 255 committed `node_modules` files untracked, and the Dockerfile rebased on the `backend/` context with `models/` and `vendor/` excluded and the instrument catalogue copied. Root `wrangler.jsonc` targets the existing `gateway` Worker, runs `npm run build` during `wrangler deploy`/`versions upload`, and uploads root `dist`; a `wrangler versions upload --dry-run` passed from a clean output directory. The root `package.json` also supports Pages at either root, and the Python manifests live under `quant-app-v1/backend/requirements-full.txt` and `requirements-dev.txt`, so Cloudflare does not detect or install Python. The Pages-only `public/_redirects` catch-all added that day was removed on 2026-11-08: Workers static assets rejects `/* /index.html 200` as an infinite loop (Cloudflare error `100324`), so the SPA fallback is the `wrangler.jsonc` setting alone. The frontend build measured at ~1.2 s and 233 KB gzip; the API image size is **unmeasured** — `docker` is not installed on the development machine — so that clause stays open until CI or a local Docker run reports it.
+
+**Record (2026-11-08):** The frontend-only Vercel fallback was restored with a repository-root `vercel.json` that builds `quant-app-v1/frontend/dist` and `.vercelignore` that keeps the API, models, vendor, tests, local state and secrets out of the upload. It does not restore the old Vercel FastAPI service bundle; the API remains a separate container. The fallback deployment still requires the same `VITE_*` build variables and an authenticated Vercel project.
 
 ### P2 — Identity and isolation
 

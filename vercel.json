@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "cd quant-app-v1/frontend && npm ci --no-audit --no-fund",
+  "buildCommand": "cd quant-app-v1/frontend && npm run build",
+  "outputDirectory": "quant-app-v1/frontend/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -4,13 +4,14 @@ Gateway is three pieces:
 
 | Piece | Tech | Runs on |
 | --- | --- | --- |
-| Frontend | Vite + React (`quant-app-v1/frontend`) | **Cloudflare Workers static assets** (Workers Builds); Pages-compatible |
+| Frontend | Vite + React (`quant-app-v1/frontend`) | **Cloudflare Workers static assets** (Workers Builds); Pages-compatible; optional Vercel static fallback |
 | API | FastAPI (`quant-app-v1/backend`) | A container, behind Cloudflare's proxy |
 | Database + Auth | Supabase (GoTrue + Postgres) | Supabase |
 
 > Requirements are normative in [`SRS.md`](SRS.md) §3. This page is the how-to.
-> Vercel is no longer used: Cloudflare serves static assets only and cannot
-> execute Python, so the API has its own host.
+> Cloudflare is the primary frontend host. The root `vercel.json` keeps a
+> frontend-only Vercel fallback; Vercel never runs the Python API, which keeps
+> its own container host.
 
 The frontend finds the API through `VITE_API_BASE`, baked in at build time. When
 it is unset, a non-localhost build assumes same-origin proxying
@@ -90,6 +91,32 @@ relying on the Workers setting.
 | Build command | `npm run build` | `npm ci && npm run build` |
 | Output directory | `dist` | `dist` |
 | Node version | `20` (`NODE_VERSION=20`) | `20` (`NODE_VERSION=20`) |
+
+### Vercel fallback
+
+The root `vercel.json` restores a frontend-only Vercel deployment. It builds
+`quant-app-v1/frontend/dist` and rewrites unmatched paths to `/index.html`.
+Vercel checks the filesystem before applying rewrites, so hashed `/assets/*`
+requests are served normally.
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | repository root (blank or `.`) |
+| Framework Preset | Vite (from `vercel.json`) |
+| Install Command | `cd quant-app-v1/frontend && npm ci --no-audit --no-fund` |
+| Build Command | `cd quant-app-v1/frontend && npm run build` |
+| Output Directory | `quant-app-v1/frontend/dist` |
+| Node version | 20 or 22 |
+
+Set the same build variables listed above in the Vercel project. `VITE_API_BASE`
+must point at the API container; Vercel serves static files only and does not
+proxy FastAPI or WebSockets. Without it, the landing page renders but the
+data-backed screens have no API to call.
+
+`.vercelignore` keeps the API, models, vendor tree, tests, local databases,
+secrets and dependencies out of the upload. Use the repository-root config;
+do not recreate the legacy `quant-app-v1/frontend/vercel.json`, which contained
+non-Vercel function syntax and invalid JSON comments.
 
 Reference numbers from the repository-root run (2026-11-07): `npm run build`
 finishes in ~2 s after dependency install, emitting 816 KB JS (233 KB gzip) and
@@ -181,7 +208,7 @@ no silent fallback); otherwise local SQLite on `GATEWAY_DATA_DIR`.
 | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Frontend build | Supabase client |
 | `GATEWAY_QUOTES_TTL` / `GATEWAY_PRICE_TTL` | API | quote and fill-price cache seconds (default 10) |
 
-There are no `VITE_AUTH0_*` or Vercel-specific variables any more.
+There are no `VITE_AUTH0_*` or Vercel-specific variables; Vercel reuses the same `VITE_*` build variables.
 
 ## 5. Post-deploy smoke test
 
