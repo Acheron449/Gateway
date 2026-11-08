@@ -326,6 +326,11 @@ class PaperPortfolioService:
                 note=f"Auto-logged paper {side.value} {qty:g} {instrument_id} @ {price:g}",
                 context=f"Order {order_id} · commission {commission:g}",
                 tags=["paper"],
+                owner_id=(
+                    self.portfolio_id.removeprefix("paper_")
+                    if self.portfolio_id.startswith("paper_")
+                    else None
+                ),
             )
         except Exception:
             # Journaling must never block execution.

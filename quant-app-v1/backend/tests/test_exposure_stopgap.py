@@ -52,7 +52,6 @@ async def test_private_routes_require_authentication_before_shared_state(path: s
         ("/portfolio", "GET"),
         ("/portfolio/orders", "POST"),
         ("/portfolio/orders/known-order/simulate-fill", "POST"),
-        ("/journal", "GET"),
         ("/ai-trading", "GET"),
         ("/vault", "GET"),
         ("/llm/providers", "GET"),
@@ -71,6 +70,14 @@ async def test_authenticated_strategies_are_owner_scoped_instead_of_gated() -> N
     response = await _request("/strategies", token=_token())
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_authenticated_journal_is_owner_scoped_instead_of_gated() -> None:
+    """The journal stamps and filters by owner, so it is no longer a shared store."""
+    response = await _request("/journal", token=_token())
+    assert response.status_code == 200
+    assert response.json() == {"entries": []}
 
 
 @pytest.mark.parametrize("configuration", [None, "", "not-json", "{}", "[]"])
@@ -123,7 +130,8 @@ async def test_exact_operator_identity_can_reach_global_routes(monkeypatch) -> N
 @pytest.mark.asyncio
 async def test_journal_live_sync_stays_unavailable_for_authenticated_user() -> None:
     response = await _request("/journal/sync-live", token=_token(), method="POST")
-    assert response.status_code == 503
+    assert response.status_code == 410
+    assert "Live broker sync was removed" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -134,7 +142,7 @@ async def test_journal_live_sync_stays_unavailable_for_operator(monkeypatch) -> 
         json.dumps([{"issuer": "gateway:local", "subject": subject}]),
     )
     response = await _request("/journal/sync-live", token=_token(subject), method="POST")
-    assert response.status_code == 503
+    assert response.status_code == 410
 
 
 class _FakeWebSocket:
