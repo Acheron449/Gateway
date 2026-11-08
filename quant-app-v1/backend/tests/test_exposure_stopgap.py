@@ -52,7 +52,6 @@ async def test_private_routes_require_authentication_before_shared_state(path: s
         ("/portfolio", "GET"),
         ("/portfolio/orders", "POST"),
         ("/portfolio/orders/known-order/simulate-fill", "POST"),
-        ("/strategies", "GET"),
         ("/journal", "GET"),
         ("/ai-trading", "GET"),
         ("/vault", "GET"),
@@ -64,6 +63,14 @@ async def test_authenticated_private_routes_fail_closed_until_owner_isolation(pa
     response = await _request(path, token=_token(), method=method)
     assert response.status_code == 503
     assert response.json() == {"detail": "Private data unavailable until account isolation is enabled"}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_strategies_are_owner_scoped_instead_of_gated() -> None:
+    """The studio derives its owner per request, so it is no longer a shared store."""
+    response = await _request("/strategies", token=_token())
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 @pytest.mark.parametrize("configuration", [None, "", "not-json", "{}", "[]"])

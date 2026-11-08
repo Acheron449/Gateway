@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.v1 import strategies
+from app.auth import User
 from app.models import (
     Assumptions,
     EntryRule,
@@ -147,7 +148,9 @@ def test_create_strategy_stores_hash_separately_and_excludes_it_from_spec(monkey
         universe=["AAPL"],
         entry_rules=[{"id": "entry", "condition": {"indicator": "RSI", "threshold": 30}}],
     )
-    asyncio.run(strategies.create_strategy(request))
+    asyncio.run(
+        strategies.create_strategy(request, user=User(id="hash-owner", email="hash@example.test"))
+    )
     with database.get_connection() as conn:
         row = conn.execute("SELECT spec, content_hash FROM strategy_versions").fetchone()
     assert row["content_hash"] == compute_strategy_content_hash(StrategySpec(**json.loads(row["spec"])))
@@ -160,14 +163,15 @@ def test_create_strategy_version_allocates_concurrently_without_duplicates(monke
     monkeypatch.setattr(strategies, "get_connection", database.get_connection)
     monkeypatch.setattr(strategies, "init_db", database.init_db)
     strategies._get_strategy_table()
+    owner = User(id="hash-owner", email="hash@example.test")
     with database.get_connection() as conn:
-        conn.execute("INSERT INTO strategies (id, name, description, status, current_version, tags, created_at, updated_at) VALUES ('race', 'Race', '', 'draft', 1, '[]', 'now', 'now')")
+        conn.execute("INSERT INTO strategies (id, owner_id, name, description, status, current_version, tags, created_at, updated_at) VALUES ('race', 'hash-owner', 'Race', '', 'draft', 1, '[]', 'now', 'now')")
         conn.execute("INSERT INTO strategy_versions (strategy_id, version, spec, created_at) VALUES ('race', 1, ?, 'now')", (json.dumps(make_spec(strategy_id="race").model_dump(mode="json")),))
         conn.commit()
 
     incoming = make_spec(strategy_id="race")
     def create():
-        return asyncio.run(strategies.create_strategy_version("race", incoming))
+        return asyncio.run(strategies.create_strategy_version("race", incoming, user=owner))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         versions = list(pool.map(lambda _index: create(), range(2)))

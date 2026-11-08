@@ -394,8 +394,11 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Authenticate and fail closed for shared stores until ownership ships."""
         path = request.url.path.rstrip("/") or "/"
+        # /strategies is deliberately absent: every strategy route derives its
+        # owner from CurrentUser, so it is scoped like /portfolio/risk rather
+        # than fail-closed behind the shared-store gate.
         private_prefixes = (
-            "/portfolio", "/strategies", "/journal", "/ai-trading", "/vault", "/llm",
+            "/portfolio", "/journal", "/ai-trading", "/vault", "/llm",
         )
         operator_prefixes = ("/risk", "/settings/providers")
         private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
@@ -508,7 +511,7 @@ app.include_router(catalogue_router)  # Public catalogue access
 app.include_router(news_router)  # Public news/calendar access
 app.include_router(filings_router)  # SEC filings feed for the Overview card
 app.include_router(quote_router)  # Public normalized quote access
-app.include_router(strategies_router)  # Strategy Studio (gated until owner isolation)
+app.include_router(strategies_router)  # Strategy Studio (owner-scoped per request)
 app.include_router(journal_router)  # Trade Journal (gated until owner isolation)
 app.include_router(risk_router)  # Risk Dashboard (operator-gated global configuration)
 app.include_router(divergence_router)  # Divergence Scorecards
