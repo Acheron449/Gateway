@@ -48,7 +48,7 @@ jobs:
       - name: Build from repository root
         run: npm run build
       - name: Verify static output
-        run: test -f dist/index.html && test -f dist/_redirects
+        run: test -f dist/index.html && test ! -e dist/_redirects
       - name: Validate Wrangler deploy config
         run: npx --yes wrangler@4.158.0 versions upload --dry-run
 

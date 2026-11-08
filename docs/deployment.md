@@ -64,13 +64,12 @@ Variables and Secrets):
 | `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | the publishable anon key (public by design) |
 
-**SPA fallback** is configured twice: `wrangler.jsonc` sets
-`assets.not_found_handling: "single-page-application"`, and
-`quant-app-v1/frontend/public/_redirects` is copied into `dist/`:
-
-```
-/*    /index.html   200
-```
+**SPA fallback** is configured once, in `wrangler.jsonc`, via
+`assets.not_found_handling: "single-page-application"`. Do not add a
+catch-all `_redirects` rule to `public/`: Workers static assets validates it
+against the same fallback and rejects `/* /index.html 200` with Cloudflare
+error `100324` (infinite redirect loop). The build output deliberately has no
+`_redirects`.
 
 `robots.txt` and `sitemap.xml` are generated into `dist/` at build time from
 `VITE_SITE_URL` (see `vite.config.ts`); unset builds fall back to the local
@@ -80,7 +79,10 @@ disallow and no placeholder host.
 ### Pages alternative
 
 Pages does not read `wrangler.jsonc`, but the same root build remains usable if
-the project is on Pages. Use one of these configurations:
+the project is on Pages. Use one of these configurations. Because the shared
+`dist/` deliberately contains no `_redirects`, a Pages project must configure
+its own SPA fallback (for example, a Pages-only `_redirects` step) rather than
+relying on the Workers setting.
 
 | Setting | Repository root | Frontend directory |
 | --- | --- | --- |
