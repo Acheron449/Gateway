@@ -535,6 +535,12 @@ def init_db():
         order_columns = {row[1] for row in cur.execute("PRAGMA table_info(paper_orders)").fetchall()}
         if "reserved_amount" not in order_columns:
             cur.execute("ALTER TABLE paper_orders ADD COLUMN reserved_amount REAL NOT NULL DEFAULT 0")
+        # Pre-ownership databases have no user_id column. Add it as nullable so
+        # legacy rows stay ownerless and therefore invisible (SRS DR-6/DR-7),
+        # while new portfolios are always created with their owner stamped.
+        portfolio_columns = {row[1] for row in cur.execute("PRAGMA table_info(portfolios)").fetchall()}
+        if "user_id" not in portfolio_columns:
+            cur.execute("ALTER TABLE portfolios ADD COLUMN user_id TEXT")
         conn.commit()
 
 

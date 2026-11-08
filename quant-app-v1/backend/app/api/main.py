@@ -394,19 +394,14 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Authenticate and fail closed for shared stores until ownership ships."""
         path = request.url.path.rstrip("/") or "/"
-        # /strategies is deliberately absent: every strategy route derives its
-        # owner from CurrentUser, so it is scoped like /portfolio/risk rather
-        # than fail-closed behind the shared-store gate.
-        private_prefixes = (
-            "/portfolio", "/ai-trading", "/vault", "/llm",
-        )
+        # /strategies, /journal and /portfolio are deliberately absent: every
+        # one of their routes derives its owner from CurrentUser, so they are
+        # scoped per request rather than fail-closed behind the shared-store
+        # gate.
+        private_prefixes = ("/ai-trading", "/vault", "/llm")
         operator_prefixes = ("/risk", "/settings/providers")
         private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
         operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
-        # The Risk Dashboard reads only the signed-in account's own paper
-        # portfolio, so this route is owner-scoped (like /portfolio itself will
-        # be); every other private route stays fail-closed behind the gate.
-        owner_scoped_paths = {"/portfolio/risk"}
         if path.startswith("/forecast/kronos/install/") or path == "/forecast/kronos/install":
             return await call_next(request)
         if not private and not operator_only:
@@ -427,9 +422,6 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
                 content={"detail": "Invalid or expired token"},
             )
-
-        if path in owner_scoped_paths:
-            return await call_next(request)
 
         if operator_only:
             if (token_data.issuer, token_data.subject) not in _operator_identities():
@@ -533,9 +525,9 @@ app.include_router(backtest_router, dependencies=[Depends(get_current_user_optio
 app.include_router(quant_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(bots_router, dependencies=[Depends(get_current_user_optional)])
 # NOTE: portfolio_router is included without a router-level dependency because
-# it contains a WebSocket route. The HTTP private-data gate above protects its
-# entire HTTP prefix; the WebSocket handler separately authenticates then
-# closes unavailable until owner-scoped portfolios exist.
+# it contains a WebSocket route. Every HTTP handler takes CurrentUser and
+# resolves only that account's `paper_<user.id>` book; the WebSocket handler
+# authenticates from its first frame and reports streaming as unavailable.
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router)
 # Fail closed: live/broker account routes remain deliberately unmounted until

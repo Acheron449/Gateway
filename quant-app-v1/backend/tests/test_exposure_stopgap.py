@@ -49,9 +49,6 @@ async def test_private_routes_require_authentication_before_shared_state(path: s
 @pytest.mark.parametrize(
     ("path", "method"),
     [
-        ("/portfolio", "GET"),
-        ("/portfolio/orders", "POST"),
-        ("/portfolio/orders/known-order/simulate-fill", "POST"),
         ("/ai-trading", "GET"),
         ("/vault", "GET"),
         ("/llm/providers", "GET"),
@@ -78,6 +75,14 @@ async def test_authenticated_journal_is_owner_scoped_instead_of_gated() -> None:
     response = await _request("/journal", token=_token())
     assert response.status_code == 200
     assert response.json() == {"entries": []}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_portfolio_is_owner_scoped_instead_of_gated() -> None:
+    """The paper book resolves `paper_<user.id>`, so it is no longer a shared store."""
+    response = await _request("/portfolio", token=_token())
+    assert response.status_code == 200
+    assert response.json()["portfolio_id"] == "paper_stopgap-user"
 
 
 @pytest.mark.parametrize("configuration", [None, "", "not-json", "{}", "[]"])
@@ -223,16 +228,16 @@ async def test_websockets_reject_query_token_and_first_frame_fails_closed(monkey
     ]
     assert trading.closed == []  # a disconnect ends the loop without a close frame
 
-    # The portfolio stream authenticates, then reports isolation instead of data.
+    # The portfolio stream authenticates, then reports streaming as unavailable.
     stream = _FakeWebSocket(frames=[{"type": "authenticate", "token": token}])
     await portfolio_websocket(stream)
     assert stream.sent == [
         {
             "type": "error",
-            "message": "Private data unavailable until account isolation is enabled",
+            "message": "Portfolio streaming is unavailable; poll GET /portfolio",
         }
     ]
-    assert stream.closed == [(1013, "Account isolation unavailable")]
+    assert stream.closed == [(1013, "Streaming unavailable")]
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { API_BASE } from "../../lib/constants";
 import { LastUpdated } from "../../lib/LastUpdated";
+import { useAuth } from "../../context/AuthContext";
 
 interface AccountSummary {
   portfolio_id?: string;
@@ -18,42 +19,36 @@ function money(value: number | undefined): string {
     : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-async function fetchAccountSummary(mode: "paper" | "live"): Promise<AccountSummary> {
+async function fetchAccountSummary(mode: "paper" | "live", token: string | null): Promise<AccountSummary> {
   if (mode === "live") throw new Error("Live execution unavailable");
-  if (mode === "paper") {
-    const token = localStorage.getItem("gateway_auth_token");
-    const response = await fetch(`${API_BASE}/portfolio`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!response.ok) throw new Error((await response.text()) || "Failed to fetch portfolio");
-    return response.json();
-  }
-
-  const response = await fetch(`${API_BASE}/live/account`);
-  if (!response.ok) {
-    let message = `Live account unavailable (${response.status})`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === "string") message = payload.detail;
-    } catch {
-      // Retain the status-based message when the response is not JSON.
-    }
-    throw new Error(message);
-  }
+  const response = await fetch(`${API_BASE}/portfolio`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) throw new Error((await response.text()) || "Failed to fetch portfolio");
   return response.json();
 }
 
 export function TradingAccountStatus({ mode }: { mode: "paper" | "live" }) {
+  const { token, isAuthenticated } = useAuth();
   const { data, dataUpdatedAt } = useQuery({
-    queryKey: ["trading-account-summary", mode],
-    queryFn: () => fetchAccountSummary(mode),
+    queryKey: ["trading-account-summary", mode, token],
+    queryFn: () => fetchAccountSummary(mode, token),
     refetchInterval: 5000,
     staleTime: 2500,
     retry: 1,
+    enabled: mode === "live" || isAuthenticated,
   });
 
   const positions = Array.isArray(data?.positions) ? data.positions.length : 0;
   const accountNumber = data?.account_number ?? data?.portfolio_id?.replace("live:", "");
+
+  if (mode === "paper" && !isAuthenticated) {
+    return (
+      <section className="desk-status" aria-label="paper account summary">
+        <span>Sign in to see your paper account</span>
+      </section>
+    );
+  }
 
   return (
     <section className={`desk-status ${mode === "live" ? "live" : ""}`} aria-label={`${mode} account summary`}>

@@ -127,11 +127,12 @@ async def test_authenticated_risk_route_returns_its_own_series(portfolios) -> No
 
 
 @pytest.mark.asyncio
-async def test_only_the_risk_route_passes_the_private_data_gate(portfolios) -> None:
+async def test_the_whole_portfolio_prefix_is_owner_scoped_not_gated(portfolios) -> None:
     token = _token()
 
-    still_gated = await _request("/portfolio/history", token=token)
-    allowed = await _request("/portfolio/risk", token=token)
+    history = await _request("/portfolio/history", token=token)
+    risk = await _request("/portfolio/risk", token=token)
 
-    assert still_gated.status_code == 503
-    assert allowed.status_code == 200
+    assert history.status_code == 200
+    assert risk.status_code == 200
+    assert risk.json()["portfolio_id"] == "paper_risk-http-user"
