@@ -7,12 +7,12 @@ const FEATURES = [
   {
     icon: "📈",
     title: "Native candle charts",
-    copy: "TradingView-style charting rendered in-house from live feeds — no paid embeds, no iframes. Volume, timeframes, and event markers included.",
+    copy: "TradingView-style charting rendered in-house from market-data feeds — no paid embeds, no iframes. Volume, timeframes, and event markers included.",
   },
   {
     icon: "🧭",
     title: "Scanner & watchlists",
-    copy: "Filter instruments across providers, pin the symbols you care about, and jump straight from a ticker chip to a live chart.",
+    copy: "Filter instruments across providers, pin the symbols you care about, and jump straight from a ticker chip to its chart.",
   },
   {
     icon: "🧪",
@@ -37,7 +37,7 @@ const FEATURES = [
 ];
 
 const WORKFLOW = [
-  { step: "01", title: "Connect your data", copy: "Bring your own API keys (Finnhub, Alpaca, OpenBB) — encrypted at rest on your own server." },
+  { step: "01", title: "Connect your data", copy: "Bring your own API keys (Finnhub, Alpaca) — encrypted at rest on your own server." },
   { step: "02", title: "Chart & scan", copy: "Watch the ticker strip, open a native candle chart, scan for setups across your watchlists." },
   { step: "03", title: "Backtest the idea", copy: "Run it against history with reproducible receipts before a single real dollar moves." },
   { step: "04", title: "Journal the result", copy: "Log every trade on the calendar, review the thesis, and let the stats compound." },
@@ -98,7 +98,7 @@ export function Landing() {
           Your markets, <span className="hero-gradient">your terminal</span>, zero middlemen.
         </h1>
         <p className="hero-sub">
-          Gateway is a local-first trading research platform: native charts from live feeds, a
+          Gateway is a local-first trading research platform: native charts from market-data feeds, a
           disciplined trade journal, credible backtesting, and provider keys that never leave your
           machine. No paid chart embeds. No black boxes.
         </p>
@@ -171,7 +171,7 @@ export function Landing() {
             <p>
               Every account starts with a $100,000 simulated portfolio. Orders run through the
               server-side risk engine, then fill against real market prices with modeled spread
-              and commission — streamed live to the paper desk.
+              and commission — streamed to the paper desk.
             </p>
           </details>
           <details className="faq-item">
@@ -194,7 +194,8 @@ export function Landing() {
 
       <footer className="landing-footer">
         <span>⚡ Gateway — self-hosted quant workstation</span>
-        <span className="landing-footer-muted">Charts render natively from live feeds. Your keys stay yours.</span>
+        <span className="landing-footer-muted">Charts render natively from market-data feeds. Your keys stay yours.</span>
+        <span className="landing-footer-muted">Simulated and historical results only — not investment advice.</span>
       </footer>
     </div>
   );

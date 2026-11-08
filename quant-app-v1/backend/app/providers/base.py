@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any, Optional, TypedDict
 
 
@@ -59,6 +60,8 @@ class MarketDataProvider(ABC):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]] | None:
         return None
 
@@ -69,10 +72,17 @@ class MarketDataProvider(ABC):
         self,
         symbol: str | None = None,
         limit: int = 5,
+        *,
+        as_of: datetime | None = None,
     ) -> list[Any]:
         return []
 
-    async def calendar(self, limit: int = 5) -> list[Any]:
+    async def calendar(
+        self,
+        limit: int = 5,
+        *,
+        as_of: datetime | None = None,
+    ) -> list[Any]:
         return []
 
     async def health_check(self) -> dict[str, Any]:

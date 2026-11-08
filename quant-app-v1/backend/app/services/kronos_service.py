@@ -70,6 +70,11 @@ def local_server_status(timeout: float = 0.8, *, refresh: bool = False) -> dict:
     return status
 
 
+# Input bound: a Kronos forecast is a short-horizon model; refuse oversized
+# histories before converting or proxying them (SRS NFR-12).
+MAX_BARS = 2_000
+
+
 def _forecast_from_local_server(
     bars: list[dict], horizon: int, frequency: str, sample_count: int
 ) -> pd.DataFrame:
@@ -204,6 +209,8 @@ def forecast_in_process(
     """
     if not 1 <= horizon <= 240:
         raise ValueError("horizon must be between 1 and 240")
+    if len(bars) > MAX_BARS:
+        raise ValueError(f"at most {MAX_BARS:,} historical candles are supported")
     frame, timestamps = bars_to_kronos_frame(bars)
     if len(frame) < 20:
         raise ValueError("at least 20 historical candles are required for a Kronos forecast")
@@ -224,6 +231,8 @@ def forecast(bars: list[dict], horizon: int, frequency: str = "D", sample_count:
     """Forecast candles, preferring a locally running Kronos model server."""
     if not 1 <= horizon <= 240:
         raise ValueError("horizon must be between 1 and 240")
+    if len(bars) > MAX_BARS:
+        raise ValueError(f"at most {MAX_BARS:,} historical candles are supported")
     if len(bars) < 20:
         raise ValueError("at least 20 historical candles are required for a Kronos forecast")
 

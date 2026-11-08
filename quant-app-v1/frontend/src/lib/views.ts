@@ -5,9 +5,13 @@ export type View =
   | "calendar"
   | "harness"
   | "strategies"
-  | "agentic-lab"
   | "backtests"
+  | "options"
+  | "orderbook"
+  | "monte-carlo"
+  | "agentic-lab"
   | "paper-trading"
+  | "risk"
   | "live-trading"
   | "ai-trading"
   | "journal"
@@ -27,10 +31,14 @@ export const VIEWS: ViewDef[] = [
   { id: "calendar", label: "Calendar", icon: "📅", group: "workspace" },
   { id: "harness", label: "AI Chat", icon: "🤖", group: "workspace" },
   { id: "strategies", label: "Strategies", icon: "🎯", group: "myWork" },
+  { id: "backtests", label: "Run reports", icon: "📊", group: "myWork" },
+  { id: "options", label: "Options", icon: "🧮", group: "myWork" },
+  { id: "orderbook", label: "Order book", icon: "📚", group: "myWork" },
+  { id: "monte-carlo", label: "Monte Carlo", icon: "🎲", group: "myWork" },
   { id: "agentic-lab", label: "Agentic Lab", icon: "🧪", group: "myWork" },
-  { id: "backtests", label: "Backtester", icon: "📊", group: "myWork" },
   { id: "paper-trading", label: "Paper Trading", icon: "📝", group: "myWork" },
-  { id: "live-trading", label: "Live Trading", icon: "💸", group: "myWork" },
+  { id: "risk", label: "Risk", icon: "🛡️", group: "myWork" },
+  { id: "live-trading", label: "Live execution unavailable", icon: "⛔", group: "myWork" },
   { id: "ai-trading", label: "AI Trading", icon: "🧠", group: "myWork" },
   { id: "journal", label: "Journal", icon: "📓", group: "myWork" },
   { id: "settings", label: "Providers", icon: "🔧", group: "settings" },

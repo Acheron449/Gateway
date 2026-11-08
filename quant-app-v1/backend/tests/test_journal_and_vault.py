@@ -18,15 +18,15 @@ class TestJournalAutoLog:
         sell_fill = f"fill-{uuid4().hex}"
 
         entry_id = journal_log.log_fill(
-            buy_fill, sym, "buy", 10, 100.0, source="paper", note="open long"
+            buy_fill, sym, "buy", 10, 100.0, source="paper", owner_id="journal-tests", note="open long"
         )
         assert entry_id is not None
 
         # Dedupe: the same fill id must never be applied twice.
-        assert journal_log.log_fill(buy_fill, sym, "buy", 10, 100.0, source="paper") is None
+        assert journal_log.log_fill(buy_fill, sym, "buy", 10, 100.0, source="paper", owner_id="journal-tests") is None
 
         closed_id = journal_log.log_fill(
-            sell_fill, sym, "sell", 10, 110.0, source="paper", note="close long"
+            sell_fill, sym, "sell", 10, 110.0, source="paper", owner_id="journal-tests", note="close long"
         )
         assert closed_id == entry_id
 
@@ -46,9 +46,9 @@ class TestJournalAutoLog:
     def test_partial_exit_shrinks_the_open_entry(self):
         sym = _sym()
         entry_id = journal_log.log_fill(
-            f"fill-{uuid4().hex}", sym, "buy", 10, 50.0, source="paper"
+            f"fill-{uuid4().hex}", sym, "buy", 10, 50.0, source="paper", owner_id="journal-tests"
         )
-        journal_log.log_fill(f"fill-{uuid4().hex}", sym, "sell", 4, 55.0, source="paper")
+        journal_log.log_fill(f"fill-{uuid4().hex}", sym, "sell", 4, 55.0, source="paper", owner_id="journal-tests")
 
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
@@ -64,8 +64,8 @@ class TestJournalAutoLog:
 
     def test_paper_and_actual_sources_are_tracked_independently(self):
         sym = _sym()
-        paper = journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 1, 10.0, source="paper")
-        actual = journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 1, 10.0, source="actual")
+        paper = journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 1, 10.0, source="paper", owner_id="journal-tests")
+        actual = journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 1, 10.0, source="actual", owner_id="journal-tests")
         assert paper and actual and paper != actual
 
         with get_connection() as conn:
@@ -84,7 +84,7 @@ class TestJournalAutoLog:
     def test_short_open_when_no_opposite_entry_exists(self):
         sym = _sym()
         entry_id = journal_log.log_fill(
-            f"fill-{uuid4().hex}", sym, "sell", 5, 20.0, source="paper"
+            f"fill-{uuid4().hex}", sym, "sell", 5, 20.0, source="paper", owner_id="journal-tests"
         )
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
@@ -92,7 +92,7 @@ class TestJournalAutoLog:
         assert row["status"] == "open"
 
         # A buy now covers the short and realises PnL.
-        journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 5, 18.0, source="paper")
+        journal_log.log_fill(f"fill-{uuid4().hex}", sym, "buy", 5, 18.0, source="paper", owner_id="journal-tests")
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
         assert row["status"] == "closed"
@@ -116,6 +116,9 @@ class TestJournalApiSourceFilter:
             get_journal_stats,
             list_journal_entries,
         )
+        from app.auth import User
+
+        user = User(id="journal-tests", email="journal@example.test")
 
         async def run():
             created = await create_journal_entry(
@@ -126,15 +129,16 @@ class TestJournalApiSourceFilter:
                     entry_price=10,
                     hypothesis="source filter test",
                     source="actual",
-                )
+                ),
+                user=user,
             )
             kwargs = dict(
                 status=None, symbol=None, start_date=None, end_date=None,
                 tag=None, limit=100, offset=0,
             )
-            actual = await list_journal_entries(source="actual", **kwargs)
-            manual = await list_journal_entries(source="manual", **kwargs)
-            stats = await get_journal_stats(source="actual")
+            actual = await list_journal_entries(user=user, source="actual", **kwargs)
+            manual = await list_journal_entries(user=user, source="manual", **kwargs)
+            stats = await get_journal_stats(user=user, source="actual")
             return created, actual, manual, stats
 
         created, actual, manual, stats = asyncio.run(run())
@@ -144,12 +148,13 @@ class TestJournalApiSourceFilter:
             assert created.id not in [e["id"] for e in manual["entries"]]
             assert stats.total_trades >= 1
         finally:
-            asyncio.run(delete_journal_entry(created.id))
+            asyncio.run(delete_journal_entry(created.id, user=user))
 
 
 class TestSecretsVault:
     @pytest.fixture(autouse=True)
     def isolated_vault(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(secrets_vault, "_SETTINGS_DIR", tmp_path)
         monkeypatch.setattr(secrets_vault, "_VAULT_FILE", tmp_path / "secrets.vault")
         monkeypatch.setattr(secrets_vault, "_VAULT_KEY_FILE", tmp_path / "secrets.vault.key")
         # Force the locally generated key so the test never depends on env.
@@ -157,9 +162,10 @@ class TestSecretsVault:
         monkeypatch.setenv("GATEWAY_PROVIDER_KEY_FILE", "")
 
     def test_roundtrip_is_encrypted_at_rest(self):
+        owner = "vault-tests"
         name = f"test/{uuid4().hex[:8]}"
         secret_value = f"sk-live-{uuid4().hex}"
-        meta = secrets_vault.set_secret(name, secret_value, note="pytest")
+        meta = secrets_vault.set_secret(owner, name, secret_value, note="pytest")
         assert meta["name"] == name
 
         # Ciphertext on disk — plaintext never appears in the file.
@@ -167,19 +173,20 @@ class TestSecretsVault:
         assert secret_value not in raw
         assert "cipher" in raw
 
-        assert secrets_vault.get_secret(name) == secret_value
-        listed = secrets_vault.list_secrets()
+        assert secrets_vault.get_secret(owner, name) == secret_value
+        listed = secrets_vault.list_secrets(owner)
         entry = next(s for s in listed if s["name"] == name)
         assert "cipher" not in entry and "value" not in entry
         assert entry["length"] == len(secret_value)
+        assert secrets_vault.list_secrets("another-owner") == []
 
-        assert secrets_vault.delete_secret(name) is True
-        assert secrets_vault.get_secret(name) is None
-        assert secrets_vault.delete_secret(name) is False
+        assert secrets_vault.delete_secret(owner, name) is True
+        assert secrets_vault.get_secret(owner, name) is None
+        assert secrets_vault.delete_secret(owner, name) is False
 
     def test_empty_value_rejected(self):
         with pytest.raises(secrets_vault.VaultError):
-            secrets_vault.set_secret("bad", "   ")
+            secrets_vault.set_secret("owner", "bad", "   ")
 
 
 class TestAiTradingScoring:
@@ -209,21 +216,25 @@ class TestAiTradingScoring:
         assert confidence == 0.0
 
     def test_config_roundtrip_and_clamping(self, tmp_path, monkeypatch):
-        from app.services import ai_trading
+        from app.services import ai_trading, database
 
-        monkeypatch.setattr(ai_trading, "_CONFIG_FILE", tmp_path / "ai_trading.json")
+        monkeypatch.setattr(database, "DB_PATH", tmp_path / "ai-trading.db")
         saved = ai_trading.save_config(
+            "config-tester",
             {
                 "symbols": "spy, qqq , ",
                 "confidence_threshold": 5,  # out of range → clamped
                 "cycle_seconds": 1,
                 "strategy": "nonsense",
-            }
+            },
         )
         assert saved["symbols"] == ["SPY", "QQQ"]
         assert saved["confidence_threshold"] == 1.0
         assert saved["cycle_seconds"] == 15
         assert saved["strategy"] == "momentum"
 
-        loaded = ai_trading.get_config()
+        loaded = ai_trading.get_config("config-tester")
         assert loaded["symbols"] == ["SPY", "QQQ"]
+
+        # Another account never sees these settings.
+        assert ai_trading.get_config("someone-else")["symbols"] == ai_trading.DEFAULT_CONFIG["symbols"]

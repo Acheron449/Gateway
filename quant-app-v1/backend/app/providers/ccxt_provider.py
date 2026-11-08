@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows, normalize_as_of
 
 DEFAULT_EXCHANGE_ID = "kraken"
 CCXT_VERSION = "ccxt-v1"
@@ -143,12 +144,16 @@ class CCXTProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> Optional[list[dict[str, Any]]]:
         """Fetch historical OHLCV bars from the configured exchange."""
         symbol = to_exchange_symbol(instrument)  # raises for non-crypto
         timeframe = _TF_MAP.get((interval or "1d").lower(), "1d")
         days = _RANGE_MS.get((range or "1y").lower(), 366)
-        since = int((datetime.now(timezone.utc).timestamp() - days * 86400) * 1000)
+        cutoff = normalize_as_of(as_of)
+        end = cutoff or datetime.now(timezone.utc)
+        since = int((end.timestamp() - days * 86400) * 1000)
 
         def _fetch() -> list[dict[str, Any]]:
             try:
@@ -175,7 +180,7 @@ class CCXTProvider(MarketDataProvider):
                     }
                 )
             candles.sort(key=lambda c: c["time"])
-            return candles
+            return filter_timestamped_rows(candles, as_of=as_of)
 
         return await asyncio.to_thread(_fetch)
 

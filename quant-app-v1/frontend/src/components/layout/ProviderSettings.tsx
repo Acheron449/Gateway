@@ -31,9 +31,9 @@ interface TestResult {
   capabilities?: Record<string, string>;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("gateway_auth_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+function authHeaders(token?: string | null): Record<string, string> {
+  const value = token === undefined ? localStorage.getItem("gateway_auth_token") : token;
+  return value ? { Authorization: `Bearer ${value}` } : {};
 }
 
 interface VaultSecretMeta {
@@ -44,7 +44,8 @@ interface VaultSecretMeta {
 }
 
 /** Encrypted secrets vault — arbitrary API keys stored Fernet-encrypted. */
-function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) {
+function SecretsVaultSection() {
+  const { token, isAuthenticated } = useAuth();
   const { openAuth } = useAuthUI();
   const [secrets, setSecrets] = useState<VaultSecretMeta[]>([]);
   const [name, setName] = useState("");
@@ -55,29 +56,35 @@ function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) 
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (!token) return;
     try {
-      const res = await fetch(`${API_BASE}/vault`, { headers: authHeaders() });
+      const res = await fetch(`${API_BASE}/vault`, { headers: authHeaders(token) });
       if (!res.ok) throw new Error(await readResponseError(res));
       const data: unknown = await res.json();
       setSecrets(Array.isArray(data) ? (data as VaultSecretMeta[]) : []);
     } catch (err) {
       setError(toErrorMessage(err, "Failed to load the secrets vault"));
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
-    if (isAuthenticated) void load();
+    if (!isAuthenticated) {
+      setSecrets([]);
+      setRevealed(null);
+      return;
+    }
+    void load();
   }, [isAuthenticated, load]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !value.trim()) return;
+    if (!token || !name.trim() || !value.trim()) return;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(name.trim())}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
         body: JSON.stringify({ value, note }),
       });
       if (!res.ok) throw new Error(await readResponseError(res));
@@ -93,10 +100,11 @@ function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) 
   };
 
   const handleReveal = async (secretName: string) => {
+    if (!token) return;
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(secretName)}/reveal`, {
-        headers: authHeaders(),
+        headers: authHeaders(token),
       });
       if (!res.ok) throw new Error(await readResponseError(res));
       const data = (await res.json()) as { value?: string };
@@ -107,12 +115,12 @@ function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) 
   };
 
   const handleDelete = async (secretName: string) => {
-    if (!window.confirm(`Delete secret "${secretName}"?`)) return;
+    if (!token || !window.confirm(`Delete secret "${secretName}"?`)) return;
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(secretName)}`, {
         method: "DELETE",
-        headers: authHeaders(),
+        headers: authHeaders(token),
       });
       if (!res.ok) throw new Error(await readResponseError(res));
       if (revealed?.name === secretName) setRevealed(null);
@@ -123,11 +131,11 @@ function SecretsVaultSection({ isAuthenticated }: { isAuthenticated: boolean }) 
   };
 
   return (
-    <div className="settings-section">
+    <div className="settings-section" data-vault-count={secrets.length}>
       <h2>Secrets vault — encrypted at rest</h2>
       <p className="settings-description">
         Store any API token (Supabase, Cloudflare, exchanges…) here. Values are Fernet-encrypted
-        before they touch disk and are only decrypted for signed-in requests.
+        before they touch disk and are only decrypted for the account that stored them.
       </p>
 
       {!isAuthenticated ? (
@@ -735,7 +743,7 @@ export function ProviderSettings() {
 
       <LlmProviderSettings />
 
-      <SecretsVaultSection isAuthenticated={isAuthenticated} />
+      <SecretsVaultSection />
 
       <AccountSettings isAuthenticated={isAuthenticated} />
 

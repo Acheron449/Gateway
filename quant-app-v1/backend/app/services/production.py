@@ -561,8 +561,12 @@ def generate_runbooks() -> dict[str, str]:
 
 ## Immediate Actions
 1. Pause new order submission
-2. Run manual reconciliation: `POST /api/v1/live/reconcile/run`
+2. Run the simulated reconciliation: `POST /portfolio/reconcile`
 3. Review drift details in alert
+
+Gateway runs demo trading only: there is no broker connection, so drift can
+only come from this service's own fills and positions. A broker-vs-local
+drift alert therefore indicates stale operator tooling, not a real account.
 
 ## Investigation
 1. Identify affected symbols

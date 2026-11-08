@@ -1,12 +1,13 @@
 """Automatic trade logging into the journal.
 
-Every fill — paper or live — can be recorded in ``journal_entries`` so the
-Journal view can compare actual vs. paper performance. Entries written here
-are deduplicated by ``fill_id`` and carry a ``source`` of ``paper``,
-``actual`` or ``manual`` (manual = created by the user from the UI).
+Every fill records into ``journal_entries`` with the owner of the paper book
+that produced it. Entries are deduplicated by ``fill_id`` and carry a
+``source`` of ``paper``, ``actual`` or ``manual`` (manual = created by the user
+from the UI).
 
-This module owns the journal schema so both the API router and portfolio
-services can share it without importing FastAPI code.
+Ownership is mandatory: an entry without an owner would be invisible to every
+account (the same quarantine the strategies table uses for pre-ownership rows),
+so ``log_fill`` refuses to write one.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ JOURNAL_SOURCES = ("paper", "actual", "manual")
 _JOURNAL_DDL = """
     CREATE TABLE IF NOT EXISTS journal_entries (
         id TEXT PRIMARY KEY,
+        owner_id TEXT,
         symbol TEXT NOT NULL,
         side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
         quantity REAL NOT NULL,
@@ -48,19 +50,26 @@ _JOURNAL_DDL = """
 
 
 def ensure_journal_tables() -> None:
-    """Create the journal table (with source/fill_id) and migrate old copies."""
+    """Create the journal tables and migrate pre-ownership databases.
+
+    ``owner_id`` is added by migration; legacy rows keep a NULL owner and stay
+    invisible to every account until an operator assigns one (DR-6/DR-7).
+    """
     init_db()
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(_JOURNAL_DDL)
 
-        # Migrate tables created before the source/fill_id columns existed.
+        # Migrate tables created before the source/fill_id/owner_id columns existed.
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(journal_entries)")}
         if "source" not in columns:
             cur.execute("ALTER TABLE journal_entries ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
         if "fill_id" not in columns:
             cur.execute("ALTER TABLE journal_entries ADD COLUMN fill_id TEXT")
+        if "owner_id" not in columns:
+            cur.execute("ALTER TABLE journal_entries ADD COLUMN owner_id TEXT")
 
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_owner ON journal_entries(owner_id, created_at DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_symbol ON journal_entries(symbol)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_status ON journal_entries(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_journal_created ON journal_entries(created_at)")
@@ -113,19 +122,20 @@ def log_fill(
     note: str | None = None,
     context: str = "",
     tags: list[str] | None = None,
+    owner_id: str | None = None,
 ) -> Optional[str]:
-    """Journal one fill.
+    """Journal one fill for ``owner_id``.
 
-    - A buy closes the oldest open *sell* (short) entry for the symbol and
+    - A buy closes the oldest open *sell* (short) entry for the owner, symbol and
       source; otherwise it opens a new long entry.
     - A sell closes the oldest open *buy* entry; otherwise it opens a short.
 
     Returns the affected journal entry id, or ``None`` when the fill was
-    already logged (dedupe by ``fill_id``).
+    already logged (dedupe by ``fill_id``) or has no owner to attribute it to.
     """
     if source not in JOURNAL_SOURCES:
         source = "manual"
-    if not symbol or qty <= 0 or price <= 0:
+    if not owner_id or not symbol or qty <= 0 or price <= 0:
         return None
     if fill_id and already_logged(fill_id):
         return None
@@ -157,9 +167,9 @@ def log_fill(
         cur = conn.cursor()
         open_row = conn.execute(
             """SELECT id, quantity, entry_price FROM journal_entries
-               WHERE symbol = ? AND side = ? AND status = 'open' AND source = ?
+               WHERE owner_id = ? AND symbol = ? AND side = ? AND status = 'open' AND source = ?
                ORDER BY entry_time ASC LIMIT 1""",
-            (sym, opposite, source),
+            (owner_id, sym, opposite, source),
         ).fetchone()
 
         if open_row:
@@ -177,8 +187,8 @@ def log_fill(
             if remaining > 1e-9:
                 # Partial exit: shrink the open entry, keep it working.
                 cur.execute(
-                    "UPDATE journal_entries SET quantity = ?, updated_at = ? WHERE id = ?",
-                    (remaining, now, open_row["id"]),
+                    "UPDATE journal_entries SET quantity = ?, updated_at = ? WHERE id = ? AND owner_id = ?",
+                    (remaining, now, open_row["id"], owner_id),
                 )
                 if fill_id:
                     cur.execute(
@@ -192,7 +202,7 @@ def log_fill(
                 """UPDATE journal_entries
                    SET exit_price = ?, exit_time = ?, exit_context = ?, pnl = ?, pnl_pct = ?,
                        status = 'closed', updated_at = ?
-                   WHERE id = ?""",
+                   WHERE id = ? AND owner_id = ?""",
                 (
                     price,
                     when,
@@ -201,6 +211,7 @@ def log_fill(
                     pnl_pct,
                     now,
                     open_row["id"],
+                    owner_id,
                 ),
             )
             if fill_id:
@@ -217,11 +228,11 @@ def log_fill(
         try:
             cur.execute(
                 """INSERT INTO journal_entries
-                   (id, symbol, side, quantity, entry_price, entry_time, hypothesis,
+                   (id, owner_id, symbol, side, quantity, entry_price, entry_time, hypothesis,
                     entry_context, tags, status, source, fill_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
                 (
-                    entry_id, sym, side, float(qty), float(price), when, label,
+                    entry_id, owner_id, sym, side, float(qty), float(price), when, label,
                     context, json.dumps(all_tags), source, fill_id or None, now, now,
                 ),
             )
@@ -230,31 +241,3 @@ def log_fill(
             # Unique fill_id race — another writer got there first.
             return None
         return entry_id
-
-
-def stats_for_source(source: Optional[str] = None) -> dict:
-    """Aggregated journal stats, optionally scoped to one source."""
-    ensure_journal_tables()
-    where = ""
-    params: tuple = ()
-    if source and source != "all":
-        where = " WHERE source = ?"
-        params = (source,)
-    with get_connection() as conn:
-        row = conn.execute(
-            f"""SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN status = 'closed' AND pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                       SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,
-                       COALESCE(SUM(CASE WHEN status = 'closed' THEN pnl ELSE 0 END), 0) AS pnl
-                FROM journal_entries{where}""",
-            params,
-        ).fetchone()
-    closed = int(row["closed"] or 0)
-    wins = int(row["wins"] or 0)
-    return {
-        "total_trades": int(row["total"] or 0),
-        "closed_trades": closed,
-        "winning_trades": wins,
-        "win_rate": (wins / closed * 100.0) if closed else 0.0,
-        "total_pnl": float(row["pnl"] or 0.0),
-    }

@@ -5,10 +5,10 @@ FROM node:20-alpine as builder
 WORKDIR /build
 
 # Copy package files
-COPY package*.json ./
+COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm install --prefer-offline --force
+# Install exactly the versions recorded in package-lock.json
+RUN npm ci
 
 # Copy source files
 COPY src ./src
@@ -27,29 +27,14 @@ ENV VITE_AUTH0_DOMAIN=${VITE_AUTH0_DOMAIN} \
 # Build
 RUN npm run build
 
-# Stage 2: Serve
-FROM node:20-alpine
+# Stage 2: Serve static assets as a non-root user without a Node runtime
+FROM nginxinc/nginx-unprivileged:1.30.5-alpine3.24
 
-WORKDIR /app
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /build/dist/ /usr/share/nginx/html/
 
-# Install serve to run the static build
-RUN npm install -g serve
-
-# Create non-root user
-RUN addgroup -g 1001 appuser && adduser -D -u 1001 -G appuser appuser
-
-# Copy built assets from builder
-COPY --from=builder --chown=appuser:appuser /build/dist ./dist
-
-# Switch to non-root user
-USER appuser
-
-# Expose port
+# Keep the Compose service port unchanged and retain SPA history fallback.
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000 || exit 1
-
-# Serve static files
-CMD ["serve", "-s", "dist", "-l", "3000"]
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1

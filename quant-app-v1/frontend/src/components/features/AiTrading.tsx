@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { API_BASE } from "../../lib/constants";
+import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
 
 interface AiConfig {
   enabled: boolean;
@@ -56,12 +58,18 @@ function fmtPct(value: number | null | undefined): string {
   return `${(value * 100).toFixed(0)}%`;
 }
 
+function authHeaders(token: string | null): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /**
  * AI Trading section: the agent allocates funds and trades on a cycle,
- * scaling its confidence with learned experience from the journal (past
- * paper/actual trades) and local backtest results.
+ * scaling its confidence with learned experience from the owner's journal
+ * (past paper/actual trades) and local backtest results.
  */
 export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
+  const { token, isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [log, setLog] = useState<LogRow[]>([]);
   const [form, setForm] = useState<AiConfig | null>(null);
@@ -70,8 +78,9 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const [notice, setNotice] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
+    if (!token) return;
     try {
-      const res = await fetch(`${API_BASE}/ai-trading`);
+      const res = await fetch(`${API_BASE}/ai-trading`, { headers: authHeaders(token) });
       if (!res.ok) return;
       const data = (await res.json()) as AiStatus;
       setStatus(data);
@@ -79,39 +88,52 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     } catch {
       /* status is decoration */
     }
-  }, []);
+  }, [token]);
 
   const fetchLog = useCallback(async () => {
+    if (!token) return;
     try {
-      const res = await fetch(`${API_BASE}/ai-trading/log?limit=50`);
+      const res = await fetch(`${API_BASE}/ai-trading/log?limit=50`, {
+        headers: authHeaders(token),
+      });
       if (!res.ok) return;
       setLog((await res.json()) as LogRow[]);
     } catch {
       /* log is decoration */
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
+    if (!token) {
+      setStatus(null);
+      setLog([]);
+      setForm(null);
+      return;
+    }
     void fetchStatus();
     void fetchLog();
-  }, [fetchStatus, fetchLog]);
+  }, [token, fetchStatus, fetchLog]);
 
   // Poll faster while the agent is running so decisions show up live.
   useEffect(() => {
+    if (!token) return undefined;
     const interval = status?.running ? 5000 : 20000;
     const id = window.setInterval(() => {
       void fetchStatus();
       void fetchLog();
     }, interval);
     return () => window.clearInterval(id);
-  }, [status?.running, fetchStatus, fetchLog]);
+  }, [status?.running, token, fetchStatus, fetchLog]);
 
-  const post = async (path: string, init?: RequestInit): Promise<void> => {
+  const post = async (path: string): Promise<void> => {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(`${API_BASE}${path}`, init);
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: authHeaders(token),
+      });
       const body = (await res.json().catch(() => ({}))) as { detail?: string };
       if (!res.ok) throw new Error(body.detail ?? `Request failed (${res.status})`);
       await fetchStatus();
@@ -131,7 +153,7 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
     try {
       const res = await fetch(`${API_BASE}/ai-trading`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
         body: JSON.stringify(form),
       });
       const body = (await res.json().catch(() => ({}))) as { detail?: string; config?: AiConfig };
@@ -149,12 +171,27 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
   const running = status?.running ?? false;
   const memoryEntries = Object.entries(status?.journal_memory ?? {});
 
+  if (!isAuthenticated || !token) {
+    return (
+      <section className="paper-error" role="status" aria-label="Sign in to use AI Trading">
+        <h2>Sign in to use AI Trading</h2>
+        <p>
+          Your AI trader, its watchlist and every decision it makes are private to your
+          account. Sign in to configure it and run its paper portfolio.
+        </p>
+        <button className="btn-primary" onClick={() => openAuth()}>
+          Sign in
+        </button>
+      </section>
+    );
+  }
+
   if (!form) {
-    return <div className="paper-loading">Loading AI trader…</div>;
+    return <div className="paper-loading">{error ?? "Loading AI trader…"}</div>;
   }
 
   return (
-    <div className="ai-trading">
+    <div className="ai-trading" data-running={running} data-log-count={log.length}>
       {(error || notice) && (
         <div className={error ? "paper-alert error" : "paper-alert"} role="status">
           <span>{error ?? notice}</span>
@@ -233,18 +270,12 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
                 onChange={(e) => setForm({ ...form, cycle_seconds: Number(e.target.value) || 60 })}
               />
             </label>
-
-            <label className="paper-field">
-              <span>Trade route</span>
-              <select
-                value={form.route}
-                onChange={(e) => setForm({ ...form, route: e.target.value as AiConfig["route"] })}
-              >
-                <option value="paper">Paper portfolio (simulated funds)</option>
-                <option value="live">LIVE broker (real funds!)</option>
-              </select>
-            </label>
           </div>
+
+          <p className="ai-route-note">
+            Trade route: <b>Paper portfolio</b> (simulated funds only — live broker
+            execution is not available).
+          </p>
 
           <div className="ai-memory-toggles">
             <label>
@@ -264,13 +295,6 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
               Learn from backtest results (recent strategy edge)
             </label>
           </div>
-
-          {form.route === "live" && (
-            <p className="ai-live-warning">
-              ⚠ Live route sends <strong>real orders</strong> sized by your limits. The broker kill
-              switch still applies — the agent refuses to trade while it is active.
-            </p>
-          )}
 
           <div className="ai-actions">
             <button className="btn-secondary" onClick={() => void handleSave()} disabled={busy}>
@@ -353,7 +377,7 @@ export function AiTrading({ selectedSymbol }: { selectedSymbol?: string }) {
             </thead>
             <tbody>
               {log.map((row) => (
-                <tr key={row.id} className={row.ok ? "" : "ai-log-error"}>
+                <tr key={row.id} className={row.ok ? "" : "ai-log-error"} data-log-id={row.id}>
                   <td>{new Date(row.ts).toLocaleTimeString()}</td>
                   <td className="paper-symbol">{row.symbol ?? "—"}</td>
                   <td>

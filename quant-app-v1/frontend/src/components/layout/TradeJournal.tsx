@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
 import { API_BASE } from "../../lib/constants";
 
 interface JournalEntry {
   id: string;
-  strategy_id?: string;
-  strategy_version?: number;
   symbol: string;
   side: "buy" | "sell";
   quantity: number;
@@ -34,23 +34,6 @@ interface JournalStats {
   avg_loss: number;
   profit_factor: number;
   avg_hold_time: string;
-}
-
-// Divergence scorecards (relocated from the removed Divergence dashboard):
-// backtest-vs-paper metric deltas for each tracked strategy.
-interface DivergenceItem {
-  strategy_id: string;
-  divergence_score: number;
-  metrics_comparison: {
-    pnl_pct: { backtest: number; paper: number; diff: number };
-    win_rate: { backtest: number; paper: number; diff: number };
-    sharpe_ratio: { backtest: number; paper: number; diff: number };
-  };
-}
-
-function fmtDiff(diff?: number): string {
-  if (diff === undefined || Number.isNaN(diff)) return "—";
-  return `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}`;
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -90,38 +73,22 @@ function buildMonthCells(year: number, month: number): Date[] {
   return Array.from({ length: 42 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
 }
 
+async function readError(response: Response): Promise<string> {
+  const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (payload && typeof payload.detail === "string") return payload.detail;
+  return `HTTP ${response.status}`;
+}
+
 export function TradeJournal() {
+  const { token, isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [stats, setStats] = useState<JournalStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"calendar" | "table">("calendar");
   const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">("all");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "paper" | "actual" | "manual">("all");
-  const [compare, setCompare] = useState<{
-    paper?: { total_pnl: number; total_trades: number; win_rate: number };
-    actual?: { total_pnl: number; total_trades: number; win_rate: number };
-  }>({});
-  const [syncing, setSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
-  const [divergences, setDivergences] = useState<DivergenceItem[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/divergence/analyses`);
-        if (!res.ok) return;
-        const data = (await res.json()) as { analyses?: DivergenceItem[] };
-        if (!cancelled && Array.isArray(data.analyses)) setDivergences(data.analyses);
-      } catch {
-        /* divergence panel is optional decoration */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "paper" | "manual">("all");
 
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
@@ -141,81 +108,60 @@ export function TradeJournal() {
     tags: "",
   });
 
+  const authHeaders = useCallback(
+    (json = false): Record<string, string> => {
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      if (json) headers["Content-Type"] = "application/json";
+      return headers;
+    },
+    [token],
+  );
+
   const fetchEntries = useCallback(async () => {
+    if (!token) {
+      setEntries([]);
+      return;
+    }
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.append("status", statusFilter);
       if (sourceFilter !== "all") params.append("source", sourceFilter);
-      const res = await fetch(`${API_BASE}/journal?${params.toString()}`);
-      if (!res.ok) throw new Error(await res.text());
+      const res = await fetch(`${API_BASE}/journal?${params.toString()}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await readError(res));
       const response = await res.json();
       setEntries(Array.isArray(response.entries) ? response.entries : []);
-      if (response.stats) setStats(response.stats);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load journal");
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, sourceFilter]);
+  }, [authHeaders, sourceFilter, statusFilter, token]);
 
   const fetchStats = useCallback(async () => {
+    if (!token) {
+      setStats(null);
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/journal/stats`);
+      const res = await fetch(`${API_BASE}/journal/stats`, { headers: authHeaders() });
       if (!res.ok) return;
       setStats(await res.json());
     } catch {
-      /* stats are optional decoration */
+      /* stats are decoration on top of the entry list */
     }
-  }, []);
-
-  // Paper vs actual performance comparison (fetched in parallel).
-  const fetchCompare = useCallback(async () => {
-    try {
-      const [paperRes, actualRes] = await Promise.all([
-        fetch(`${API_BASE}/journal/stats?source=paper`),
-        fetch(`${API_BASE}/journal/stats?source=actual`),
-      ]);
-      const next: { paper?: JournalStats; actual?: JournalStats } = {};
-      if (paperRes.ok) next.paper = await paperRes.json();
-      if (actualRes.ok) next.actual = await actualRes.json();
-      setCompare(next);
-    } catch {
-      /* comparison is decoration */
-    }
-  }, []);
+  }, [authHeaders, token]);
 
   useEffect(() => {
-    fetchEntries();
+    void fetchEntries();
   }, [fetchEntries]);
 
   useEffect(() => {
-    fetchStats();
-    fetchCompare();
-  }, [fetchStats, fetchCompare]);
-
-  // Pull broker fills into the journal as "actual" trades.
-  const handleSyncLive = async () => {
-    setSyncing(true);
-    setSyncMsg(null);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE}/journal/sync-live`, { method: "POST" });
-      const body = (await res.json().catch(() => ({}))) as {
-        detail?: string;
-        imported?: number;
-        skipped?: number;
-      };
-      if (!res.ok) throw new Error(body.detail ?? "Sync failed");
-      setSyncMsg(`Imported ${body.imported ?? 0} new fills (${body.skipped ?? 0} already logged)`);
-      await fetchEntries();
-      fetchCompare();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to sync actual trades");
-    } finally {
-      setSyncing(false);
-    }
-  };
+    void fetchStats();
+  }, [fetchStats]);
 
   const handleCreateEntry = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -225,7 +171,7 @@ export function TradeJournal() {
       const tags = newEntryForm.tags.split(",").map((s) => s.trim()).filter(Boolean);
       const res = await fetch(`${API_BASE}/journal`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({
           symbol: newEntryForm.symbol.toUpperCase(),
           side: newEntryForm.side,
@@ -236,12 +182,12 @@ export function TradeJournal() {
           tags,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await readError(res));
       await res.json();
       setShowCreate(false);
       setNewEntryForm({ symbol: "", side: "buy", quantity: 1, entry_price: 0, hypothesis: "", entry_context: "", tags: "" });
-      fetchEntries();
-      fetchStats();
+      await fetchEntries();
+      await fetchStats();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create entry");
     } finally {
@@ -257,7 +203,7 @@ export function TradeJournal() {
     try {
       const res = await fetch(`${API_BASE}/journal/${entryId}/close`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify({
           exit_price: reviewForm.exit_price,
           exit_context: reviewForm.exit_context,
@@ -265,11 +211,11 @@ export function TradeJournal() {
           lessons: reviewForm.lessons,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await readError(res));
       setDetailEntry(null);
       setReviewForm({ exit_price: 0, exit_context: "", rating: 3, lessons: "" });
-      fetchEntries();
-      fetchStats();
+      await fetchEntries();
+      await fetchStats();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to close trade");
     }
@@ -278,11 +224,14 @@ export function TradeJournal() {
   const handleDeleteEntry = async (id: string) => {
     if (!confirm("Delete this journal entry?")) return;
     try {
-      const res = await fetch(`${API_BASE}/journal/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(await res.text());
+      const res = await fetch(`${API_BASE}/journal/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(await readError(res));
       setDetailEntry(null);
-      fetchEntries();
-      fetchStats();
+      await fetchEntries();
+      await fetchStats();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete entry");
     }
@@ -334,12 +283,32 @@ export function TradeJournal() {
     setReviewForm({ exit_price: 0, exit_context: "", rating: 3, lessons: "" });
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="trade-journal" data-entry-count="0">
+        <div className="journal-header">
+          <div>
+            <h1>Trade Journal</h1>
+            <p className="view-description">Log trades, review the thesis, and see your month at a glance.</p>
+          </div>
+        </div>
+        <section className="journal-signin" aria-label="Sign in required">
+          <h2>Sign in to see your journal</h2>
+          <p>Journal entries belong to your own account, so they need a sign-in.</p>
+          <button type="button" className="btn-primary" onClick={() => openAuth("login")}>
+            Sign in
+          </button>
+        </section>
+      </div>
+    );
+  }
+
   if (loading && entries.length === 0) {
     return <div className="journal-loading">Loading Trade Journal…</div>;
   }
 
   return (
-    <div className="trade-journal">
+    <div className="trade-journal" data-entry-count={entries.length}>
       <div className="journal-header">
         <div>
           <h1>Trade Journal</h1>
@@ -366,25 +335,14 @@ export function TradeJournal() {
           </select>
           <select
             value={sourceFilter}
-            onChange={(e) =>
-              setSourceFilter(e.target.value as "all" | "paper" | "actual" | "manual")
-            }
+            onChange={(e) => setSourceFilter(e.target.value as "all" | "paper" | "manual")}
             className="filter-select"
-            aria-label="Filter by trade source (actual vs paper)"
+            aria-label="Filter by trade source"
           >
-            <option value="all">Actual + Paper</option>
-            <option value="actual">Actual trades</option>
-            <option value="paper">Paper trades</option>
+            <option value="all">Paper + manual</option>
+            <option value="paper">Paper fills</option>
             <option value="manual">Manual entries</option>
           </select>
-          <button
-            className="btn-secondary"
-            onClick={() => void handleSyncLive()}
-            disabled={syncing}
-            title="Import broker fills so actual trades can be compared with paper trades"
-          >
-            {syncing ? "Syncing…" : "⤓ Sync actual trades"}
-          </button>
           <button className="btn-primary" onClick={() => setShowCreate(true)}>
             + New trade
           </button>
@@ -395,13 +353,6 @@ export function TradeJournal() {
         <div className="journal-error" role="alert">
           {error}
           <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
-
-      {syncMsg && (
-        <div className="journal-error" role="status" style={{ borderColor: "var(--border-secondary, #444c56)" }}>
-          {syncMsg}
-          <button onClick={() => setSyncMsg(null)}>Dismiss</button>
         </div>
       )}
 
@@ -427,54 +378,6 @@ export function TradeJournal() {
           <div className="stat-card">
             <span className="stat-value">{stats.profit_factor.toFixed(2)}</span>
             <span className="stat-label">Profit factor</span>
-          </div>
-          <div
-            className="stat-card"
-            title="Closed PnL from real broker fills (synced)"
-            style={{ borderLeft: "3px solid #3fb950" }}
-          >
-            <span className={`stat-value ${
-              (compare.actual?.total_pnl ?? 0) >= 0 ? "positive" : "negative"
-            }`}>
-              {(compare.actual?.total_pnl ?? 0) >= 0 ? "+" : ""}
-              {(compare.actual?.total_pnl ?? 0).toFixed(2)}
-            </span>
-            <span className="stat-label">Actual PnL · {compare.actual?.total_trades ?? 0} trades</span>
-          </div>
-          <div
-            className="stat-card"
-            title="Closed PnL from simulated paper fills"
-            style={{ borderLeft: "3px solid #58a6ff" }}
-          >
-            <span className={`stat-value ${(compare.paper?.total_pnl ?? 0) >= 0 ? "positive" : "negative"}`}>
-              {(compare.paper?.total_pnl ?? 0) >= 0 ? "+" : ""}
-              {(compare.paper?.total_pnl ?? 0).toFixed(2)}
-            </span>
-            <span className="stat-label">Paper PnL · {compare.paper?.total_trades ?? 0} trades</span>
-          </div>
-        </div>
-      )}
-
-      {divergences.length > 0 && (
-        <div className="journal-divergence">
-          <div className="journal-divergence-head">
-            <span>Strategy divergence (backtest → paper)</span>
-            <span className="journal-divergence-note">relocated from Divergence Scorecards</span>
-          </div>
-          <div className="journal-divergence-list">
-            {divergences.slice(0, 6).map((d) => {
-              const pct = Math.round((d.divergence_score ?? 0) * 100);
-              const level = pct >= 50 ? "high" : pct >= 25 ? "medium" : "low";
-              return (
-                <div key={d.strategy_id} className={`div-row ${level}`}>
-                  <span className="div-strategy">Strategy {String(d.strategy_id).slice(0, 8)}</span>
-                  <span className={`div-score ${level}`}>{pct}%</span>
-                  <span className="div-metrics">
-                    PnL {fmtDiff(d.metrics_comparison?.pnl_pct?.diff)} · Win {fmtDiff(d.metrics_comparison?.win_rate?.diff)} · Sharpe {fmtDiff(d.metrics_comparison?.sharpe_ratio?.diff)}
-                  </span>
-                </div>
-              );
-            })}
           </div>
         </div>
       )}
@@ -577,7 +480,11 @@ export function TradeJournal() {
                   const pnl = formatPnL(entry.pnl, entry.pnl_pct);
                   return (
                     <li key={entry.id}>
-                      <button className="day-trade-card" onClick={() => openDayDetail(entry)}>
+                      <button
+                        className="day-trade-card"
+                        data-entry-id={entry.id}
+                        onClick={() => openDayDetail(entry)}
+                      >
                         <div className="day-trade-top">
                           <span className="day-trade-symbol">{entry.symbol}</span>
                           <span className={`side-badge ${entry.side}`}>{SIDE_LABELS[entry.side]}</span>
@@ -622,7 +529,19 @@ export function TradeJournal() {
               {filteredEntries.map((entry) => {
                 const pnl = formatPnL(entry.pnl, entry.pnl_pct);
                 return (
-                  <tr key={entry.id} className={entry.status === "open" ? "open-trade" : ""} onClick={() => openDayDetail(entry)}>
+                  <tr
+                    key={entry.id}
+                    data-entry-id={entry.id}
+                    className={entry.status === "open" ? "open-trade" : ""}
+                    tabIndex={0}
+                    onClick={() => openDayDetail(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openDayDetail(entry);
+                      }
+                    }}
+                  >
                     <td>{new Date(entry.entry_time).toLocaleDateString()}</td>
                     <td className="symbol-cell">{entry.symbol}</td>
                     <td>
@@ -674,8 +593,9 @@ export function TradeJournal() {
             <form onSubmit={handleCreateEntry} className="create-form">
               <div className="form-row">
                 <div className="form-group">
-                  <label>Symbol</label>
+                  <label htmlFor="journal-symbol">Symbol</label>
                   <input
+                    id="journal-symbol"
                     type="text"
                     value={newEntryForm.symbol}
                     onChange={(e) => setNewEntryForm({ ...newEntryForm, symbol: e.target.value.toUpperCase() })}
@@ -683,8 +603,9 @@ export function TradeJournal() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Side</label>
+                  <label htmlFor="journal-side">Side</label>
                   <select
+                    id="journal-side"
                     value={newEntryForm.side}
                     onChange={(e) => setNewEntryForm({ ...newEntryForm, side: e.target.value as "buy" | "sell" })}
                   >
@@ -695,8 +616,9 @@ export function TradeJournal() {
               </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label>Quantity</label>
+                  <label htmlFor="journal-quantity">Quantity</label>
                   <input
+                    id="journal-quantity"
                     type="number"
                     min="1"
                     value={newEntryForm.quantity}
@@ -705,8 +627,9 @@ export function TradeJournal() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Entry price</label>
+                  <label htmlFor="journal-entry-price">Entry price</label>
                   <input
+                    id="journal-entry-price"
                     type="number"
                     step="0.01"
                     min="0.01"
@@ -717,8 +640,9 @@ export function TradeJournal() {
                 </div>
               </div>
               <div className="form-group">
-                <label>Hypothesis / thesis</label>
+                <label htmlFor="journal-hypothesis">Hypothesis / thesis</label>
                 <textarea
+                  id="journal-hypothesis"
                   value={newEntryForm.hypothesis}
                   onChange={(e) => setNewEntryForm({ ...newEntryForm, hypothesis: e.target.value })}
                   rows={3}
@@ -727,8 +651,9 @@ export function TradeJournal() {
                 />
               </div>
               <div className="form-group">
-                <label>Entry context (market conditions, news, setup)</label>
+                <label htmlFor="journal-entry-context">Entry context (market conditions, news, setup)</label>
                 <textarea
+                  id="journal-entry-context"
                   value={newEntryForm.entry_context}
                   onChange={(e) => setNewEntryForm({ ...newEntryForm, entry_context: e.target.value })}
                   rows={2}
@@ -736,8 +661,9 @@ export function TradeJournal() {
                 />
               </div>
               <div className="form-group">
-                <label>Tags (comma-separated)</label>
+                <label htmlFor="journal-tags">Tags (comma-separated)</label>
                 <input
+                  id="journal-tags"
                   type="text"
                   value={newEntryForm.tags}
                   onChange={(e) => setNewEntryForm({ ...newEntryForm, tags: e.target.value })}
@@ -825,8 +751,9 @@ export function TradeJournal() {
                 >
                   <div className="form-row">
                     <div className="form-group">
-                      <label>Exit price</label>
+                      <label htmlFor="journal-exit-price">Exit price</label>
                       <input
+                        id="journal-exit-price"
                         type="number"
                         step="0.01"
                         min="0.01"
@@ -836,8 +763,12 @@ export function TradeJournal() {
                       />
                     </div>
                     <div className="form-group">
-                      <label>Rating (1–5)</label>
-                      <select value={reviewForm.rating} onChange={(e) => setReviewForm({ ...reviewForm, rating: parseInt(e.target.value) })}>
+                      <label htmlFor="journal-rating">Rating (1–5)</label>
+                      <select
+                        id="journal-rating"
+                        value={reviewForm.rating}
+                        onChange={(e) => setReviewForm({ ...reviewForm, rating: parseInt(e.target.value) })}
+                      >
                         <option value={1}>1 — Poor</option>
                         <option value={2}>2 — Below average</option>
                         <option value={3}>3 — Average</option>
@@ -847,8 +778,9 @@ export function TradeJournal() {
                     </div>
                   </div>
                   <div className="form-group">
-                    <label>Exit context</label>
+                    <label htmlFor="journal-exit-context">Exit context</label>
                     <textarea
+                      id="journal-exit-context"
                       value={reviewForm.exit_context}
                       onChange={(e) => setReviewForm({ ...reviewForm, exit_context: e.target.value })}
                       rows={2}
@@ -856,8 +788,9 @@ export function TradeJournal() {
                     />
                   </div>
                   <div className="form-group">
-                    <label>Lessons learned</label>
+                    <label htmlFor="journal-lessons">Lessons learned</label>
                     <textarea
+                      id="journal-lessons"
                       value={reviewForm.lessons}
                       onChange={(e) => setReviewForm({ ...reviewForm, lessons: e.target.value })}
                       rows={2}

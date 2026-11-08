@@ -143,7 +143,10 @@ async def test_legacy_stocks_search_is_catalogue_backed() -> None:
 
 @pytest.mark.asyncio
 async def test_stocks_metadata_includes_catalogue_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake_ohlcv(ticker: str, limit: int = 500) -> OhlcvResult:
+    calls: list[tuple[str, int, object]] = []
+
+    async def _fake_ohlcv(ticker: str, limit: int = 500, *, as_of=None) -> OhlcvResult:
+        calls.append((ticker, limit, as_of))
         df = pd.DataFrame(
             {"Open": [1.0], "High": [2.0], "Low": [1.0], "Close": [2.0], "Volume": [100]}
         )
@@ -163,6 +166,8 @@ async def test_stocks_metadata_includes_catalogue_fields(monkeypatch: pytest.Mon
     assert body["name"] == "Apple Inc"
     assert body["last_close"] == 2.0
     assert body["provenance"]["source"] == "gateway-instrument-catalogue"
+    # The route fetches a two-bar slice and forwards the request clock as-of.
+    assert calls == [("AAPL", 2, None)]
 
 
 @pytest.mark.asyncio

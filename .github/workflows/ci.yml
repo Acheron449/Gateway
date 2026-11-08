@@ -24,12 +24,53 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r ../../requirements.txt
-          pip install -r ../../requirements-dev.txt
+          pip install -r requirements-full.txt
+          pip install -r requirements-dev.txt
       - name: Compile check
         run: python -m compileall app
+      - name: Dependency audit
+        run: pip-audit -r requirements-full.txt
+      - name: Static security scan
+        run: bandit -r app -lll
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  cloudflare-root:
+    name: Cloudflare root build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Assert root is not a Python project
+        run: test ! -f requirements.txt && test ! -f requirements-dev.txt && test ! -f Pipfile && test ! -f pyproject.toml
+      - name: Build from repository root
+        run: npm run build
+      - name: Verify static output
+        run: test -f dist/index.html && test ! -e dist/_redirects
+      - name: Build Pages artifact
+        run: npm run build:pages
+      - name: Verify Pages output
+        run: test -f dist-pages/index.html && test -f dist-pages/_redirects && test ! -e dist/_redirects
+      - name: Enforce JS bundle budgets
+        run: npm run check:bundle
+      - name: Validate Wrangler deploy config
+        run: npx --yes wrangler@4.158.0 versions upload --dry-run
+      - name: Validate Vercel fallback config
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const config = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
+          const fallback = (config.rewrites || []).some(
+            (rule) => rule.source === "/(.*)" && rule.destination === "/index.html",
+          );
+          if (config.framework !== "vite") throw new Error("Vercel framework must be vite");
+          if (config.outputDirectory !== "quant-app-v1/frontend/dist") throw new Error("Vercel output directory mismatch");
+          if (!fallback) throw new Error("Vercel SPA rewrite is missing");
+          if (!fs.existsSync(".vercelignore")) throw new Error(".vercelignore is missing");
+          console.log("Vercel fallback config is valid");
+          NODE
 
   frontend:
     name: Frontend build
@@ -43,6 +84,12 @@ jobs:
         with:
           node-version: "20"
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
       - name: Type check and build
         run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run browser tests
+        run: npm run test:e2e -- --workers=1

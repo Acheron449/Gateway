@@ -7,26 +7,6 @@ import pytest
 
 from app.api import main
 from app.config import Settings
-from app.services.broker_service import BrokerService, Order, OrderSide, OrderValidationError
-
-
-def test_live_execution_is_rejected() -> None:
-    with pytest.raises(OrderValidationError, match="Live execution"):
-        BrokerService(paper_trading=False)
-
-
-@pytest.mark.parametrize(
-    "order",
-    [
-        Order("SAMPLE_STOCK", OrderSide.BUY, 1, 100),
-        Order("AAPL", OrderSide.BUY, 0, 100),
-        Order("AAPL", OrderSide.BUY, 1, 0),
-    ],
-)
-def test_placeholder_or_incomplete_orders_are_rejected(order: Order) -> None:
-    broker = BrokerService()
-    with pytest.raises(OrderValidationError):
-        asyncio.run(broker.place_order(order))
 
 
 def test_non_paper_configuration_is_rejected() -> None:

@@ -14,12 +14,6 @@ def __getattr__(name: str):
     if name == "AlpacaProvider":
         from app.providers.alpaca_provider import AlpacaProvider
         return AlpacaProvider
-    if name == "OpenBBProvider":
-        from app.providers.openbb_provider import OpenBBProvider
-        return OpenBBProvider
-    if name == "OpenBBServerProvider":
-        from app.providers.openbb_server_provider import OpenBBServerProvider
-        return OpenBBServerProvider
     if name == "TradingViewProvider":
         from app.providers.registry import TradingViewProvider
         return TradingViewProvider
@@ -55,8 +49,6 @@ __all__ = [
     "ProviderUnavailableError",
     "FinnhubProvider",
     "AlpacaProvider",
-    "OpenBBProvider",
-    "OpenBBServerProvider",
     "TradingViewProvider",
     "get_provider",
     "list_providers",

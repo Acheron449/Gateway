@@ -9,7 +9,7 @@ Gateway currently supports **US-equities research and paper trading only**. Live
 Start the backend from the repository root:
 
 ```sh
-pip install -r requirements.txt
+pip install -r quant-app-v1/backend/requirements-full.txt
 export GATEWAY_ENV=local                 # local | test | paper | production
 export GATEWAY_EXECUTION_MODE=paper      # required in every profile
 export ALPACA_API_KEY=...                # optional; needed for /history
@@ -43,6 +43,11 @@ Start the frontend and backend from the repository root:
 cd quant-app-v1/frontend
 npm install
 npm run dev                                  # Vite on http://127.0.0.1:5173
+# Cloudflare Workers Builds: root `wrangler.jsonc` runs `npm run build` and
+# uploads root `dist/`. For Cloudflare Pages, run `npm run build:pages` at the
+# repo root and upload `dist-pages/` (it adds the Pages SPA fallback).
+# Optional Vercel fallback: import the repository root; root `vercel.json`
+# builds this directory and rewrites SPA routes. Set the VITE_* build vars in Vercel.
 
 # backend (second terminal)
 cd quant-app-v1/backend
@@ -53,10 +58,10 @@ export ALPACA_SECRET_KEY=...
 PYTHONPATH=. uvicorn app.main:app --reload --port 8000
 ```
 
-Developer tests are declared in `requirements-dev.txt`:
+Developer tests are declared in `quant-app-v1/backend/requirements-dev.txt`:
 
 ```sh
-pip install -r requirements-dev.txt
+pip install -r quant-app-v1/backend/requirements-dev.txt
 python -m pytest quant-app-v1/backend/tests/
 ```
 
@@ -70,7 +75,9 @@ python -m pytest quant-app-v1/backend/tests/
     - **ChartContainer:** Orchestrates data flow between history fetching and live socket updates.
     - **News Terminal:** Displays sentiment analysis from the backend.
     - **PatternList:** Visualizes algorithmic trading patterns detected in real-time.
-- **Authentication:** Local email/password (HS256 JWT) and optional Auth0 sign-in (RS256 via tenant JWKS) — setup in [docs/auth0.md](docs/auth0.md).
+- **Authentication:** Supabase Auth (email/password), set up in [docs/deployment.md](docs/deployment.md) §3. Local email/password (HS256 JWT) exists only for `GATEWAY_ENV=local` development and tests. Auth0 is removed from the product.
+
+Requirements live in [docs/SRS.md](docs/SRS.md) — a backtesting and demo-trading workspace for algorithmic strategies and bots. There is no live trading, and no broker is ever contacted.
 
 ## File Structure Overview
 - `src/hooks/useHistory.ts`: Handles REST calls for historical data.

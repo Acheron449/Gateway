@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows, normalize_as_of
 
 LSE_VAULT_URL = "https://api.londonstrategicedge.com/vault"
 LSE_VERSION = "lse-vault-v1"
@@ -174,6 +175,8 @@ class LSEProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]] | None:
         """OHLCV candles from ``/vault/candles`` in chart-row shape.
 
@@ -185,7 +188,9 @@ class LSEProvider(MarketDataProvider):
             return None
         timeframe = _INTERVAL_TO_TIMEFRAME.get((interval or "1d").lower(), "1d")
         days = _PERIOD_TO_DAYS.get(str(range or "1y").lower(), 366)
-        start = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+        cutoff = normalize_as_of(as_of)
+        end = cutoff or datetime.now(timezone.utc)
+        start = (end - timedelta(days=days)).date().isoformat()
         raw = await self._rows(
             "/candles",
             {
@@ -194,6 +199,7 @@ class LSEProvider(MarketDataProvider):
                 "order": "asc",
                 "limit": _MAX_ROWS,
                 "start": start,
+                "end": cutoff.date().isoformat() if cutoff else None,
             },
         )
         rows: list[dict[str, Any]] = []
@@ -216,7 +222,7 @@ class LSEProvider(MarketDataProvider):
                     "volume": _float(bar.get("volume")) or 0.0,
                 }
             )
-        return rows
+        return filter_timestamped_rows(rows, as_of=as_of)
 
     async def quote(self, instrument: str) -> dict[str, Any] | None:
         """Last-trade snapshot derived from the two most recent 1m candles."""

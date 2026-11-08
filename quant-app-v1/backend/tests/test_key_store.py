@@ -19,8 +19,13 @@ from pathlib import Path
 import httpx
 import pytest
 
+from fastapi import HTTPException
+
+from app import auth
 from app.api.main import app
-from app.auth import User, get_current_user
+from app.api.v1.llm import ProviderUpdateRequest, update_llm_provider
+from app.api.v1.settings import ProviderKeyRequest, store_provider_key
+from app.auth import User
 from app.providers import registry
 from app.services import key_store
 from app.services import llm_providers as llm_svc
@@ -91,20 +96,23 @@ def _use_rpc(monkeypatch: pytest.MonkeyPatch, rpc: _Rpc) -> None:
     monkeypatch.setattr(key_store, "_sb_rpc", rpc)
 
 
-async def fetch(path: str, method: str = "GET", body: dict | None = None) -> httpx.Response:
+async def fetch(
+    path: str, method: str = "GET", body: dict | None = None, token: str | None = None
+) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         kwargs = {"json": body} if body is not None else {}
-        return await client.request(method, path, **kwargs)
+        return await client.request(method, path, headers=headers, **kwargs)
 
 
-@pytest.fixture
-def auth_user():
-    app.dependency_overrides[get_current_user] = lambda: User(
-        id="u-test", email="key-store@test.local", name="Key Store Test"
-    )
-    yield
-    app.dependency_overrides.pop(get_current_user, None)
+def route_user() -> User:
+    """The identity a route receives once middleware has verified the token."""
+    return User(id="u-test", email="key-store@test.local", name="Key Store Test")
+
+
+def bearer() -> str:
+    return auth.create_access_token({"sub": "u-test", "email": "key-store@test.local"})
 
 
 class TestKeyStoreBasics:
@@ -527,11 +535,35 @@ class TestLlmProvidersIntegration:
 
 
 class TestRouteStatusCodes:
+    """Key writes map store failures to 503 and successes to 200.
+
+    Authentication and the account-isolation stopgap run in middleware before
+    routing, so these drive the route functions with an already-verified
+    identity — the same approach as ``test_journal_and_vault`` — and keep the
+    transport-level gate asserted separately below.
+    """
+
+    @pytest.mark.asyncio
+    async def test_authenticated_provider_write_stops_at_the_isolation_gate(
+        self,
+        supabase_trio: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _use_rpc(monkeypatch, _Rpc(rows=[]))
+
+        response = await fetch(
+            "/llm/providers/openrouter", "PUT", {"api_key": "sk-or-x"}, token=bearer()
+        )
+        assert response.status_code == 503
+        assert response.json() == {
+            "detail": "Private data unavailable until account isolation is enabled"
+        }
+
     @pytest.mark.asyncio
     async def test_put_llm_provider_503_when_remote_write_fails(
         self,
         supabase_trio: None,
-        auth_user,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -541,17 +573,20 @@ class TestRouteStatusCodes:
         _use_rpc(monkeypatch, _Rpc(fail=True))
         monkeypatch.setenv("GATEWAY_PROVIDER_KEY", registry._make_fernet_key().decode())
 
-        response = await fetch(
-            "/llm/providers/openrouter", "PUT", {"api_key": "sk-or-x"}
-        )
-        assert response.status_code == 503
-        assert "unreachable" in response.json()["detail"]
+        with pytest.raises(HTTPException) as excinfo:
+            await update_llm_provider(
+                "openrouter",
+                ProviderUpdateRequest(api_key="sk-or-x"),
+                user=route_user(),
+                unavailable=None,
+            )
+        assert excinfo.value.status_code == 503
+        assert "unreachable" in str(excinfo.value.detail)
 
     @pytest.mark.asyncio
     async def test_put_llm_provider_200_when_remote_write_succeeds(
         self,
         supabase_trio: None,
-        auth_user,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -561,24 +596,26 @@ class TestRouteStatusCodes:
         _use_rpc(monkeypatch, _Rpc(rows=[]))
         monkeypatch.setenv("GATEWAY_PROVIDER_KEY", registry._make_fernet_key().decode())
 
-        response = await fetch(
-            "/llm/providers/openrouter", "PUT", {"api_key": "sk-or-x"}
+        saved = await update_llm_provider(
+            "openrouter",
+            ProviderUpdateRequest(api_key="sk-or-x"),
+            user=route_user(),
+            unavailable=None,
         )
-        assert response.status_code == 200
-        assert response.json() == {"provider": "openrouter", "saved": True}
+        assert saved == {"provider": "openrouter", "saved": True}
 
     @pytest.mark.asyncio
     async def test_settings_key_save_503_when_remote_write_fails(
         self,
         supabase_trio: None,
-        auth_user,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _use_rpc(monkeypatch, _Rpc(fail=True))
         monkeypatch.setenv("GATEWAY_PROVIDER_KEY", registry._make_fernet_key().decode())
 
-        response = await fetch(
-            "/settings/providers/Finnhub/key", "POST", {"api_key": "fh-x"}
-        )
-        assert response.status_code == 503
-        assert "unreachable" in response.json()["detail"]
+        with pytest.raises(HTTPException) as excinfo:
+            await store_provider_key(
+                "Finnhub", ProviderKeyRequest(api_key="fh-x"), user=route_user()
+            )
+        assert excinfo.value.status_code == 503
+        assert "unreachable" in str(excinfo.value.detail)

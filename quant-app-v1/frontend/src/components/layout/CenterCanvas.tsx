@@ -1,24 +1,92 @@
-import { useRef } from "react";
-import { ChartContainer } from "../../components/ChartContainer";
-import { AssetSelector } from "../../components/features/AssetSelector";
-import { PaperTrading } from "../../components/features/PaperTrading";
-import { TradingAccountStatus } from "../../components/features/TradingAccountStatus";
-import { AiTrading } from "../../components/features/AiTrading";
-import { CalendarView } from "./CalendarView";
-import { AiHarness } from "./AiHarness";
-import { AgenticLab } from "./AgenticLab";
-import Backtester from "./Backtester";
-import { OverviewDashboard } from "../../components/features/OverviewDashboard";
-import { ScannerV2 } from "../../components/features/ScannerV2";
-import { StrategyStudio } from "./StrategyStudio";
-import { TradeJournal } from "./TradeJournal";
-import { ProviderSettings } from "./ProviderSettings";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE } from "../../lib/constants";
+import { type BtRun } from "../../lib/backtestTypes";
 import { LastUpdated } from "../../lib/LastUpdated";
-import { IdleScreen } from "./IdleScreen";
+
+const ChartContainer = lazy(() =>
+  import("../../components/ChartContainer").then((module) => ({ default: module.ChartContainer })),
+);
+const AssetSelector = lazy(() =>
+  import("../../components/features/AssetSelector").then((module) => ({ default: module.AssetSelector })),
+);
+const PaperTrading = lazy(() =>
+  import("../../components/features/PaperTrading").then((module) => ({ default: module.PaperTrading })),
+);
+const TradingAccountStatus = lazy(() =>
+  import("../../components/features/TradingAccountStatus").then((module) => ({
+    default: module.TradingAccountStatus,
+  })),
+);
+const AiTrading = lazy(() =>
+  import("../../components/features/AiTrading").then((module) => ({ default: module.AiTrading })),
+);
+const CalendarView = lazy(() =>
+  import("./CalendarView").then((module) => ({ default: module.CalendarView })),
+);
+const AiHarness = lazy(() =>
+  import("./AiHarness").then((module) => ({ default: module.AiHarness })),
+);
+const AgenticLab = lazy(() =>
+  import("./AgenticLab").then((module) => ({ default: module.AgenticLab })),
+);
+const OverviewDashboard = lazy(() =>
+  import("../../components/features/OverviewDashboard").then((module) => ({
+    default: module.OverviewDashboard,
+  })),
+);
+const ScannerV2 = lazy(() =>
+  import("../../components/features/ScannerV2").then((module) => ({ default: module.ScannerV2 })),
+);
+const StrategyStudio = lazy(() =>
+  import("./StrategyStudio").then((module) => ({ default: module.StrategyStudio })),
+);
+const BacktestReports = lazy(() =>
+  import("../features/BacktestReports").then((module) => ({ default: module.BacktestReports })),
+);
+const OptionsCalculator = lazy(() =>
+  import("../features/OptionsCalculator").then((module) => ({ default: module.OptionsCalculator })),
+);
+const MonteCarloView = lazy(() =>
+  import("../features/MonteCarloView").then((module) => ({ default: module.MonteCarloView })),
+);
+const OrderBookPanel = lazy(() =>
+  import("../features/OrderBookPanel").then((module) => ({ default: module.OrderBookPanel })),
+);
+const RiskDashboard = lazy(() =>
+  import("./RiskDashboard").then((module) => ({ default: module.RiskDashboard })),
+);
+const TradeJournal = lazy(() =>
+  import("./TradeJournal").then((module) => ({ default: module.TradeJournal })),
+);
+const ProviderSettings = lazy(() =>
+  import("./ProviderSettings").then((module) => ({ default: module.ProviderSettings })),
+);
+const IdleScreen = lazy(() =>
+  import("./IdleScreen").then((module) => ({ default: module.IdleScreen })),
+);
 
 interface CenterCanvasProps {
   activeView: string;
   selectedSymbol: string;
+}
+
+function AgenticLabView({ selectedSymbol }: { selectedSymbol: string }) {
+  const [runs, setRuns] = useState<BtRun[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const loadRuns = useCallback(async () => {
+    setError(null);
+    try {
+      const token = localStorage.getItem("gateway_auth_token");
+      const response = await fetch(`${API_BASE}/agentic-lab/runs?limit=50`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const data = await response.json() as { runs?: BtRun[] };
+      setRuns(data.runs ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load lab runs");
+    }
+  }, []);
+  useEffect(() => { void loadRuns(); }, [loadRuns]);
+  return <AgenticLab selectedSymbol={selectedSymbol} runs={runs} error={error} onRefresh={loadRuns} />;
 }
 
 function getViewComponent(activeView: string, selectedSymbol: string) {
@@ -78,24 +146,51 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <StrategyStudio />
         </div>
       );
+    case "backtests":
+      return <BacktestReports selectedSymbol={selectedSymbol} />;
+    case "orderbook":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Order book</h1>
+            <p className="view-description">
+              A simulated ladder for {selectedSymbol} built from its last daily bars — a model output,
+              not exchange data.
+            </p>
+          </div>
+          <OrderBookPanel symbol={selectedSymbol} />
+        </div>
+      );
+    case "monte-carlo":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Monte Carlo</h1>
+            <p className="view-description">
+              Percentile fan, tail loss, drawdown and ruin risk from resampling {selectedSymbol}'s own daily
+              returns — a simulation, not a forecast.
+            </p>
+          </div>
+          <MonteCarloView symbol={selectedSymbol} />
+        </div>
+      );
+    case "options":
+      return (
+        <div className="canvas-view">
+          <div className="view-header">
+            <h1>Options pricing</h1>
+            <p className="view-description">
+              European Black-Scholes value, greeks and implied volatility — a calculator over inputs you supply,
+              not an options feed.
+            </p>
+          </div>
+          <OptionsCalculator />
+        </div>
+      );
     case "agentic-lab":
       return (
         <div className="canvas-view canvas-view-wide">
-          <AgenticLab selectedSymbol={selectedSymbol} />
-        </div>
-      );
-    case "backtests":
-      return (
-        <div className="canvas-view canvas-view-wide">
-          <div className="view-header">
-            <h1>Backtester</h1>
-            <p className="view-description">
-              Replay strategies over past bars only — a paper layout of trades, opened positions,
-              logs and theoretical P&amp;L. No live orders are placed from here.
-            </p>
-            <LastUpdated />
-          </div>
-          <Backtester />
+          <AgenticLabView selectedSymbol={selectedSymbol} />
         </div>
       );
     case "paper-trading":
@@ -111,21 +206,24 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
           <PaperTrading selectedSymbol={selectedSymbol} />
         </div>
       );
+    case "risk":
+      return <RiskDashboard />;
     case "live-trading":
       return (
         <div className="canvas-view canvas-view-wide canvas-view-trading">
           <div className="trading-view-header view-header">
             <div className="trading-view-title">
-              <h1>Live Trading</h1>
+              <h1>Live execution unavailable</h1>
               <p className="view-description">
-                Real-money orders through your broker — the same desk as paper trading,
-                with account, positions, orders and fills fed by the live account
-                (UI patterned after professional terminals such as nautilus_trader).
+                Broker account and order routes are disabled until authenticated account ownership
+                and durable order recovery are implemented. Use the separately labeled simulated-paper desk.
               </p>
             </div>
-            <TradingAccountStatus mode="live" />
           </div>
-          <PaperTrading selectedSymbol={selectedSymbol} mode="live" />
+          <section className="desk-card" role="status" aria-label="Broker execution unavailable">
+            <h2>Live execution unavailable</h2>
+            <p>No broker account data or order actions are available in this build.</p>
+          </section>
         </div>
       );
     case "ai-trading":
@@ -185,6 +283,14 @@ function getViewComponent(activeView: string, selectedSymbol: string) {
   }
 }
 
+function CanvasLoading() {
+  return (
+    <div className="route-loading route-loading--inline" role="status" aria-live="polite">
+      <span>Loading view…</span>
+    </div>
+  );
+}
+
 export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -197,7 +303,9 @@ export function CenterCanvas({ activeView, selectedSymbol }: CenterCanvasProps) 
       className={`center-canvas-inner${fixed ? " center-canvas-fixed" : ""}`}
       ref={canvasRef}
     >
-      {getViewComponent(activeView, selectedSymbol)}
+      <Suspense fallback={<CanvasLoading />}>
+        {getViewComponent(activeView, selectedSymbol)}
+      </Suspense>
     </div>
   );
 }

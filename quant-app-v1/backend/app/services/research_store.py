@@ -44,8 +44,9 @@ def _save(docs: list[dict[str, Any]]) -> None:
     os.replace(temporary, _SETTINGS_FILE)
 
 
-def list_docs() -> list[dict[str, Any]]:
-    return _load()
+def list_docs(owner_user_id: str | None = None) -> list[dict[str, Any]]:
+    docs = _load()
+    return [doc for doc in docs if not doc.get("owner_user_id") or doc.get("owner_user_id") == owner_user_id]
 
 
 def get_doc(doc_id: str) -> Optional[dict[str, Any]]:
@@ -61,6 +62,9 @@ def save_doc(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     doc_id: Optional[str] = None,
+    owner_user_id: str | None = None,
+    research_job_id: str | None = None,
+    research_iteration: int | None = None,
 ) -> dict[str, Any]:
     text = (content or "").strip()[:MAX_CONTENT_CHARS]
     if not text:
@@ -70,6 +74,10 @@ def save_doc(
 
     docs = _load()
     existing = next((d for d in docs if d.get("id") == doc_id), None) if doc_id else None
+    if existing and existing.get("owner_user_id") and existing.get("owner_user_id") != owner_user_id:
+        raise ValueError("Research not found")
+    if existing and existing.get("owner_user_id") and not owner_user_id:
+        raise ValueError("Research not found")
     record = {
         "id": existing["id"] if existing else uuid.uuid4().hex[:10],
         "title": (title or "Untitled research").strip()[:120],
@@ -82,18 +90,24 @@ def save_doc(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "chars": len(text),
     }
+    if owner_user_id:
+        record.update(owner_user_id=owner_user_id, research_job_id=research_job_id, research_iteration=research_iteration)
+    elif existing:
+        for key in ("owner_user_id", "research_job_id", "research_iteration"):
+            if key in existing:
+                record[key] = existing[key]
     docs = [d for d in docs if d.get("id") != record["id"]]
     docs.insert(0, record)
     _save(docs[:MAX_DOCS])
     return record
 
 
-def delete_doc(doc_id: str) -> bool:
+def delete_doc(doc_id: str, owner_user_id: str | None = None) -> bool:
     docs = _load()
-    remaining = [d for d in docs if d.get("id") != doc_id]
-    if len(remaining) == len(docs):
+    target = next((doc for doc in docs if doc.get("id") == doc_id), None)
+    if target is None or (target.get("owner_user_id") and target.get("owner_user_id") != owner_user_id):
         return False
-    _save(remaining)
+    _save([doc for doc in docs if doc.get("id") != doc_id])
     return True
 
 
@@ -114,9 +128,23 @@ def research_prompt(topic: str, symbol: Optional[str] = None) -> list[dict[str, 
 
 
 def combined_context(symbol: Optional[str] = None) -> str:
-    """All saved research (optionally symbol-scoped) as one context block."""
-    docs = _load()
-    relevant = [d for d in docs if not symbol or not d.get("symbol") or d["symbol"] == symbol.upper()]
+    """Shared legacy documents only; private records are never global context."""
+    docs = [doc for doc in _load() if not doc.get("owner_user_id")]
+    return _format_context(docs, symbol)
+
+
+def owner_context(owner_user_id: str, *, symbol: str | None = None, research_job_id: str | None = None) -> str:
+    """Format only one user's research, optionally restricting it to one job."""
+    docs = [
+        doc for doc in _load()
+        if doc.get("owner_user_id") == owner_user_id
+        and (not research_job_id or doc.get("research_job_id") == research_job_id)
+    ]
+    return _format_context(docs, symbol)
+
+
+def _format_context(docs: list[dict[str, Any]], symbol: Optional[str]) -> str:
+    relevant = [doc for doc in docs if not symbol or not doc.get("symbol") or doc["symbol"] == symbol.upper()]
     if not relevant:
         return ""
     blocks = ["Saved research library:"]

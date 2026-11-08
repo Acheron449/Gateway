@@ -1,0 +1,14 @@
+{
+  "name": "gateway-pages",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Cloudflare Workers/Pages build entry for the Gateway SPA",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm --prefix quant-app-v1/frontend ci --no-audit --no-fund && npm --prefix quant-app-v1/frontend run build -- --outDir ../../dist --emptyOutDir",
+    "build:pages": "npm run build && node scripts/build-pages.mjs",
+    "check:bundle": "node scripts/check-bundle-budget.mjs"
+  }
+}

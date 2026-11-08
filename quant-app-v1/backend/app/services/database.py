@@ -436,6 +436,10 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS watchlists (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, symbols TEXT, created_at TEXT)")
         cur.execute("CREATE TABLE IF NOT EXISTS layouts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, symbol TEXT, tab TEXT, timeframe TEXT, indicators TEXT, inspector_width INTEGER, UNIQUE(user_id, symbol))")
         cur.execute("CREATE TABLE IF NOT EXISTS preferences (user_id TEXT PRIMARY KEY, theme TEXT, default_timezone TEXT, watchlists TEXT, saved_layouts TEXT)")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS notice_acceptances ("
+            "user_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at TEXT NOT NULL)"
+        )
         # Account deletion requests (item 19) — an audit queue, not an instant
         # delete: an operator reviews and fulfils each ticket.
         cur.execute(
@@ -443,6 +447,100 @@ def init_db():
             "ticket TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT, "
             "reason TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT)"
         )
+        # --- P4: durable kill switch (FR-T5) ---------------------------------
+        # One row, read by the risk engine and the UI alike. SQLite is the
+        # source of truth; the in-process flag is only a mirror for callers
+        # that already hold a RiskEngine instance.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kill_switch_state (
+                id TEXT PRIMARY KEY,
+                active INTEGER NOT NULL DEFAULT 0,
+                reason TEXT,
+                activated_at TEXT,
+                activated_by TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        # --- P4: backtest receipts (FR-B5..B8) -------------------------------
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backtest_receipts (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                symbol TEXT,
+                timeframe TEXT,
+                data_hash TEXT NOT NULL,
+                receipt TEXT NOT NULL,
+                result TEXT,
+                metrics TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_receipts_owner "
+            "ON backtest_receipts(owner_id, created_at DESC)"
+        )
+        # --- P4: bot runner (FR-R1..R6) --------------------------------------
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_runs (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                portfolio_id TEXT NOT NULL,
+                strategy_id TEXT NOT NULL DEFAULT '',
+                strategy_version INTEGER NOT NULL DEFAULT 0,
+                spec TEXT NOT NULL,
+                instrument TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL,
+                max_iterations INTEGER NOT NULL DEFAULT 10,
+                max_duration_minutes INTEGER NOT NULL DEFAULT 60,
+                status TEXT NOT NULL DEFAULT 'running',
+                source TEXT NOT NULL DEFAULT 'delayed',
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                stopped_at TEXT,
+                last_tick_at TEXT,
+                iterations INTEGER NOT NULL DEFAULT 0,
+                stop_reason TEXT
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bot_runs_owner ON bot_runs(owner_id, created_at DESC)"
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_decisions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                at TEXT NOT NULL,
+                symbol TEXT,
+                inputs TEXT,
+                signal TEXT,
+                risk_verdict TEXT,
+                action TEXT,
+                detail TEXT,
+                UNIQUE(run_id, seq)
+            )
+            """
+        )
+        # Buying-power reservations (FR-T3): an admitted order holds cash until
+        # it fills or is cancelled, so two orders cannot spend the same dollar.
+        order_columns = {row[1] for row in cur.execute("PRAGMA table_info(paper_orders)").fetchall()}
+        if "reserved_amount" not in order_columns:
+            cur.execute("ALTER TABLE paper_orders ADD COLUMN reserved_amount REAL NOT NULL DEFAULT 0")
+        # Pre-ownership databases have no user_id column. Add it as nullable so
+        # legacy rows stay ownerless and therefore invisible (SRS DR-6/DR-7),
+        # while new portfolios are always created with their owner stamped.
+        portfolio_columns = {row[1] for row in cur.execute("PRAGMA table_info(portfolios)").fetchall()}
+        if "user_id" not in portfolio_columns:
+            cur.execute("ALTER TABLE portfolios ADD COLUMN user_id TEXT")
         conn.commit()
 
 
@@ -1400,6 +1498,314 @@ def upsert_preferences(user_id: str, *, theme: str | None = None, default_timezo
              theme or "dark", default_timezone or "UTC", json.dumps(watchlists or []), json.dumps(saved_layouts or {})),
         )
         conn.commit()
+
+
+# --- P4: buying-power reservations (FR-T3) --------------------------------
+
+_RESERVING_STATUSES = "('pending_new', 'accepted', 'partially_filled')"
+
+
+def get_notice_acceptance(user_id: str) -> dict | None:
+    """Return the recorded notice acceptance for one user, if any."""
+    if _supabase_enabled():
+        row = _sb_rpc("gw_get_notice_acceptance", {"p_user_id": user_id})
+        if not row:
+            return None
+        return {"version": row["version"], "accepted_at": row["accepted_at"]}
+    init_db()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT version, accepted_at FROM notice_acceptances WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_notice_acceptance(user_id: str, version: str) -> dict:
+    """Record (or refresh) one user's acceptance of the current notice."""
+    if _supabase_enabled():
+        row = _sb_rpc(
+            "gw_accept_notice",
+            {"p_user_id": user_id, "p_version": version},
+        )
+        if not row or "version" not in row or "accepted_at" not in row:
+            raise RuntimeError("Supabase RPC gw_accept_notice returned no acceptance")
+        return {"version": row["version"], "accepted_at": row["accepted_at"]}
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO notice_acceptances (user_id, version, accepted_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET version = excluded.version,
+               accepted_at = excluded.accepted_at""",
+            (user_id, version, now),
+        )
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT version, accepted_at FROM notice_acceptances WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row)
+
+
+def get_open_reserved_total(portfolio_id: str) -> float:
+    """Cash currently held by live, unfilled orders."""
+    init_db()
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(reserved_amount), 0) FROM paper_orders "
+            f"WHERE portfolio_id = ? AND status IN {_RESERVING_STATUSES}",
+            (portfolio_id,),
+        ).fetchone()
+    return float(row[0] or 0.0)
+
+
+def _refresh_buying_power(cur, portfolio_id: str) -> None:
+    row = cur.execute("SELECT cash FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    if row is None:
+        return
+    reserved = cur.execute(
+        f"SELECT COALESCE(SUM(reserved_amount), 0) FROM paper_orders "
+        f"WHERE portfolio_id = ? AND status IN {_RESERVING_STATUSES}",
+        (portfolio_id,),
+    ).fetchone()[0] or 0.0
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    cur.execute(
+        "UPDATE portfolios SET buying_power = ?, updated_at = ? WHERE id = ?",
+        (round(float(row[0]) - float(reserved), 2), now, portfolio_id),
+    )
+
+
+def insert_paper_order_reserved(
+    order_id: str, portfolio_id: str, strategy_version_id: str | None,
+    instrument_id: str, side: str, order_type: str, qty: float,
+    limit_price: float | None, stop_price: float | None, required_cash: float,
+) -> bool:
+    """Insert an order and hold its cash in one transaction.
+
+    ``BEGIN IMMEDIATE`` takes the write lock before the balance is read, so a
+    second admission cannot observe the same unreserved cash. Returns False
+    when the reservation does not fit, in which case nothing is written.
+    """
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        row = cur.execute("SELECT cash FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        reserved = cur.execute(
+            f"SELECT COALESCE(SUM(reserved_amount), 0) FROM paper_orders "
+            f"WHERE portfolio_id = ? AND status IN {_RESERVING_STATUSES}",
+            (portfolio_id,),
+        ).fetchone()[0] or 0.0
+        available = round(float(row[0]) - float(reserved), 2)
+        if float(required_cash) > available + 1e-9:
+            conn.rollback()
+            return False
+        cur.execute(
+            """INSERT INTO paper_orders (id, portfolio_id, strategy_version_id, instrument_id, side, type, qty,
+               limit_price, stop_price, status, filled_qty, avg_fill_price, reserved_amount, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_new', 0, NULL, ?, ?, ?)""",
+            (order_id, portfolio_id, strategy_version_id, instrument_id, side, order_type, qty,
+             limit_price, stop_price, float(required_cash), now, now),
+        )
+        _refresh_buying_power(cur, portfolio_id)
+        conn.commit()
+    return True
+
+
+def release_order_reservation(order_id: str, portfolio_id: str) -> None:
+    """Release whatever cash an order still holds (after a fill or cancel)."""
+    init_db()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("UPDATE paper_orders SET reserved_amount = 0 WHERE id = ?", (order_id,))
+        _refresh_buying_power(cur, portfolio_id)
+        conn.commit()
+
+
+# --- P4: backtest receipts (FR-B5..B8) ------------------------------------
+
+RECEIPT_RETENTION = 50
+
+
+def save_backtest_receipt(
+    run_id: str, owner_id: str, status: str, symbol: str | None, timeframe: str | None,
+    data_hash: str, receipt: dict, result: dict | None = None, metrics: dict | None = None,
+) -> None:
+    """Persist one run and prune this owner's oldest receipts beyond the cap.
+
+    Receipts are insert-only (NFR-18): a re-used run id is refused rather than
+    silently overwriting the stored run and breaking replay provenance.
+    """
+    init_db()
+    now = __import__('datetime').datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """INSERT INTO backtest_receipts
+                   (id, owner_id, status, symbol, timeframe, data_hash, receipt, result, metrics, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, owner_id, status, symbol, timeframe, data_hash,
+                 json.dumps(receipt), json.dumps(result) if result is not None else None,
+                 json.dumps(metrics) if metrics is not None else None, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Receipt {run_id} already exists and cannot be replaced") from exc
+        cur.execute(
+            """DELETE FROM backtest_receipts WHERE owner_id = ? AND id NOT IN (
+                   SELECT id FROM backtest_receipts WHERE owner_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?)""",
+            (owner_id, owner_id, RECEIPT_RETENTION),
+        )
+        conn.commit()
+
+
+def _receipt_row(row) -> dict:
+    out = dict(row)
+    for key in ("receipt", "result", "metrics"):
+        if out.get(key):
+            try:
+                out[key] = json.loads(out[key])
+            except Exception:
+                pass
+    return out
+
+
+def get_backtest_receipt(run_id: str, owner_id: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM backtest_receipts WHERE id = ? AND owner_id = ?", (run_id, owner_id)
+        ).fetchone()
+    return _receipt_row(row) if row else None
+
+
+def list_backtest_receipts(owner_id: str, limit: int = RECEIPT_RETENTION) -> list[dict]:
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM backtest_receipts WHERE owner_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (owner_id, limit),
+        ).fetchall()
+    return [_receipt_row(r) for r in rows]
+
+
+# --- P4: bot runs (FR-R1..R6) --------------------------------------------
+
+_BOT_COLUMNS = {
+    "status", "stopped_at", "last_tick_at", "iterations", "stop_reason", "started_at",
+    "max_iterations", "max_duration_minutes",
+}
+
+
+def create_bot_run(row: dict) -> dict:
+    init_db()
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO bot_runs
+               (id, owner_id, portfolio_id, strategy_id, strategy_version, spec, instrument,
+                timeframe, interval_seconds, max_iterations, max_duration_minutes, status, source,
+                created_at, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["id"], row["owner_id"], row["portfolio_id"], row.get("strategy_id", ""),
+                int(row.get("strategy_version", 0)), json.dumps(row["spec"]), row["instrument"],
+                row["timeframe"], int(row["interval_seconds"]), int(row.get("max_iterations", 10)),
+                int(row.get("max_duration_minutes", 60)), row.get("status", "running"),
+                row.get("source", "delayed"), row["created_at"], row.get("started_at", row["created_at"]),
+            ),
+        )
+        conn.commit()
+    return get_bot_run(row["id"]) or {}
+
+
+def update_bot_run(run_id: str, **fields) -> None:
+    updates = {k: v for k, v in fields.items() if k in _BOT_COLUMNS}
+    if not updates:
+        return
+    init_db()
+    with get_connection() as conn:
+        assignments = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE bot_runs SET {assignments} WHERE id = ?", [*updates.values(), run_id])
+        conn.commit()
+
+
+def get_bot_run(run_id: str) -> dict | None:
+    init_db()
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM bot_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    try:
+        out["spec"] = json.loads(out["spec"])
+    except Exception:
+        pass
+    return out
+
+
+def list_bot_runs(owner_id: str, limit: int = 50) -> list[dict]:
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, owner_id, portfolio_id, strategy_id, strategy_version, instrument, timeframe,"
+            " interval_seconds, max_iterations, max_duration_minutes, status, source, created_at,"
+            " started_at, stopped_at, last_tick_at, iterations, stop_reason"
+            " FROM bot_runs WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?",
+            (owner_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_running_bot_runs(owner_id: str) -> int:
+    init_db()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM bot_runs WHERE owner_id = ? AND status = 'running'", (owner_id,)
+        ).fetchone()
+    return int(row[0] or 0)
+
+
+def append_bot_decision(
+    decision_id: str, run_id: str, seq: int, at: str, symbol: str,
+    inputs: dict, signal: str, risk_verdict: str, action: str, detail: str | None = None,
+) -> None:
+    init_db()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO bot_decisions
+               (id, run_id, seq, at, symbol, inputs, signal, risk_verdict, action, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (decision_id, run_id, seq, at, symbol, json.dumps(inputs), signal, risk_verdict, action, detail),
+        )
+        conn.commit()
+
+
+def list_bot_decisions(run_id: str, limit: int = 500) -> list[dict]:
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bot_decisions WHERE run_id = ? ORDER BY seq ASC LIMIT ?", (run_id, limit)
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["inputs"] = json.loads(item["inputs"]) if item.get("inputs") else {}
+        except Exception:
+            pass
+        out.append(item)
+    return out
 
 
 # --- Event Snapshots for Backtest Reproducibility (Phase 2) ---

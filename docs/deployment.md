@@ -1,261 +1,244 @@
-# Deploying Gateway — Vercel, Cloudflare, Supabase
+# Deploying Gateway
 
-Gateway is two pieces:
+Gateway is three pieces:
 
-| Piece          | Tech                                | Where it runs                          |
-| -------------- | ----------------------------------- | -------------------------------------- |
-| Frontend       | Vite + React (`quant-app-v1/frontend`) | Vercel **or** Cloudflare Pages      |
-| Backend        | FastAPI (`quant-app-v1/backend`)    | Vercel Python function (Services model); container still works |
-| Database       | SQLite locally; users + preferences in Supabase Postgres | Supabase (see §3) |
+| Piece | Tech | Runs on |
+| --- | --- | --- |
+| Frontend | Vite + React (`quant-app-v1/frontend`) | **Cloudflare Workers static assets** (Workers Builds); Pages-compatible; optional Vercel static fallback |
+| API | FastAPI (`quant-app-v1/backend`) | A container, behind Cloudflare's proxy |
+| Database + Auth | Supabase (GoTrue + Postgres) | Supabase |
 
-The frontend finds the backend through `VITE_API_BASE` (build-time env var).
-If it is not set, a non-localhost build assumes same-origin reverse proxying
+> Requirements are normative in [`SRS.md`](SRS.md) §3. This page is the how-to.
+> Cloudflare is the primary frontend host. The root `vercel.json` keeps a
+> frontend-only Vercel fallback; Vercel never runs the Python API, which keeps
+> its own container host.
+
+The frontend finds the API through `VITE_API_BASE`, baked in at build time. When
+it is unset, a non-localhost build assumes same-origin proxying
 (`src/lib/constants.ts`).
 
-## 1. Vercel — frontend and backend on one project
+## 1. Frontend — Cloudflare Workers static assets
 
-Repo-root [vercel.json](../vercel.json) uses the Vercel **Services** model:
-two services in one project, routed by top-level `rewrites`.
+The checked-in root `wrangler.jsonc` is the deployment contract for Workers
+Builds. It targets the existing Worker `gateway`, runs the root build, uploads
+root `dist/`, and serves the SPA with fallback:
 
-| Service | `root` | build | output / entrypoint |
-| --- | --- | --- | --- |
-| `frontend` | `quant-app-v1/frontend/` | `npm ci` → `npm run build` (tsc + vite) | `dist` + SPA rewrite to `index.html` |
-| `backend` | `quant-app-v1/backend/` | Python 3.12, installs the service `requirements.txt` | `app.main:app` |
+| Setting | Value |
+| --- | --- |
+| Root directory | blank or `.` — **the config must be at the repository root** |
+| Build command | leave blank; `wrangler.jsonc` runs `npm run build` |
+| Deploy command (production) | `npx wrangler deploy` |
+| Non-production deploy command | `npx wrangler versions upload` |
+| Node version | `24` (the 2026-11-07 build used 24.22.1; Wrangler requires 22+) |
 
-```bash
-npx vercel deploy          # preview
-npx vercel deploy --prod   # aliases https://gateway-gules-ten.vercel.app
+The repository-root `package.json` is deliberately a thin entry: it installs
+the frontend lockfile, runs the frontend's `tsc && vite build`, and writes the
+result to root `dist/`. `wrangler.jsonc` runs that same script through its
+`build.command`, then uploads `./dist`. The Python manifests live at
+`quant-app-v1/backend/requirements-full.txt` and
+`quant-app-v1/backend/requirements-dev.txt`; the repository root contains no
+`requirements.txt`, so Cloudflare does not detect a Python project or run
+`pip`.
+
+A correct Workers Builds log looks like this:
+
+```text
+Installing project dependencies: npm clean-install --progress=false
+[custom build] Running: npm run build
+... vite build ...
+Uploading ...
 ```
 
-- **Routing**: ~35 API prefixes (`/auth`, `/history`, `/quotes`, `/ws`, …)
-  each as an exact + `:path*` pair rewrite to `{"service": "backend"}`;
-  the final `/(.*)` catch-all goes to the frontend, whose internal rewrite
-  serves `index.html` for SPA routes (`/app/overview`, …). Rewrites are
-  evaluated in order and routing into a service is final — a new backend
-  path prefix needs an entry added to the list.
-- **`VITE_API_BASE` is intentionally unset**: with no value on a
-  non-localhost host, `src/lib/constants.ts` resolves `API_BASE` to `""`
-  (same origin), which is exactly what the Services routing gives us.
-  `WS_BASE` derives `wss://` from the page host.
-- **500 MB uncompressed function-bundle limit** (no tree-shaking). Two
-  guards keep us under it:
-  - [.vercelignore](../.vercelignore) excludes `models/` (405 MB),
-    `vendor/` (31 MB), `tests/`, `data/event_logs`, `app/data/`,
-    `app/settings/`, `.env*`, `node_modules/` from the upload.
-    `data/instruments/catalogue_v1.json` (8.7 KB) must stay **included**:
-    `/stocks/{ticker}/metadata` and `/stocks/search` read it at runtime, and
-    excluding `data/` wholesale made those routes fail on Vercel (the
-    uploader also does not appear to honor `!` negations, so exclude the
-    state file explicitly rather than the directory).
-  - [quant-app-v1/backend/requirements.txt](../quant-app-v1/backend/requirements.txt)
-    is a **trimmed Vercel-only subset** of the root `requirements.txt`
-    (Docker/CI remain the source of truth there): scikit-learn, skfolio,
-    ccxt, Flask/flask_session, psycopg2, redis, textblob, vaderSentiment,
-    beautifulsoup4, finnhub-python, fastapi-utils and pytest are dropped
-    because `app/` never imports them or guards the import. The pandas-ta →
-    numba → scipy/llvmlite chain stays — `pandas_ta` imports numba at
-    module import time.
-  - Deployed bundle: **≈ 474 MB** (Vercel reports “exceeds the standard
-    size; optimizing dependencies”). The pre-trim build failed at 840 MB.
-- Vercel's Python requirements parser rejects `-r` includes and inline `#`
-  comments after a pin — keep every comment on its own line in both files.
-- **The function filesystem is read-only** (only `/tmp` is writable). Code
-  that writes next to its own module must fall back to `GATEWAY_DATA_DIR`
-  (set to `/tmp`) or it raises `OSError: [Errno 30] Read-only file system`
-  and 500s every affected route — that is exactly what
-  `app/providers/registry.py` used to do on each `get_provider()` call
-  (news, calendar and quote routes). It now relocates its provider-key
-  settings dir to `$GATEWAY_DATA_DIR/provider_settings` on EROFS, and reads
-  degrade to "no stored keys" (routes answer 503 instead of 500).
-  `app/services/llm_providers.py` follows the same pattern — without it
-  `GET /llm/providers` 500'd with *"internal server error for llm provider
-  retrieval"* — and a failed settings write now surfaces as a clear 400/503
-  (  `LlmError`) instead of a bare 500.
-  Keys saved from the UI are durable: they are Fernet-encrypted and
-  persisted to Supabase (`gateway_provider_keys`, see §3), with the
-  per-instance file only as a read fallback — set provider keys as Vercel
-  env vars (`FINNHUB_API_KEY`, …) if you prefer env over UI-managed keys.
-- **WebSockets work** (Vercel public beta; Python/ASGI support shipped
-  2026-07-23 — FastAPI needs no Vercel-specific upgrade code, just a WS
-  implementation such as `websockets`/`uvicorn[standard]`, both already in
-  the requirements). Verified on production: `/ws/trading` and
-  `/portfolio/stream` complete the 101 handshake through the `/ws` +
-  `/portfolio` service rewrites, speak their protocols, and accept
-  Supabase-issued tokens via `?token=`. Two platform rules apply:
-  - A connection **closes at the function max duration** (default 300s) —
-    clients must reconnect and resubscribe. `src/lib/tradingSocket.ts`
-    implements this with capped backoff; `/portfolio/stream` does the same.
-  - Connections are **pinned to one function instance**, so state shared
-    across clients (rooms, presence) must live in an external store — the
-    app's per-instance broadcast is fine as long as each instance runs its
-    own feed.
-  - Unauthenticated upgrades are rejected at handshake time (HTTP 403 /
-    close 4001), which is the app's own auth check, not a platform block.
-- Deployment Protection (Vercel Authentication) is on, so plain `curl`
-  gets the login wall — use `npx vercel curl <url> -- …` (everything after
-  `--` is passed to curl, e.g. `--request POST --data '{…}'`).
+It never mentions `pip` or `requirements.txt`. If the log still says
+`Missing entry-point to Worker script or to assets directory`, the deployment
+is using an old commit or does not have `wrangler.jsonc` at its root. The
+`versions upload` command creates a preview version; use `npx wrangler deploy`
+to promote a production deployment.
 
-## 2. Cloudflare (frontend on Workers static assets)
+Build-time environment variables (Workers Builds → Settings → Build →
+Variables and Secrets):
 
-The repo is connected to Cloudflare **Workers Builds** (Worker `gateway`,
-GitHub repo `Acheron449/Gateway`). [wrangler.toml](../wrangler.toml) is an
-assets-only Worker config serving `quant-app-v1/frontend/dist` with SPA
-fallback — without it every build failed with *“Missing entry-point to
-Worker script or to assets directory”*.
+| Variable | Value |
+| --- | --- |
+| `VITE_API_BASE` | `https://api.<your-domain>` — **required**; Cloudflare serves static files only and does not proxy the API |
+| `VITE_SITE_URL` | canonical frontend origin, e.g. `https://gateway.<account>.workers.dev`, `https://app.<your-domain>`, or the Pages origin — used to generate `robots.txt` and `sitemap.xml` |
+| `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | the publishable anon key (public by design) |
 
-Pipeline settings (Workers & Builds → Build triggers):
-| Trigger | Branch | Build command | Deploy command |
-| --- | --- | --- | --- |
-| production | `main` | `cd quant-app-v1/frontend && npm ci && npm run build` | `npx wrangler deploy` |
-| non-production | everything else | `cd quant-app-v1/frontend && npm ci && npm run build` | `npx wrangler versions upload` |
+**SPA fallback** is configured once, in `wrangler.jsonc`, via
+`assets.not_found_handling: "single-page-application"`. Do not add a
+catch-all `_redirects` rule to `public/`: Workers static assets validates it
+against the same fallback and rejects `/* /index.html 200` with Cloudflare
+error `100324` (infinite redirect loop). The build output deliberately has no
+`_redirects`.
 
-The deploy commands are already configured; the **build command must be set
-dashboard-side** on both triggers (the API token used for automation is
-read-only for that endpoint).
+`robots.txt` and `sitemap.xml` are generated into `dist/` at build time from
+`VITE_SITE_URL` (see `vite.config.ts`); unset builds fall back to the local
+dev origin, so a production build must set it. There is no repository-path
+disallow and no placeholder host.
+
+### Pages alternative
+
+Pages does not read `wrangler.jsonc` and needs a `_redirects` SPA fallback,
+which Workers rejects. Keep the two artifacts separate:
+
+- Workers: `npm run build` → `dist/`, deliberately no `_redirects`.
+- Pages: `npm run build:pages` → `dist-pages/`, with a generated
+  `/* /index.html 200` rule.
+
+The Pages builder copies `dist/` and refuses to run if `dist/` already contains
+`_redirects`, so a Pages artifact cannot be uploaded to Workers by mistake. Do
+not add `_redirects` to `public/`.
+
+| Setting | Value |
+| --- | --- |
+| Root directory | repository root (blank or `.`) |
+| Build command | `npm run build:pages` |
+| Output directory | `dist-pages` |
+| Node version | `20` (`NODE_VERSION=20`) |
+
+### Vercel fallback
+
+The root `vercel.json` restores a frontend-only Vercel deployment. It builds
+`quant-app-v1/frontend/dist` and rewrites unmatched paths to `/index.html`.
+Vercel checks the filesystem before applying rewrites, so hashed `/assets/*`
+requests are served normally.
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | repository root (blank or `.`) |
+| Framework Preset | Vite (from `vercel.json`) |
+| Install Command | `cd quant-app-v1/frontend && npm ci --no-audit --no-fund` |
+| Build Command | `cd quant-app-v1/frontend && npm run build` |
+| Output Directory | `quant-app-v1/frontend/dist` |
+| Node version | 20 or 22 |
+
+Set the same build variables listed above in the Vercel project. `VITE_API_BASE`
+must point at the API container; Vercel serves static files only and does not
+proxy FastAPI or WebSockets. Without it, the landing page renders but the
+data-backed screens have no API to call.
+
+`.vercelignore` keeps the API, models, vendor tree, tests, local databases,
+secrets and dependencies out of the upload. Use the repository-root config;
+do not recreate the legacy `quant-app-v1/frontend/vercel.json`, which contained
+non-Vercel function syntax and invalid JSON comments.
+
+Reference numbers from the repository-root run (2026-11-07): `npm run build`
+finishes in ~2 s after dependency install, emitting 816 KB JS (233 KB gzip) and
+171 KB CSS. The SRS budget is 2 minutes and 5 MB gzip (AR-8, AR-9).
+
+## 2. API — container
+
+`quant-app-v1/backend/Dockerfile` builds the service; `PYTHONPATH=.` and
+`uvicorn app.main:app` are the contract.
 
 ```bash
-# Local equivalent:
-cd quant-app-v1/frontend && npm ci && npm run build
-cd ../.. && npx wrangler deploy
+docker build -t gateway-api quant-app-v1/backend
+docker run --rm -p 8000:8000 --env-file .env gateway-api
+curl -s localhost:8000/health
 ```
 
-- The FastAPI backend runs anywhere that speaks HTTP (container, Fly.io,
-  Render). Point the frontend at it with `VITE_API_BASE` at build time.
-- WebSockets (`/ws/portfolio/stream`, `/ws/trading`) need the backend
-  origin directly (Workers assets don't proxy them by default).
-- Merge the dev branch into `main` for production deploys; pushes to other
-  branches only upload preview versions (`wrangler versions upload`).
+| Requirement | Note |
+| --- | --- |
+| HTTP + WebSocket | `/ws/trading` and `/portfolio/stream` need an upgrade-capable host |
+| Image ≤ 600 MB | SRS AR-10 — the 405 MB `models/` tree and `vendor/` must stay out of the build context |
+| Writable path | `GATEWAY_DATA_DIR` (no read-only-filesystem assumptions) |
 
-## 3. Supabase (hosted Postgres for trade data)
+Attach the custom domain `api.<your-domain>` **proxied** through Cloudflare so
+TLS, WAF and WebSockets are handled at the edge. CORS on the API must allow the
+deployed frontend origin exactly (SRS AR-6) — wildcard origins are rejected.
 
-The app writes SQLite locally. To analyse trades in Supabase (or sync them):
+**The container host is an open decision** (SRS §10 O-1). Cloudflare cannot run
+Python; any host that satisfies the table above works. Nothing in the codebase
+should assume a specific vendor.
+
+## 3. Supabase
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. Apply [supabase/schema.sql](../supabase/schema.sql) in the SQL editor
-   (or `supabase db push`).
-3. Copy the project URL + anon key into env: `SUPABASE_URL`,
-   `SUPABASE_ANON_KEY` (both are already declared in `vercel.json` and
-   `.env.example`).
+2. Apply [`supabase/schema.sql`](../supabase/schema.sql) in the SQL editor (or
+   `supabase db push`).
+3. Put `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` in
+   the API environment and the two `VITE_SUPABASE_*` values in the frontend build.
 
-Auth state uses a second, migration-managed surface (already applied to
-the project — `gateway_users_preferences_rpcs`):
+### Sign-in (the only identity provider)
 
-- Tables `public.gateway_users` (email unique, bcrypt hash) and
-  `public.gateway_preferences` (FK → users, `ON DELETE CASCADE`) with
-  **RLS enabled and no policies** — direct table reads return `[]`.
-- Access goes through SECURITY DEFINER RPCs (`gw_create_user`,
-  `gw_get_user_by_email`, `gw_get_user_by_id`, `gw_get_preferences`,
-  `gw_upsert_preferences`), gated by `_gw_check(<SUPABASE_RPC_SECRET>)`.
-- **Provider API keys** use the same pattern (migration
-  `gateway_provider_keys_rpcs`): table `public.gateway_provider_keys`
-  (`store` = `market`/`llm`, `name`, `ciphertext`, `payload jsonb`) with
-  **RLS enabled and no policies** — anon reads return `[]`, verified.
-  The table only ever holds **Fernet ciphertext** (encrypted app-side with
-  `GATEWAY_PROVIDER_KEY`); `payload` carries non-secret settings (LLM
-  `base_url`, model lists). RPCs `gw_list_provider_keys`,
-  `gw_upsert_provider_key`, `gw_delete_provider_key` are `_gw_check`-gated
-  like the auth ones. `app/services/key_store.py` fronts them:
-  Supabase authoritative when the trio is set, reads cached in memory 60s
-  (the `get_provider()` hot path costs ≤1 outbound RPC per window), read
-  failures degrade to the per-instance file — never 500; write failures
-  raise and the key routes answer **503 "not saved"**.
-  **Old data survives updates**: keys/settings written to the per-instance
-  file before this feature existed are backfilled into Supabase on first
-  read against an empty store (at most once per process; a failed
-  promotion stays eligible and retries after the TTL), so nothing is lost
-  across deploys or instance recycling.
-- **Device cache (frontend)**: the Providers pages, the AI harness and the
-  Agentic Lab cache the non-secret provider lists in `localStorage` under
-  `gw_providers_v1_*` (7-day TTL) — the site paints instantly from the
-  user's device and keeps the last-known configuration visible when the
-  API is unreachable. Deliberately `localStorage`, not cookies: httpOnly
-  cookies are unreadable from JS, readable ones are ~4KB and ride on every
-  request. **API keys are never cached client-side** — only ids, labels,
-  base URLs, flags and model lists.
-- `app/services/database.py` switches modes from the environment at call
-  time: all three of `SUPABASE_URL` / `SUPABASE_KEY` /
-  `SUPABASE_RPC_SECRET` ⇒ Supabase (transport errors raise — no silent
-  fallback); otherwise the local SQLite file.
-4. Export rows with `POST /journal` data or point your sync job at
-   `journal_entries` — the `source` column (`paper` / `actual` / `manual`)
-   is what makes actual-vs-paper comparison queries work:
+- **Frontend** (`src/lib/supabase.ts`, `context/AuthContext.tsx`) signs in with
+  `signInWithPassword` / `signUp`. The access token becomes the app session,
+  sent as `Bearer` on API calls and as `?token=` on WebSocket URLs, and is
+  validated against `/auth/me` before the UI turns signed-in.
+- **Backend** (`app/auth.py`) verifies the token by introspection:
+  `GET {SUPABASE_URL}/auth/v1/user` with the publishable key. GoTrue only
+  answers 200 for tokens it accepts, so no JWT secret leaves the dashboard.
+  Verified results are cached 60 s (rejected tokens 10 s).
+- **Provisioning**: on first sight of a Supabase user, `ensure_user()` creates
+  the local `gateway_users` row so preferences and `/auth/me` work. Email
+  confirmation is controlled in the Supabase dashboard — GoTrue rejects
+  non-deliverable domains (`.test`, `example.com`) and rate-limits sends.
+- **Local password auth** (`/auth/register`, `/auth/login`) is for
+  `GATEWAY_ENV=local` development and tests only (SRS FR-A7).
+- **Auth0 is removed** (SRS FR-A6). No Auth0 code, dependency or environment
+  variable remains: `app/auth.py` verifies Supabase tokens and nothing else.
 
-```sql
-select * from journal_performance_by_source;  -- paper vs actual side by side
-```
+### Access pattern
 
-### Sign-in with Supabase Auth (active)
+Tables are RLS-enabled with ownership policies (SRS §7), not open reads. The
+existing auth-state surface uses SECURITY DEFINER RPCs gated by
+`_gw_check(<SUPABASE_RPC_SECRET>)`: `gw_create_user`, `gw_get_user_by_email`,
+`gw_get_user_by_id`, `gw_get_preferences`, `gw_upsert_preferences`,
+`gw_get_notice_acceptance`, `gw_accept_notice`. Provider API keys use the same
+shape (`gateway_provider_keys`, Fernet ciphertext only, RPCs
+`gw_list_provider_keys` / `gw_upsert_provider_key` / `gw_delete_provider_key`).
+`notice_acceptances` is owner-scoped under RLS and mirrors local SQLite NFR-29
+acceptance.
 
-The app's identity provider is **Supabase Auth** (GoTrue), not Auth0:
-
-- **Frontend** (`src/lib/supabase.ts`, `context/AuthContext.tsx`) creates a
-  Supabase client from `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` and
-  signs in with `signInWithPassword` / `signUp`. The resulting access token
-  becomes the app session: it is stored as `gateway_auth_token`, sent as
-  `Bearer` on every API call and as `?token=` on the WebSocket URLs, then
-  validated against `/auth/me` before the UI turns signed-in. With the VITE
-  vars unset (local dev) the context falls back to the backend's own
-  `/auth/register` + `/auth/login` endpoints.
-- **Backend** (`app/auth.py`) treats the Supabase token as a third token
-  flavour (alongside local HS256 and Auth0 RS256) and verifies it by
-  **introspection**: `GET {SUPABASE_URL}/auth/v1/user` with the publishable
-  key — GoTrue only answers 200 for tokens it accepts, so no JWT secret has
-  to leave the dashboard. Verified results are cached 60s (rejected tokens
-  10s) so an endpoint pays one outbound call per token, not per request.
-- **Provisioning**: on first sight of a Supabase user, `ensure_user()`
-  creates the `gateway_users` row (name copied from `user_metadata`,
-  `hashed_password` NULL — hence the migration that dropped NOT NULL) so the
-  `gateway_preferences` foreign key and `/auth/me` work.
-- **Email confirmation**: when the project requires confirmation, signup
-  returns no session and the UI reports "check your email to confirm it,
-  then sign in". GoTrue rejects non-deliverable domains (`.test`,
-  `example.com`) and rate-limits sends (`over_email_send_rate_limit`), so
-  raise the send quota or enable auto-confirm in the Supabase dashboard for
-  smoother sign-ups.
-- Local password auth keeps working alongside it (`/auth/register`,
-  `/auth/login`) — useful for API clients, tests and dev without Supabase.
+`app/services/database.py` switches at call time: all three of `SUPABASE_URL` /
+`SUPABASE_KEY` / `SUPABASE_RPC_SECRET` set ⇒ Supabase (transport errors raise —
+no silent fallback); otherwise local SQLite on `GATEWAY_DATA_DIR`.
 
 ## 4. Environment variables
 
-All of these belong in the backend environment (see [.env.example](../.env.example)):
+| Variable | Side | Purpose |
+| --- | --- | --- |
+| `GATEWAY_ENV` | API | `local` \| `test` \| `paper` \| `production` |
+| `GATEWAY_EXECUTION_MODE` | API | must be `paper`; anything else refuses to boot |
+| `JWT_SECRET_KEY` | API | local session signing |
+| `GATEWAY_DATA_DIR` | API | writable path for SQLite / job scratch |
+| `GATEWAY_OPERATOR_IDS` | API | comma-separated ids allowed global actions; empty ⇒ deny |
+| `GATEWAY_PROVIDER_KEY` | API | Fernet key for stored provider keys and the vault |
+| `OPENROUTER_API_KEY` (or another provider's `*_API_KEY`) | API | optional live LLM credential; stored keys are encrypted with `GATEWAY_PROVIDER_KEY`. Without one, chat requests report a provider error and the live smoke test cannot run. |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | API | auth introspection, server-side writes |
+| `SUPABASE_RPC_SECRET` | API | guards the SECURITY DEFINER RPCs |
+| `VITE_API_BASE` | Frontend build | API origin |
+| `VITE_SITE_URL` | Frontend build | canonical public origin for robots.txt and sitemap.xml |
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Frontend build | Supabase client |
+| `GATEWAY_QUOTES_TTL` / `GATEWAY_PRICE_TTL` | API | quote and fill-price cache seconds (default 10) |
 
-| Variable | Purpose |
-| --- | --- |
-| `JWT_SECRET_KEY` | Session signing — required, the API refuses to boot without it |
-| `GATEWAY_PROVIDER_KEY` | Fernet key encrypting provider keys **and** the secrets vault — without it `POST /settings/providers/{name}/key` answers 503 and `PUT /llm/providers/{id}` answers 400 with *"… is not set"*. Set for Production **and** Preview (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` \| `npx vercel env add GATEWAY_PROVIDER_KEY production`); Production is set, Preview still needs it (the CLI's branch prompt blocks non-interactive adds). Keys encrypted with it are stored as ciphertext in Supabase `gateway_provider_keys`, so rotating it requires re-encrypting stored rows |
-| `GATEWAY_QUOTES_TTL` | Seconds before batch quotes refetch (default 10) |
-| `GATEWAY_PRICE_TTL` | Seconds before the fill/risk price cache refetches (default 10) |
-| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Live trading section (Alpaca) |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Hosted Postgres connection |
-| `SUPABASE_URL` + `SUPABASE_KEY` + `SUPABASE_RPC_SECRET` | All three set ⇒ auth state (users, preferences) is read/written through the SECURITY DEFINER RPCs in Supabase; any one missing ⇒ SQLite on `GATEWAY_DATA_DIR` |
-| `GATEWAY_DATA_DIR` | Only writable path on Vercel is `/tmp` — the SQLite fallback DB is created at import time, so this must point there |
-| `VITE_AUTH0_DOMAIN` / `VITE_AUTH0_CLIENT_ID` / `VITE_AUTH0_AUDIENCE` | Auth0 SPA config (dormant — the Auth0 button only mounts when all three are set) |
-| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Frontend Supabase Auth client — **the active sign-in path**. Baked in at build time, so set them in the scope you deploy to (Production *and* Preview) before `vercel deploy`. The anon key is public by design, but Vercel requires an explicit `--type config` when adding it under a `VITE_` name |
-| `VITE_API_BASE` | Legacy frontend build-time backend URL — **leave unset on Vercel** (same-origin routing) |
+There are no `VITE_AUTH0_*` or Vercel-specific variables; Vercel reuses the same `VITE_*` build variables.
 
 ## 5. Post-deploy smoke test
 
 ```bash
-API=https://gateway-gules-ten.vercel.app
-vc() { npx vercel curl "$1" -- "${@:2}"; }   # deployment protection bypass
+API=https://api.<your-domain>
+SITE=https://app.<your-domain>
 
-vc "$API/health" | head -c 200     # {"status":"ok",...}
-vc "$API/" | head -c 100           # SPA index.html (frontend service)
-vc "$API/app/overview" | head -c 60  # same index.html — SPA fallback
+curl -s "$API/health" | head -c 200          # {"status":"ok",...}
+curl -sI "$SITE/" | head -1                  # 200
+curl -sI "$SITE/app/overview" | head -1      # 200 — SPA fallback, not 404
 
 EMAIL="smoke-$(date +%s)@local.test"
-REG=$(vc "$API/auth/register" --request POST \
-        --header 'content-type: application/json' \
-        --data "{\"email\":\"$EMAIL\",\"password\":\"Sup3rSecret!\",\"name\":\"S\"}")
+REG=$(curl -s "$API/auth/register" -X POST \
+        -H 'content-type: application/json' \
+        -d "{\"email\":\"$EMAIL\",\"password\":\"Sup3rSecret!\",\"name\":\"S\"}")
 TOKEN=$(printf '%s' "$REG" | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-vc "$API/auth/me" --header "authorization: Bearer $TOKEN"
-vc "$API/auth/preferences" --request PATCH \
-   --header "authorization: Bearer $TOKEN" \
-   --header 'content-type: application/json' \
-   --data '{"theme":"light","watchlists":[{"id":"wl1","name":"Main","symbols":["MSFT"]}],"saved_layouts":{}}'
+curl -s "$API/auth/me" -H "authorization: Bearer $TOKEN"
+
+# Isolation gate (SRS P2): a second account must not see the first's rows.
+# Foreign-origin mutation gate (SRS P6): expect 403.
+curl -s -o /dev/null -w '%{http_code}\n' "$API/portfolio/orders" -X POST \
+  -H 'origin: https://evil.example' -H 'content-type: application/json' -d '{}'
 ```
 
-Then confirm the row actually landed in Supabase (not SQLite):
+Then confirm rows landed in Supabase, not SQLite:
 
 ```sql
 select u.email, p.theme, p.watchlists
@@ -263,6 +246,31 @@ from gateway_preferences p join gateway_users u on u.id = p.user_id
 order by u.created_at desc limit 5;
 ```
 
-Frontend gate: `cd quant-app-v1/frontend && npx tsc --noEmit`.
-Backend gate: `cd quant-app-v1/backend && PYTHONPATH=. JWT_SECRET_KEY=… \
-  GATEWAY_DATA_DIR=/tmp/gateway-ui-data ../../.venv/bin/python -m pytest tests/ -q`
+### Live chat SSE smoke test
+
+The offline suite mocks the provider. To confirm real streaming and the NFR-15
+aggregate cap, set one provider key on the API host (or in the repo-root `.env`
+for a local run) and execute:
+
+```bash
+cd quant-app-v1/backend
+PYTHONPATH=. ../../.venv/bin/python scripts/smoke_chat_stream.py \
+  --provider openrouter --model <model> --max-chars 400
+```
+
+The script mounts the chat router with the private-data gate bypassed, streams a
+real completion, and exits 0 only when the response is `text/event-stream`, real
+deltas arrive, and the stream ends with exactly `--max-chars` characters plus
+the aggregate-limit error. Exit 2 means no usable provider key; exit 1 means the
+provider errored or produced less than the cap (retry with a longer prompt). It
+is deliberately not part of CI.
+
+## 6. Gates
+
+```bash
+cd quant-app-v1/frontend && npx tsc --noEmit && npm run build
+cd ../backend && PYTHONPATH=. ../../.venv/bin/python -m pytest tests/ -q
+```
+
+Deployment is done when both pass **and** the SRS phase gate (§9) for the
+work being shipped is met.

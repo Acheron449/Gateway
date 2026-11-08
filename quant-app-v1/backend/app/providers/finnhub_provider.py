@@ -11,6 +11,7 @@ import httpx
 
 from app.models import EconomicEvent, EventImportance, Instrument, NewsItem, provenance_now
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows, normalize_as_of
 
 
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -142,11 +143,14 @@ class FinnhubProvider(MarketDataProvider):
         self,
         symbol: str | None = None,
         limit: int = 5,
+        *,
+        as_of: datetime | None = None,
     ) -> list[NewsItem]:
         if not self.is_configured or limit <= 0 or not symbol:
             return []
 
-        today = datetime.now(timezone.utc)
+        cutoff = normalize_as_of(as_of)
+        today = cutoff or datetime.now(timezone.utc)
         params = {
             "symbol": symbol.upper(),
             "from": (today - timedelta(days=30)).date().isoformat(),
@@ -203,16 +207,29 @@ class FinnhubProvider(MarketDataProvider):
                     entitlement="finnhub-free-tier",
                 )
             )
-        return records
+        return [
+            item for item in records
+            if as_of is None or item.published_at <= cutoff
+        ]
 
-    async def calendar(self, limit: int = 5) -> list[EconomicEvent]:
+    async def calendar(
+        self,
+        limit: int = 5,
+        *,
+        as_of: datetime | None = None,
+    ) -> list[EconomicEvent]:
         if not self.is_configured or limit <= 0:
             return []
 
+        cutoff = normalize_as_of(as_of)
+        params = {"limit": limit}
+        if cutoff is not None:
+            params["from"] = int(datetime(1970, 1, 1, tzinfo=timezone.utc).timestamp())
+            params["to"] = int(cutoff.timestamp())
         try:
             response = await self._http.get(
                 f"{FINNHUB_BASE}{FINNHUB_CALENDAR_ENDPOINT}",
-                params={"limit": limit},
+                params=params,
                 headers=self._headers(),
             )
         except Exception as exc:
@@ -266,7 +283,10 @@ class FinnhubProvider(MarketDataProvider):
                     entitlement="finnhub-free-tier",
                 )
             )
-        return records
+        return [
+            event for event in records
+            if as_of is None or event.scheduled_at <= cutoff
+        ]
 
     async def quote(self, symbol: str) -> dict[str, Any] | None:
         if not self.is_configured or not symbol.strip():
@@ -320,16 +340,20 @@ class FinnhubProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]] | None:
         """Fetch OHLCV candles for the chart from Finnhub /stock/candle."""
         if not self.is_configured or not instrument.strip():
             return None
 
         resolution = _FINNHUB_RESOLUTIONS.get(interval, "D")
+        cutoff = normalize_as_of(as_of)
         now = datetime.now(timezone.utc)
+        end_time = cutoff or now
         span = {"1D": 1, "1W": 7, "1M": 30}.get(range, 365)
-        start = int((now - timedelta(days=span)).timestamp())
-        end = int(now.timestamp())
+        start = int((end_time - timedelta(days=span)).timestamp())
+        end = int(end_time.timestamp())
 
         try:
             response = await self._http.get(
@@ -382,6 +406,7 @@ class FinnhubProvider(MarketDataProvider):
             except (IndexError, TypeError, ValueError):
                 continue
         rows.sort(key=lambda row: row["time"])
+        rows = filter_timestamped_rows(rows, as_of=as_of)
         return rows or None
 
     async def search(self, query: str, *, exchange: str = "US", limit: int = 20) -> list[Instrument]:

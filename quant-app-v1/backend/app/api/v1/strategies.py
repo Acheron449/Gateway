@@ -1,19 +1,38 @@
+"""Strategy Studio: typed strategy specs, immutable versions and ownership.
+
+Every route derives its owner from the verified principal (NFR-6). Reads and
+writes are scoped by ``owner_id``: another account's strategy, version or run id
+is indistinguishable from a missing one (404), and rows created before ownership
+existed keep a NULL owner and therefore stay invisible (DR-6/DR-7).
+
+Backtests are not executed here. ``POST /backtest/run`` owns reproducible runs
+and receipts; this module stores only specs and their versions.
+"""
+
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.auth import CurrentUser
 from app.models import (
-    StrategySpec, StrategyVersion, StrategyStatus, Timeframe, RuleType,
-    EntryRule, ExitRule, SizingRule, InvalidationRule, SessionRule, EventRule,
-    Assumptions,
+    EntryRule,
+    EventRule,
+    ExitRule,
+    InvalidationRule,
+    SessionRule,
+    SizingRule,
+    StrategySpec,
+    StrategyStatus,
+    Timeframe,
+    compute_strategy_content_hash,
 )
 from app.services.database import get_connection, init_db
-from uuid import uuid4
-from datetime import datetime, timezone, timedelta
-import json
 
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
@@ -74,22 +93,42 @@ class StrategyVersionResponse(BaseModel):
 
 # --- Database Helpers ---
 
-def _get_strategy_table():
+def _get_strategy_table() -> None:
+    """Create the strategy tables and migrate pre-ownership databases.
+
+    ``owner_id`` is added by migration for databases created before ownership
+    existed. Those legacy rows keep a NULL owner, so no account can list, read
+    or delete them (DR-6/DR-7) until an operator assigns an owner explicitly.
+    """
     init_db()
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS strategies (
                 id TEXT PRIMARY KEY,
+                owner_id TEXT,
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'draft',
                 current_version INTEGER NOT NULL DEFAULT 1,
+                universe TEXT NOT NULL DEFAULT '[]',
+                timeframe TEXT NOT NULL DEFAULT '1h',
                 tags TEXT DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+        columns = {row[1] for row in cur.execute("PRAGMA table_info(strategies)").fetchall()}
+        for column, ddl in (
+            ("owner_id", "ALTER TABLE strategies ADD COLUMN owner_id TEXT"),
+            ("universe", "ALTER TABLE strategies ADD COLUMN universe TEXT NOT NULL DEFAULT '[]'"),
+            ("timeframe", "ALTER TABLE strategies ADD COLUMN timeframe TEXT NOT NULL DEFAULT '1h'"),
+        ):
+            if column not in columns:
+                cur.execute(ddl)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_strategies_owner ON strategies(owner_id, updated_at DESC)"
+        )
         cur.execute("""
             CREATE TABLE IF NOT EXISTS strategy_versions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,48 +136,60 @@ def _get_strategy_table():
                 version INTEGER NOT NULL,
                 spec TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                content_hash TEXT,
                 FOREIGN KEY(strategy_id) REFERENCES strategies(id),
                 UNIQUE(strategy_id, version)
             )
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS strategy_backtests (
-                id TEXT PRIMARY KEY,
-                strategy_id TEXT NOT NULL,
-                strategy_version INTEGER NOT NULL,
-                run_id TEXT NOT NULL,
-                config TEXT NOT NULL,
-                result TEXT,
-                status TEXT NOT NULL DEFAULT 'queued',
-                created_at TEXT NOT NULL,
-                finished_at TEXT,
-                FOREIGN KEY(strategy_id) REFERENCES strategies(id)
-            )
-        """)
+        version_columns = {row[1] for row in cur.execute("PRAGMA table_info(strategy_versions)").fetchall()}
+        if "content_hash" not in version_columns:
+            cur.execute("ALTER TABLE strategy_versions ADD COLUMN content_hash TEXT")
         conn.commit()
 
 
-def _load_strategy(strategy_id: str) -> dict | None:
+def _load_strategy(strategy_id: str, owner_id: str) -> dict | None:
+    """Load a strategy only when it belongs to ``owner_id``."""
     init_db()
     with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone().__class__
-        row = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
-    if not row:
-        return None
-    return dict(row)
+        row = conn.execute(
+            "SELECT * FROM strategies WHERE id = ? AND owner_id = ?",
+            (strategy_id, owner_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _to_response(strategy: dict) -> StrategyResponse:
+    return StrategyResponse(
+        id=strategy["id"],
+        name=strategy["name"],
+        description=strategy["description"] or "",
+        status=StrategyStatus(strategy["status"]),
+        version=strategy["current_version"],
+        universe=json.loads(strategy.get("universe") or "[]"),
+        timeframe=strategy.get("timeframe") or "1h",
+        tags=json.loads(strategy.get("tags") or "[]"),
+        created_at=strategy["created_at"],
+        updated_at=strategy["updated_at"],
+    )
+
+
+def _owned_strategy_or_404(strategy_id: str, owner_id: str) -> dict:
+    strategy = _load_strategy(strategy_id, owner_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    return strategy
 
 
 # --- Routes ---
 
 @router.post("", response_model=StrategyResponse, status_code=201)
-async def create_strategy(request: StrategyCreateRequest) -> StrategyResponse:
-    """Create a new strategy with initial version."""
+async def create_strategy(request: StrategyCreateRequest, user: CurrentUser) -> StrategyResponse:
+    """Create a new strategy owned by the signed-in account."""
     _get_strategy_table()
-    
+
     strategy_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    
-    # Create strategy spec from request
+
     spec = StrategySpec(
         strategy_id=strategy_id,
         version=1,
@@ -155,115 +206,88 @@ async def create_strategy(request: StrategyCreateRequest) -> StrategyResponse:
         assumptions=request.assumptions,
         tags=request.tags,
     )
-    
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO strategies (id, name, description, status, current_version, tags, created_at, updated_at)
-               VALUES (?, ?, ?, 'draft', 1, ?, ?, ?)""",
-            (strategy_id, request.name, request.description, json.dumps(request.tags), now, now),
+            """INSERT INTO strategies (id, owner_id, name, description, status, current_version,
+                                       universe, timeframe, tags, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?)""",
+            (
+                strategy_id,
+                user.id,
+                request.name,
+                request.description,
+                json.dumps(request.universe),
+                request.timeframe.value,
+                json.dumps(request.tags),
+                now,
+                now,
+            ),
         )
+        stored_spec = spec.model_dump(mode="json", exclude={"content_hash"})
+        content_hash = compute_strategy_content_hash(spec)
         cur.execute(
-            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (strategy_id, 1, json.dumps(spec.model_dump(mode="json")), now),
+            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at, content_hash)
+               VALUES (?, ?, ?, ?, ?)""",
+            (strategy_id, 1, json.dumps(stored_spec), now, content_hash),
         )
         conn.commit()
-    
-    return StrategyResponse(
-        id=strategy_id,
-        name=request.name,
-        description=request.description,
-        status=StrategyStatus.DRAFT,
-        version=1,
-        universe=request.universe,
-        timeframe=request.timeframe.value,
-        tags=request.tags,
-        created_at=now,
-        updated_at=now,
-    )
+
+    created = _load_strategy(strategy_id, user.id)
+    assert created is not None
+    return _to_response(created)
 
 
 @router.get("", response_model=list[StrategyResponse])
 async def list_strategies(
+    user: CurrentUser,
     status: StrategyStatus | None = Query(None),
     tag: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> list[StrategyResponse]:
-    """List strategies with optional filtering."""
+    """List the signed-in account's strategies with optional filtering."""
     _get_strategy_table()
-    
-    query = "SELECT * FROM strategies WHERE 1=1"
-    params = []
-    
+
+    query = "SELECT * FROM strategies WHERE owner_id = ?"
+    params: list[Any] = [user.id]
+
     if status:
         query += " AND status = ?"
         params.append(status.value)
     if tag:
         query += " AND tags LIKE ?"
         params.append(f"%{tag}%")
-    
+
     query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
-    
+
     with get_connection() as conn:
-        conn.row_factory = conn.execute(query, params).fetchone().__class__
         rows = conn.execute(query, params).fetchall()
-    
-    return [
-        StrategyResponse(
-            id=row["id"],
-            name=row["name"],
-            description=row["description"],
-            status=StrategyStatus(row["status"]),
-            version=row["current_version"],
-            universe=json.loads(row.get("universe", "[]")),
-            timeframe=row.get("timeframe", "1h"),
-            tags=json.loads(row["tags"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
-        for row in rows
-    ]
+
+    return [_to_response(dict(row)) for row in rows]
 
 
 @router.get("/{strategy_id}", response_model=StrategyResponse)
-async def get_strategy(strategy_id: str) -> StrategyResponse:
-    """Get a strategy by ID."""
+async def get_strategy(strategy_id: str, user: CurrentUser) -> StrategyResponse:
+    """Get one of the signed-in account's strategies by id."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    return StrategyResponse(
-        id=strategy["id"],
-        name=strategy["name"],
-        description=strategy["description"],
-        status=StrategyStatus(strategy["status"]),
-        version=strategy["current_version"],
-        universe=json.loads(strategy.get("universe", "[]")),
-        timeframe=strategy.get("timeframe", "1h"),
-        tags=json.loads(strategy["tags"]),
-        created_at=strategy["created_at"],
-        updated_at=strategy["updated_at"],
-    )
+    return _to_response(_owned_strategy_or_404(strategy_id, user.id))
 
 
 @router.get("/{strategy_id}/versions", response_model=list[StrategyVersionResponse])
-async def list_strategy_versions(strategy_id: str) -> list[StrategyVersionResponse]:
-    """List all versions of a strategy."""
+async def list_strategy_versions(strategy_id: str, user: CurrentUser) -> list[StrategyVersionResponse]:
+    """List all versions of one of the signed-in account's strategies."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    _owned_strategy_or_404(strategy_id, user.id)
+
     with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? ORDER BY version DESC", (strategy_id,)).fetchone().__class__
-        rows = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? ORDER BY version DESC", (strategy_id,)).fetchall()
-    
+        rows = conn.execute(
+            "SELECT * FROM strategy_versions WHERE strategy_id = ? ORDER BY version DESC",
+            (strategy_id,),
+        ).fetchall()
+
     return [
         StrategyVersionResponse(
             strategy_id=row["strategy_id"],
@@ -276,21 +300,22 @@ async def list_strategy_versions(strategy_id: str) -> list[StrategyVersionRespon
 
 
 @router.get("/{strategy_id}/versions/{version}", response_model=StrategyVersionResponse)
-async def get_strategy_version(strategy_id: str, version: int) -> StrategyVersionResponse:
-    """Get a specific version of a strategy."""
+async def get_strategy_version(
+    strategy_id: str, version: int, user: CurrentUser
+) -> StrategyVersionResponse:
+    """Get a specific version of one of the signed-in account's strategies."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    _owned_strategy_or_404(strategy_id, user.id)
+
     with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone().__class__
-        row = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone()
-    
+        row = conn.execute(
+            "SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?",
+            (strategy_id, version),
+        ).fetchone()
+
     if not row:
         raise HTTPException(status_code=404, detail="Version not found")
-    
+
     return StrategyVersionResponse(
         strategy_id=row["strategy_id"],
         version=row["version"],
@@ -300,36 +325,48 @@ async def get_strategy_version(strategy_id: str, version: int) -> StrategyVersio
 
 
 @router.post("/{strategy_id}/versions", response_model=StrategyVersionResponse, status_code=201)
-async def create_strategy_version(strategy_id: str, spec: StrategySpec) -> StrategyVersionResponse:
-    """Create a new version of a strategy."""
+async def create_strategy_version(
+    strategy_id: str, spec: StrategySpec, user: CurrentUser
+) -> StrategyVersionResponse:
+    """Append a new immutable version to one of the account's strategies."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    new_version = strategy["current_version"] + 1
+
     now = datetime.now(timezone.utc).isoformat()
-    
-    # Validate the spec matches the strategy
-    if spec.strategy_id != strategy_id:
-        spec = spec.model_copy(update={"strategy_id": strategy_id})
-    if spec.version != new_version:
-        spec = spec.model_copy(update={"version": new_version})
-    
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """UPDATE strategies SET current_version = ?, updated_at = ? WHERE id = ?""",
-            (new_version, now, strategy_id),
-        )
-        cur.execute(
-            """INSERT INTO strategy_versions (strategy_id, version, spec, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (strategy_id, new_version, json.dumps(spec.model_dump(mode="json")), now),
-        )
-        conn.commit()
-    
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            strategy_row = cur.execute(
+                "SELECT * FROM strategies WHERE id = ? AND owner_id = ?",
+                (strategy_id, user.id),
+            ).fetchone()
+            if strategy_row is None:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="Strategy not found")
+            new_version = strategy_row["current_version"] + 1
+            # Validate/canonicalize with the assigned identity and version.
+            spec = spec.model_copy(
+                update={"strategy_id": strategy_id, "version": new_version, "content_hash": None}
+            )
+            content_hash = compute_strategy_content_hash(spec)
+            stored_spec = spec.model_dump(mode="json", exclude={"content_hash"})
+            cur.execute(
+                "UPDATE strategies SET current_version = ?, updated_at = ? WHERE id = ? AND owner_id = ?",
+                (new_version, now, strategy_id, user.id),
+            )
+            cur.execute(
+                """INSERT INTO strategy_versions (strategy_id, version, spec, created_at, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (strategy_id, new_version, json.dumps(stored_spec), now, content_hash),
+            )
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "locked" in str(exc).lower():
+            raise HTTPException(status_code=409, detail="Strategy version allocation conflict") from exc
+        raise
+
     return StrategyVersionResponse(
         strategy_id=strategy_id,
         version=new_version,
@@ -339,18 +376,17 @@ async def create_strategy_version(strategy_id: str, spec: StrategySpec) -> Strat
 
 
 @router.patch("/{strategy_id}", response_model=StrategyResponse)
-async def update_strategy(strategy_id: str, request: StrategyUpdateRequest) -> StrategyResponse:
-    """Update strategy metadata."""
+async def update_strategy(
+    strategy_id: str, request: StrategyUpdateRequest, user: CurrentUser
+) -> StrategyResponse:
+    """Update metadata on one of the signed-in account's strategies."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    _owned_strategy_or_404(strategy_id, user.id)
+
     now = datetime.now(timezone.utc).isoformat()
     updates = []
-    params = []
-    
+    params: list[Any] = []
+
     for field, value in request.model_dump(exclude_unset=True).items():
         if field == "universe":
             updates.append("universe = ?")
@@ -367,221 +403,36 @@ async def update_strategy(strategy_id: str, request: StrategyUpdateRequest) -> S
         else:
             updates.append(f"{field} = ?")
             params.append(value)
-    
+
     if updates:
         updates.append("updated_at = ?")
-        params.append(now)
-        params.append(strategy_id)
-        
+        params.extend([now, strategy_id, user.id])
+
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(f"UPDATE strategies SET {', '.join(updates)} WHERE id = ?", params)
+            cur.execute(
+                f"UPDATE strategies SET {', '.join(updates)} WHERE id = ? AND owner_id = ?",
+                params,
+            )
             conn.commit()
-    
-    # Reload
-    updated = _load_strategy(strategy_id)
-    
-    return StrategyResponse(
-        id=updated["id"],
-        name=updated["name"],
-        description=updated["description"],
-        status=StrategyStatus(updated["status"]),
-        version=updated["current_version"],
-        universe=json.loads(updated.get("universe", "[]")),
-        timeframe=updated.get("timeframe", "1h"),
-        tags=json.loads(updated["tags"]),
-        created_at=updated["created_at"],
-        updated_at=updated["updated_at"],
-    )
+
+    updated = _load_strategy(strategy_id, user.id)
+    assert updated is not None
+    return _to_response(updated)
 
 
 @router.delete("/{strategy_id}", status_code=204)
-async def delete_strategy(strategy_id: str):
-    """Delete a strategy and all its versions."""
+async def delete_strategy(strategy_id: str, user: CurrentUser):
+    """Delete one of the signed-in account's strategies and all its versions."""
     _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM strategy_versions WHERE strategy_id = ?", (strategy_id,))
-        cur.execute("DELETE FROM strategies WHERE id = ?", (strategy_id,))
-        conn.commit()
+    _owned_strategy_or_404(strategy_id, user.id)
 
-
-# --- Backtest execution routes ---
-
-class BacktestConfig(BaseModel):
-    """Configuration for a backtest run, built from a StrategySpec."""
-    strategy_spec: StrategySpec
-    start_date: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    end_date: str = Field(default_factory=lambda: (datetime.now(timezone.utc) + timedelta(days=365)).isoformat())
-    timeframe: Timeframe = Timeframe.H1
-    universe: list[str] = Field(default_factory=list)
-    initial_capital: float = 100_000.0
-    execution_mode: str = "realistic"
-    assumptions: Assumptions = Field(default_factory=Assumptions)
-    risk_config: dict = Field(default_factory=dict)
-    data_split: str = "test"
-    monte_carlo_runs: int = 0
-    seed: int = 42
-
-
-@router.post("/{strategy_id}/backtest", response_model=dict)
-async def run_strategy_backtest(
-    strategy_id: str,
-    version: int | None = Query(None),
-    start_date: str | None = None,
-    end_date: str | None = None,
-    initial_capital: float = 100_000.0,
-) -> dict:
-    """Run a backtest on a strategy version."""
-    _get_strategy_table()
-    
-    strategy = _load_strategy(strategy_id)
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    # Determine which version to backtest
-    if version is None:
-        version = strategy["current_version"]
-    
-    # Load the strategy version spec
-    with get_connection() as conn:
-        conn.row_factory = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone().__class__
-        row = conn.execute("SELECT * FROM strategy_versions WHERE strategy_id = ? AND version = ?", (strategy_id, version)).fetchone()
-    
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Strategy version {version} not found")
-    
-    spec_dict = json.loads(row["spec"])
-    spec = StrategySpec(**spec_dict)
-    
-    # Build config
-    config = BacktestConfig(
-        strategy_spec=spec,
-        start_date=start_date or datetime.now(timezone.utc).isoformat(),
-        end_date=end_date or (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
-        timeframe=spec.timeframe,
-        universe=spec.universe or strategy.get("universe", []),
-        initial_capital=initial_capital,
-        assumptions=spec.assumptions,
-    )
-    
-    # Create backtest job
-    job_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO strategy_backtests 
-               (id, strategy_id, strategy_version, run_id, config, status, created_at)
-               VALUES (?, ?, ?, ?, ?, 'queued', ?)""",
-            (job_id, strategy_id, version, str(uuid.uuid4()), json.dumps(config.model_dump(mode="json")), now),
+            "DELETE FROM strategy_versions WHERE strategy_id = ? AND strategy_id IN "
+            "(SELECT id FROM strategies WHERE id = ? AND owner_id = ?)",
+            (strategy_id, strategy_id, user.id),
         )
+        cur.execute("DELETE FROM strategies WHERE id = ? AND owner_id = ?", (strategy_id, user.id))
         conn.commit()
-    
-    # Trigger async backtest execution
-    from app.engine.backtester import BacktestEngine, BacktestConfig as EngineBacktestConfig
-    from app.services.database import create_backtest_job
-    import asyncio
-    import pandas as pd
-    from app.services.market_data import get_historical_data  # We'll need to implement or mock this
-    
-    async def run_backtest_job():
-        try:
-            # Convert config to engine config format
-            engine_config = EngineBacktestConfig(
-                strategy_spec=spec,
-                start_date=datetime.fromisoformat(config.start_date.replace('Z', '+00:00')),
-                end_date=datetime.fromisoformat(config.end_date.replace('Z', '+00:00')),
-                timeframe=config.timeframe,
-                universe=config.universe,
-                initial_capital=config.initial_capital,
-                execution_mode=(
-                    __import__('app.engine.backtester', fromlist=['ExecutionMode']).ExecutionMode.REALISTIC
-                    if config.execution_mode == "realistic" 
-                    else __import__('app.engine.backtester', fromlist=['ExecutionMode']).ExecutionMode.SIMULATION
-                ),
-                assumptions=config.assumptions,
-                risk_config=__import__('app.quant.risk_manager', fromlist=['RiskConfig']).RiskConfig(**config.risk_config),
-                data_split=__import__('app.engine.backtester', fromlist=['DataSplit']).DataSplit(config.data_split),
-                monte_carlo_runs=config.monte_carlo_runs,
-                seed=config.seed,
-            )
-            
-            # Fetch historical data for the universe
-            # For now, we'll use a placeholder - in production this would come from market data service
-            data = {}
-            for symbol in config.universe:
-                # TODO: Replace with actual market data fetching
-                # This is a placeholder implementation
-                data[symbol] = pd.DataFrame({
-                    'time': pd.date_range(start=engine_config.start_date, end=engine_config.end_date, freq='1h'),
-                    'open': 100.0,
-                    'high': 105.0,
-                    'low': 95.0,
-                    'close': 100.0,
-                    'volume': 1000.0,
-                })
-            
-            # Run the backtest
-            engine = BacktestEngine(engine_config)
-            report = await engine.run(data)
-            
-            # Update the backtest record with results
-            async with get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    """UPDATE strategy_backtests 
-                       SET status = 'completed', result = ?, finished_at = ?
-                       WHERE id = ?""",
-                    (json.dumps(report.model_dump(mode="json")), datetime.now(timezone.utc).isoformat(), job_id),
-                )
-                conn.commit()
-        except Exception as exc:
-            # Update status to failed on error
-            async with get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    """UPDATE strategy_backtests 
-                       SET status = 'failed', result = ?, finished_at = ?
-                       WHERE id = ?""",
-                    (json.dumps({"error": str(exc)}), datetime.now(timezone.utc).isoformat(), job_id),
-                )
-                conn.commit()
-    
-    asyncio.create_task(run_backtest_job(), name=f"backtest-{job_id}")
-    
-    return {
-        "job_id": job_id,
-        "strategy_id": strategy_id,
-        "strategy_version": version,
-        "status": "queued",
-        "message": "Backtest queued and running in the background.",
-    }
-
-
-@router.get("/{strategy_id}/backtest/{run_id}", response_model=dict)
-async def get_backtest_status(run_id: str) -> dict:
-    """Get the status and result of a backtest run."""
-    _get_strategy_table()
-    
-    with get_connection() as conn:
-        cur = conn.cursor()
-        row = cur.execute("SELECT * FROM strategy_backtests WHERE run_id = ?", (run_id,)).fetchone()
-    
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Backtest run '{run_id}' not found")
-    
-    return {
-        "run_id": row["run_id"],
-        "strategy_id": row["strategy_id"],
-        "strategy_version": row["strategy_version"],
-        "status": row["status"],
-        "created_at": row["created_at"],
-        "finished_at": row["finished_at"],
-        "result": json.loads(row["result"]) if row["result"] else None,
-    }

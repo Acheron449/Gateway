@@ -1,8 +1,10 @@
 """Regression: StrategySpec content-addressed ID determinism (Phase 3)."""
 from __future__ import annotations
-import sys
 import os
+import sys
 from importlib.util import spec_from_file_location, module_from_spec
+from typing import Any
+from datetime import datetime, timezone
 
 # Get the directory of this test file and construct relative paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,6 +13,10 @@ strategy_path = os.path.join(backend_dir, "app/models/strategy.py")
 
 spec = spec_from_file_location("strategy", strategy_path)
 strategy = module_from_spec(spec)
+# Pydantic resolves deferred annotations from the module registry; register the
+# dynamic module before execution and expose `Any` for forward-ref rebuilds.
+sys.modules[spec.name] = strategy
+strategy.Any = Any
 spec.loader.exec_module(strategy)
 # Rebuild forward refs in case of deferred annotations
 from pydantic import TypeAdapter
@@ -36,6 +42,7 @@ def test_content_id_determinism():
         assumptions=Assumptions(commission=0.001, spread=0.01, slippage=0.005, latency_ms=50, fx=1.0, corp_actions=True),
     )
     s2 = StrategySpec(
+        created_at=s1.created_at,
         asset_universe=["AAPL","MSFT"], timeframe=Timeframe.D1,
         entry=EntryRule(condition="rsi<30"), exit=ExitRule(condition="rsi>70"),
         sizing=SizingRule(mode="pct_equity", amount=0.1),

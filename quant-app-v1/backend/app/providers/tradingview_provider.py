@@ -12,9 +12,11 @@ import asyncio
 import json
 import re
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 from app.providers.base import MarketDataProvider, ProviderMeta, ProviderUnavailableError
+from app.services.as_of import filter_timestamped_rows
 
 
 def _websockets():
@@ -224,9 +226,12 @@ class TradingViewProvider(MarketDataProvider):
         instrument: str,
         interval: str = "1d",
         range: str = "1y",
+        *,
+        as_of: datetime | None = None,
     ) -> Optional[list[dict[str, Any]]]:
         tv_interval = _INTERVAL_MAP.get(str(interval).lower(), "60")
-        return await _fetch_history_feed(instrument.upper(), tv_interval)
+        candles = await _fetch_history_feed(instrument.upper(), tv_interval)
+        return filter_timestamped_rows(candles, as_of=as_of)
 
     async def quote(self, instrument: str) -> Optional[dict[str, Any]]:
         """Last price from the latest 1-minute bar (used by the key test)."""

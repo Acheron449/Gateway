@@ -4,7 +4,6 @@ quant-app-v1/backend/models/
 .playwright-mcp
 ROADMAP_IMPLEMENTATION.prompt.md
 ROADMAP.md
-docs/phase-0-plan.md
 
 # Python artifacts
 __pycache__/
@@ -18,6 +17,11 @@ bb_result.txt
 
 # Frontend build output
 quant-app-v1/frontend/dist/
+/dist/
+/dist-pages/
+quant-app-v1/frontend/node_modules/
+node_modules/
+.wrangler/
 
 # IDE and editor directories
 .idea/
@@ -43,3 +47,5 @@ quant-app-v1/backend/app/settings/
 quant-app-v1/backend/vendor/
 .vercel
 .env*
+.env.docker
+!.env.docker.example

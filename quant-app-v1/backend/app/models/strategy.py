@@ -25,8 +25,8 @@ def Provenance_() -> type:
     return _PROVENANCE
 
 
-def _content_id(*, symbol: str, timestamp: datetime, payload: dict[str, Any]) -> str:
-    raw = f"{symbol}:{timestamp.isoformat()}:{payload!r}"
+def _content_id(*, symbol: str, payload: dict[str, Any]) -> str:
+    raw = f"{symbol}:{payload!r}"
     digest = hashlib.sha256(raw.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest[:16]).decode("ascii").rstrip("=")
 
@@ -123,6 +123,5 @@ class StrategySpec(BaseModel):
         payload = info.data
         return _content_id(
             symbol=",".join(payload.get("asset_universe", [])),
-            timestamp=datetime.now(timezone.utc),
             payload={k: v for k, v in payload.items() if k != "id" and k != "provenance" and k != "created_at"},
         )

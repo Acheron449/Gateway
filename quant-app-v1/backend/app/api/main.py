@@ -9,30 +9,32 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
-import pandas_ta as ta
 import time
 import json
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+from app.api.rate_limit import limiter
+from app.api.observability import RequestLoggingMiddleware
+from app.api.error_aggregation import ErrorAggregator, scrub_error_text
 
 from app.api.v1.analysis import router as analysis_router
-from app.api.v1.agents import router as agents_router
 from app.api.v1.agentic_lab import router as agentic_lab_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.quant import router as quant_router
 from app.api.v1.backtest import router as backtest_router
+from app.api.v1.bots import router as bots_router
 from app.api.v1.catalogue import router as catalogue_router
 from app.api.v1.divergence import router as divergence_router
 from app.api.v1.forecast import router as forecast_router
 from app.api.v1.journal import router as journal_router
 from app.api.v1.llm import router as llm_router
-from app.api.v1.live import router as live_router
 from app.api.v1.news import quote_router, router as news_router
-from app.api.openbb_routes import router as openbb_router
 from app.api.openstock_routes import router as openstock_router
 from app.api.v1.portfolio import router as portfolio_router
 from app.api.v1.risk import router as risk_router
@@ -45,12 +47,17 @@ from app.api.v1.filings import router as filings_router
 from app.api.v1.watchlists import router as watchlists_router
 from app.api.v1.layouts import router as layouts_router
 from app.api.v1.preferences import router as preferences_router
+from app.api.v1.notices import router as notices_router
+from app.services import database
 from app.services.market_data import _alpaca_credentials, _stock_feed
 from app.quant.recognition import find_pivots, detect_head_and_shoulders
+from app.quant.technicals import calculate_wilder_rsi
 from app.config import get_settings
 from app.providers.registry import get_provider as get_registry_provider
 from app.services.provenance import candle_provenance
-from app.auth import get_current_user_optional, OptionalUser, warm_auth0_jwks
+from app.services.as_of import filter_timestamped_rows, normalize_as_of, parse_data_timestamp
+from app.auth import _operator_identities, decode_token, get_current_user_optional, OptionalUser
+from starlette.middleware.base import BaseHTTPMiddleware
 
 
 def _yf():
@@ -63,14 +70,32 @@ def _yf():
 
     return yf
 
-# Rate limiter — generous defaults: the dashboard polls several endpoints
-# (ticker strip + parallel inspector fetches) per view change, and a tight
-# per-IP budget reads as random "Failed to fetch" errors in the UI.
-limiter = Limiter(key_func=get_remote_address, default_limits=["240/minute", "3000/hour"])
+# Rate limiter — configured in app.api.rate_limit so route modules can add
+# stricter per-route budgets without importing this module.
 
 # Security headers middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+
+
+def content_security_policy(env: str | None = None) -> str:
+    """Build the CSP for an environment profile.
+
+    Production does not run Vite's development client, so its script policy
+    drops to ``'self'``. Local and test builds keep ``'unsafe-inline'`` and
+    ``'unsafe-eval'`` because Vite's HMR client and React refresh runtime
+    require them. ``env`` defaults to ``GATEWAY_ENV`` (falling back to local).
+    """
+    profile = (env or os.getenv("GATEWAY_ENV", "local")).lower()
+    script_src = "'self'" if profile in ("production", "prod") else "'self' 'unsafe-inline' 'unsafe-eval'"
+    return (
+        "default-src 'self'; "
+        f"script-src {script_src}; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:;"
+    )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -87,15 +112,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         env = os.getenv("GATEWAY_ENV", "local").lower()
         if env in ("production", "prod"):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Content Security Policy
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:; "
-            "font-src 'self' data:; "
-            "connect-src 'self' ws: wss:;"
-        )
+        # Content Security Policy (production excludes inline/eval scripts)
+        response.headers["Content-Security-Policy"] = content_security_policy(env)
         return response
 
 
@@ -111,9 +129,6 @@ RSI_PERIOD = 14
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auth0 mode: fetch the tenant JWKS up front so the first sign-in is not
-    # latency-bound (no-op when AUTH0_DOMAIN is unset).
-    await warm_auth0_jwks()
 
     ws_symbol = (os.getenv("QUANT_WS_SYMBOL", "AAPL") or "AAPL").upper()
     creds = _alpaca_credentials()
@@ -133,7 +148,7 @@ async def lifespan(app: FastAPI):
             rsi_val = 0.0
             if len(buff) >= RSI_PERIOD:
                 df_rsi = pd.DataFrame(list(buff))
-                series = ta.rsi(df_rsi["close"], length=RSI_PERIOD)
+                series = calculate_wilder_rsi(df_rsi["close"], period=RSI_PERIOD)
                 last = series.iloc[-1]
                 if pd.notna(last):
                     rsi_val = float(last)
@@ -315,7 +330,7 @@ async def lifespan(app: FastAPI):
                         buff.append({"close": price})
                         rsi_val = 0.0
                         if len(buff) >= RSI_PERIOD:
-                            rsi_series = ta.rsi(pd.DataFrame(list(buff))["close"], length=RSI_PERIOD)
+                            rsi_series = calculate_wilder_rsi(pd.DataFrame(list(buff))["close"], period=RSI_PERIOD)
                             last = rsi_series.iloc[-1]
                             if pd.notna(last):
                                 rsi_val = float(last)
@@ -337,13 +352,13 @@ async def lifespan(app: FastAPI):
             "Alpaca credentials and FINNHUB_API_KEY are not set; /ws/trading has no market-data feed."
         )
 
-    # Resume the AI trader if it was left enabled (AI Trading section).
+    # Resume each owner's AI trader if it was left enabled (AI Trading section).
     try:
         from app.services import ai_trading as _ai_trading
 
-        if _ai_trading.get_config().get("enabled"):
-            _ai_trading.start()
-            logger.info("AI trading loop resumed from saved config")
+        resumed = _ai_trading.autostart()
+        if resumed:
+            logger.info("AI trading loops resumed for {} owner(s)", len(resumed))
     except Exception as exc:
         logger.warning("AI trading autostart skipped: {}", exc)
 
@@ -374,6 +389,60 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 app = FastAPI(title="Gateway API", version="0.2.0", lifespan=lifespan)
 
+
+class PrivateDataGateMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        """Authenticate and fail closed for shared stores until ownership ships."""
+        path = request.url.path.rstrip("/") or "/"
+        # /strategies, /journal, /portfolio, /ai-trading and /vault are
+        # deliberately absent: every one of their routes derives its owner from
+        # CurrentUser, so they are scoped per request rather than fail-closed
+        # behind the shared-store gate.
+        private_prefixes = ("/llm",)
+        operator_prefixes = ("/risk", "/settings/providers")
+        private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
+        operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
+        if path.startswith("/forecast/kronos/install/") or path == "/forecast/kronos/install":
+            return await call_next(request)
+        if not private and not operator_only:
+            return await call_next(request)
+
+        authorization = request.headers.get("authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.casefold() != "bearer" or not token.strip():
+            return JSONResponse(
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+                content={"detail": "Not authenticated"},
+            )
+        token_data = decode_token(token.strip())
+        if token_data is None or token_data.exp < datetime.now(timezone.utc):
+            return JSONResponse(
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+                content={"detail": "Invalid or expired token"},
+            )
+
+        if operator_only:
+            if (token_data.issuer, token_data.subject) not in _operator_identities():
+                return JSONResponse(status_code=403, content={"detail": "Operator access required"})
+            return await call_next(request)
+
+        # Shared stores are denied for every authenticated account until their
+        # owner-scoped repositories are deployed. This middleware is scoped to
+        # HTTP; WebSocket routes perform first-frame auth and their own stopgap.
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Private data unavailable until account isolation is enabled"},
+        )
+
+
+app.add_middleware(PrivateDataGateMiddleware)
+
+# Enforce the shared limiter's default budget. Registered before the header
+# and CORS middlewares so those still wrap 429 responses.
+app.add_middleware(SlowAPIMiddleware)
+
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -398,11 +467,35 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+
+# Registered last so it is the outermost middleware: every response, including
+# 401/403/429 and CORS preflight, is logged and carries X-Request-ID (NFR-21).
+app.add_middleware(RequestLoggingMiddleware)
 
 # Add rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+error_aggregator = ErrorAggregator.from_env()
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Fixed 500 envelope; optional aggregation gets only scrubbed text."""
+    aggregator_event = error_aggregator.capture(request, exc)
+    request_id = getattr(request.state, "request_id", None)
+    logger.bind(
+        request_id=request_id,
+        error_type=type(exc).__name__,
+        error_id=aggregator_event.error_id if aggregator_event else None,
+    ).error("unhandled request error: {}", scrub_error_text(f"{type(exc).__name__}: {exc}"))
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+        headers={"X-Request-ID": request_id} if request_id else None,
+    )
 
 # Public routes (no authentication required)
 app.include_router(auth_router)
@@ -410,33 +503,36 @@ app.include_router(catalogue_router)  # Public catalogue access
 app.include_router(news_router)  # Public news/calendar access
 app.include_router(filings_router)  # SEC filings feed for the Overview card
 app.include_router(quote_router)  # Public normalized quote access
-app.include_router(strategies_router)  # Strategy Studio
-app.include_router(journal_router)  # Trade Journal
-app.include_router(risk_router)  # Risk Dashboard
+app.include_router(strategies_router)  # Strategy Studio (owner-scoped per request)
+app.include_router(journal_router)  # Trade Journal (owner-scoped per request)
+app.include_router(risk_router)  # Risk Dashboard (operator-gated global configuration)
 app.include_router(divergence_router)  # Divergence Scorecards
-app.include_router(settings_router)  # Settings
-app.include_router(vault_router, dependencies=[Depends(get_current_user_optional)])  # Encrypted secrets vault
-app.include_router(ai_trading_router, dependencies=[Depends(get_current_user_optional)])  # AI auto-trading section
-app.include_router(llm_router)  # AI model providers, chat harness, context feeder
+app.include_router(settings_router)  # Global provider settings (operator-gated)
+app.include_router(vault_router)  # Encrypted secrets vault (owner-scoped per request)
+app.include_router(ai_trading_router)  # AI auto-trading (owner-scoped per request)
+app.include_router(llm_router)  # BYOK/chat gated until durable owner store is deployed
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)
-app.include_router(openbb_router)  # OpenBB Data Integration
 app.include_router(openstock_router)  # OpenStock Symbol Search & Adanos Sentiment
 
 # Protected routes (authentication required)
 app.include_router(watchlists_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(layouts_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(preferences_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(notices_router)
 app.include_router(stocks_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(analysis_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(backtest_router, dependencies=[Depends(get_current_user_optional)])
-# NOTE: portfolio_router is included WITHOUT the router-level optional-user
-# dependency: its /portfolio/stream WebSocket would otherwise crash in
-# dependency solving (HTTPBearer requires a Request, which WebSocket routes
-# do not provide). The stream authenticates its own token query param.
+app.include_router(quant_router, dependencies=[Depends(get_current_user_optional)])
+app.include_router(bots_router, dependencies=[Depends(get_current_user_optional)])
+# NOTE: portfolio_router is included without a router-level dependency because
+# it contains a WebSocket route. Every HTTP handler takes CurrentUser and
+# resolves only that account's `paper_<user.id>` book; the WebSocket handler
+# authenticates from its first frame and reports streaming as unavailable.
 app.include_router(forecast_router, dependencies=[Depends(get_current_user_optional)])
 app.include_router(portfolio_router)
-app.include_router(live_router, dependencies=[Depends(get_current_user_optional)])
-app.include_router(agents_router, dependencies=[Depends(get_current_user_optional)])  # TradingAgents multi-agent runs
+# Fail closed: live/broker account routes remain deliberately unmounted until
+# authenticated account ownership and durable intent recovery are implemented.
+# Keep the router module importable for tests and legacy internal references.
 
 
 @app.get("/")
@@ -444,15 +540,62 @@ def home() -> dict:
     return {"status": "Quant Engine Running"}
 
 
-@app.get("/health")
-@limiter.limit("30/minute")
-async def health(request: Request) -> dict:
+def _database_component() -> dict[str, Any]:
+    """Readiness probe for the SQLite store: open it and run a trivial query.
+
+    The failure body carries a fixed message, never the exception text, so a
+    path, DSN or driver detail cannot leak (NFR-11).
+    """
+    started = time.perf_counter()
+    try:
+        with database.get_connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        status = "ok"
+    except Exception:
+        logger.warning("health: database readiness check failed")
+        status = "failed"
     return {
-        "status": "ok",
-        "environment": settings.environment,
-        "execution_mode": settings.execution_mode,
-        "capabilities": settings.capabilities,
+        "status": status,
+        "detail": None if status == "ok" else "database unavailable",
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
+
+
+def _health_report() -> tuple[dict[str, Any], bool]:
+    components = {"database": _database_component()}
+    ready = all(component["status"] == "ok" for component in components.values())
+    return (
+        {
+            "status": "ok" if ready else "degraded",
+            "service": "gateway-api",
+            "version": app.version,
+            "environment": settings.environment,
+            "execution_mode": settings.execution_mode,
+            "capabilities": settings.capabilities,
+            "components": components,
+        },
+        ready,
+    )
+
+
+@app.get("/health/live")
+async def health_live() -> dict[str, Any]:
+    """Liveness: the process is serving requests; never touches dependencies."""
+    return {"status": "ok", "service": "gateway-api", "version": app.version}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness: 200 only when every probed dependency answers."""
+    body, ready = _health_report()
+    return JSONResponse(status_code=200 if ready else 503, content=body)
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Readiness plus the environment and capability report required by NFR-20."""
+    body, ready = _health_report()
+    return JSONResponse(status_code=200 if ready else 503, content=body)
 
 
 TF_TO_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '5h': 18000, '1d': 86400}
@@ -503,7 +646,12 @@ YF_TF_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
+def _fetch_history_yfinance_sync(
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     """Credentials-free historical bars via yfinance (Gateway dependency).
 
     Used when Alpaca credentials are absent so the native chart keeps working
@@ -512,7 +660,13 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
     yf = _yf()
 
     interval, period = YF_TF_MAP.get((tf or '1h').lower(), YF_TF_MAP['1h'])
-    frame = yf.Ticker(ticker.upper()).history(period=period, interval=interval, auto_adjust=False)
+    cutoff = normalize_as_of(as_of)
+    frame = yf.Ticker(ticker.upper()).history(
+        period=period,
+        interval=interval,
+        end=cutoff.replace(tzinfo=None) if cutoff else None,
+        auto_adjust=False,
+    )
     if frame is None or frame.empty:
         raise HTTPException(status_code=502, detail=f"No history data available for {ticker.upper()}")
 
@@ -534,7 +688,7 @@ def _fetch_history_yfinance_sync(ticker: str, tf: str) -> list[dict[str, Any]]:
             }
         )
     candles.sort(key=lambda c: c['time'])
-    return candles
+    return filter_timestamped_rows(candles, as_of=as_of)
 
 
 # Chart data providers selectable by the UI (`?provider=`).
@@ -606,7 +760,12 @@ def _finnhub_available() -> bool:
         return False
 
 
-def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | None:
+def _ccxt_history_backup_sync(
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]] | None:
     """CCXT fallback used when yfinance fails on a crypto symbol.
 
     Returns None (instead of raising) for non-crypto symbols or any ccxt
@@ -617,8 +776,10 @@ def _ccxt_history_backup_sync(ticker: str, tf: str) -> list[dict[str, Any]] | No
         if instance is None or not instance.is_configured:
             return None
         interval, period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
-        rows = asyncio.run(instance.history(ticker.upper(), interval, period))
-        return _normalize_history_rows(rows) or None
+        rows = asyncio.run(
+            instance.history(ticker.upper(), interval, period, **({"as_of": as_of} if as_of else {}))
+        )
+        return filter_timestamped_rows(_normalize_history_rows(rows, as_of=as_of), as_of=as_of) or None
     except Exception as exc:
         logger.warning(f"ccxt history backup failed for {ticker.upper()}: {exc}")
         return None
@@ -704,8 +865,13 @@ def _history_time_to_epoch(value: Any) -> int | None:
         return None
 
 
-def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
-    """Normalize provider candle rows (dicts or dataclasses) to chart candles."""
+def _normalize_history_rows(
+    rows: Any,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize provider candle rows, rejecting unknown times in cutoff mode."""
+    cutoff = normalize_as_of(as_of)
     candles: list[dict[str, Any]] = []
     for row in rows or []:
         if isinstance(row, dict):
@@ -716,7 +882,13 @@ def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
             raw_time = getattr(row, "time", None)
             raw_ohlc = tuple(getattr(row, key, None) for key in ("open", "high", "low", "close"))
             raw_volume = getattr(row, "volume", 0)
-        epoch = _history_time_to_epoch(raw_time)
+        if cutoff is not None:
+            parsed_time = parse_data_timestamp(raw_time)
+            if parsed_time is None or parsed_time > cutoff:
+                continue
+            epoch = int(parsed_time.timestamp())
+        else:
+            epoch = _history_time_to_epoch(raw_time)
         try:
             open_, high, low, close = (float(value) for value in raw_ohlc)
         except (TypeError, ValueError):
@@ -738,24 +910,66 @@ def _normalize_history_rows(rows: Any) -> list[dict[str, Any]]:
 
 
 async def _fetch_history_alt_provider_sync(
-    provider: str, ticker: str, tf: str
+    provider: str,
+    ticker: str,
+    tf: str,
+    *,
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]] | None:
     """Fetch bars from a non-Yahoo provider; None when unavailable/empty."""
     if provider == "Alpaca":
         creds = _alpaca_credentials()
         if not creds:
             return None
-        return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+        if as_of is None:
+            return await asyncio.to_thread(_fetch_history_chart_sync, creds[0], creds[1], ticker.upper())
+        return await asyncio.to_thread(
+            _fetch_history_chart_sync, creds[0], creds[1], ticker.upper(), as_of=as_of
+        )
 
     if provider in ("Finnhub", "TradingView", "AllTick", "CCXT", "London Strategic Edge"):
         instance = get_registry_provider(provider)
         if instance is None or not instance.is_configured:
             return None
         interval, _period = YF_TF_MAP.get((tf or "1h").lower(), YF_TF_MAP["1h"])
-        rows = await instance.history(ticker.upper(), interval, "1y")
-        return _normalize_history_rows(rows)
+        rows = await instance.history(
+            ticker.upper(),
+            interval,
+            "1y",
+            **({"as_of": as_of} if as_of is not None else {}),
+        )
+        return filter_timestamped_rows(_normalize_history_rows(rows, as_of=as_of), as_of=as_of)
 
     return None
+
+
+# Bar limits (SRS FR-D6): one request never returns more than 20k rows, and
+# an over-limit request is refused with a reason instead of silently truncated.
+HISTORY_MAX_BARS = 20_000
+HISTORY_MIN_BARS = 1
+_CRYPTO_QUOTES = ("USD", "USDT", "USDC", "EUR", "BTC", "ETH")
+
+
+def _is_crypto_symbol(ticker: str) -> bool:
+    """True for pair-style crypto symbols (BTC-USD, ETH-USDT, BTCUSDT)."""
+    sym = (ticker or "").strip().upper()
+    if not sym:
+        return False
+    if "-" in sym:
+        return sym.rsplit("-", 1)[-1] in _CRYPTO_QUOTES
+    return any(sym.endswith(quote) and len(sym) > len(quote) for quote in ("USDT", "USDC"))
+
+
+def _bar_limit_error(limit: int) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "bar_limit",
+            "message": f"limit must be between {HISTORY_MIN_BARS} and {HISTORY_MAX_BARS} bars",
+            "requested": limit,
+            "max_bars": HISTORY_MAX_BARS,
+        },
+    )
 
 
 @app.get("/history/{ticker}")
@@ -764,63 +978,84 @@ async def get_history(
     tf: str = "1h",
     limit: int = 500,
     provider: str = "Yahoo Finance",
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Return historical bars for the chart from the selected provider.
+    """Return historical bars for the chart from one explicitly chosen source.
 
-    Defaults to Yahoo Finance (yfinance) — the credentials-free Gateway
-    default. Any other provider falls back to Yahoo Finance when it is not
-    configured, unreachable, or returns no data.
+    Yahoo Finance (yfinance) is the single default source; CCXT is reserved
+    for crypto pairs when Yahoo cannot answer. A provider the caller names is
+    never silently replaced, so the provenance on every bar always describes
+    the source that actually produced it.
     """
+    if limit < HISTORY_MIN_BARS or limit > HISTORY_MAX_BARS:
+        raise _bar_limit_error(limit)
+    try:
+        as_of = normalize_as_of(as_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    symbol = (ticker or "").strip().upper()
     chosen = _canonical_history_provider(provider)
     chart_data: list[dict[str, Any]] | None = None
     source = "yfinance"
+    attempted: list[str] = []
 
     if chosen != "Yahoo Finance":
+        attempted.append(chosen)
         try:
-            chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf)
-        except HTTPException:
-            chart_data = None
+            chart_data = await _fetch_history_alt_provider_sync(chosen, ticker, tf, as_of=as_of)
         except Exception as exc:
-            logger.warning(f"history provider '{chosen}' failed for {ticker.upper()}: {exc}")
+            logger.warning(f"history provider '{chosen}' failed for {symbol}: {exc}")
             chart_data = None
         if chart_data:
             source = chosen.casefold().replace(" ", "-")
-
-    if not chart_data:
-        # Primary path: yfinance (keyless Yahoo Finance bars).
+    else:
+        attempted.append("yfinance")
         try:
-            chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, ticker.upper(), tf)
-            source = "yfinance"
-        except HTTPException:
-            chart_data = None
+            if as_of is None:
+                chart_data = await asyncio.to_thread(_fetch_history_yfinance_sync, symbol, tf)
+            else:
+                chart_data = await asyncio.to_thread(
+                    _fetch_history_yfinance_sync, symbol, tf, as_of=as_of
+                )
         except Exception as exc:
-            logger.warning(f"yfinance history failed for {ticker.upper()}: {exc}")
+            logger.warning(f"yfinance history failed for {symbol}: {exc}")
             chart_data = None
-
-    if not chart_data:
-        # Backup path: CCXT public exchange data (crypto pairs only).  This
-        # keeps charts alive when Yahoo is down/rate-limited or the user
-        # explicitly switched to CCXT and Yahoo could not answer either.
-        chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, ticker.upper(), tf)
-        if chart_data:
-            source = "ccxt"
+        if not chart_data and _is_crypto_symbol(symbol):
+            attempted.append("ccxt")
+            if as_of is None:
+                chart_data = await asyncio.to_thread(_ccxt_history_backup_sync, symbol, tf)
+            else:
+                chart_data = await asyncio.to_thread(
+                    _ccxt_history_backup_sync, symbol, tf, as_of=as_of
+                )
+            if chart_data:
+                source = "ccxt"
 
     if not chart_data:
         raise HTTPException(
-            status_code=502,
-            detail=f"No history data available for {ticker.upper()} (yfinance and ccxt backup both failed)",
+            status_code=502 if chosen == "Yahoo Finance" else 503,
+            detail={
+                "code": "source_unavailable" if chosen == "Yahoo Finance" else "provider_unavailable",
+                "message": f"No history data available for {symbol} from {chosen}",
+                "provider": chosen,
+                "attempted": attempted,
+                "symbol": symbol,
+            },
         )
 
-    resampled = _resample_candles(chart_data, tf)
-    if limit and len(resampled) > 0:
-        resampled = resampled[-max(10, min(int(limit), 2000)):]
+    chart_data = filter_timestamped_rows(chart_data, as_of=as_of)
+    resampled = filter_timestamped_rows(_resample_candles(chart_data, tf), as_of=as_of)
+    if resampled:
+        resampled = resampled[-limit:]
+    coverage = f"{'crypto' if _is_crypto_symbol(symbol) else 'US equities'} / {tf}"
     return [
         {
             **candle,
             **candle_provenance(
                 source=source,
                 data_time=int(candle["time"]),
-                coverage=f"US equities / {tf}",
+                coverage=coverage,
             ),
         }
         for candle in resampled
@@ -833,8 +1068,9 @@ async def get_market_history(
     tf: str = "1h",
     limit: int = 500,
     provider: str = "Yahoo Finance",
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    return await get_history(ticker=ticker, tf=tf, limit=limit, provider=provider)
+    return await get_history(ticker=ticker, tf=tf, limit=limit, provider=provider, as_of=as_of)
 
 
 _quotes_cache: dict[str, Any] = {"at": 0.0, "rows": []}
@@ -907,13 +1143,19 @@ async def get_quotes(symbols: str = "") -> dict[str, Any]:
     }
 
 
-def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> list[dict[str, Any]]:
+def _fetch_history_chart_sync(
+    api_key: str,
+    secret_key: str,
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
     client = StockHistoricalDataClient(api_key, secret_key)
-    end = datetime.now(timezone.utc)
+    end = normalize_as_of(as_of) or datetime.now(timezone.utc)
     start = end - timedelta(days=30)
     request_params = StockBarsRequest(
         symbol_or_symbols=ticker,
@@ -955,63 +1197,58 @@ def _fetch_history_chart_sync(api_key: str, secret_key: str, ticker: str) -> lis
             }
         )
     chart_data.sort(key=lambda c: c["time"])
-    return chart_data
+    return filter_timestamped_rows(chart_data, as_of=as_of)
 
 
 @app.websocket("/ws/trading")
 async def websocket_trading(websocket: WebSocket) -> None:
-    """Clients connect here for live symbol/tf subscriptions.
-
-    Clients should send JSON messages to subscribe:
-      {"action":"subscribe", "symbol":"EURUSD", "tf":"1m"}
-    or to unsubscribe:
-      {"action":"unsubscribe", "symbol":"EURUSD", "tf":"1m"}
-    Use "*" for wildcard symbol or tf.
-    
-    Authentication: Pass token as query parameter ?token=JWT_TOKEN
-    or as Authorization header.
-    """
-    # Authenticate via query parameter or header
-    token = websocket.query_params.get("token")
-    if not token:
-        auth_header = websocket.headers.get("authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    
-    if not token:
+    """Authenticated live symbol/timeframe subscriptions; JWT is first-frame only."""
+    if websocket.query_params.get("token"):
+        await websocket.close(code=4001, reason="Token query parameters are not accepted")
+        return
+    await websocket.accept()
+    try:
+        auth_message = await websocket.receive_json()
+    except (WebSocketDisconnect, ValueError):
         await websocket.close(code=4001, reason="Authentication required")
         return
-    
-    from app.auth import decode_token
-    token_data = decode_token(token)
+    if not isinstance(auth_message, dict) or auth_message.get("type") != "authenticate":
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    token = auth_message.get("token")
+    if not isinstance(token, str) or not token.strip():
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    token_data = decode_token(token.strip())
     if not token_data or token_data.exp < datetime.now(timezone.utc):
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
-    
-    await websocket.accept()
-    client = { 'ws': websocket, 'subs': set(), 'user_id': token_data.user_id }
+
+    client = {"ws": websocket, "subs": set(), "user_id": token_data.user_id}
     async with _ws_clients_lock:
         _ws_clients.append(client)
+    await websocket.send_json({"type": "authenticated"})
     try:
         while True:
             text = await websocket.receive_text()
             try:
                 payload = json.loads(text)
-                action = payload.get('action')
-                if action == 'subscribe':
-                    sym = (payload.get('symbol') or '*').upper()
-                    tf = payload.get('tf') or '*'
-                    client['subs'].add((sym, tf))
-                    await websocket.send_json({'type': 'subscribed', 'symbol': sym, 'tf': tf})
-                elif action == 'unsubscribe':
-                    sym = (payload.get('symbol') or '*').upper()
-                    tf = payload.get('tf') or '*'
-                    client['subs'].discard((sym, tf))
-                    await websocket.send_json({'type': 'unsubscribed', 'symbol': sym, 'tf': tf})
-                elif action == 'ping':
-                    await websocket.send_json({'type': 'pong'})
-            except json.JSONDecodeError:
-                # ignore non-JSON pings
+                if not isinstance(payload, dict):
+                    continue
+                action = payload.get("action")
+                if action == "subscribe":
+                    symbol = (payload.get("symbol") or "*").upper()
+                    timeframe = payload.get("tf") or "*"
+                    client["subs"].add((symbol, timeframe))
+                    await websocket.send_json({"type": "subscribed", "symbol": symbol, "tf": timeframe})
+                elif action == "unsubscribe":
+                    symbol = (payload.get("symbol") or "*").upper()
+                    timeframe = payload.get("tf") or "*"
+                    client["subs"].discard((symbol, timeframe))
+                    await websocket.send_json({"type": "unsubscribed", "symbol": symbol, "tf": timeframe})
+                elif action == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except (json.JSONDecodeError, AttributeError):
                 continue
     except WebSocketDisconnect:
         pass

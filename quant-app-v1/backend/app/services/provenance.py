@@ -13,8 +13,6 @@ _PROVIDER_VERSIONS: dict[str, str] = {
     "yahoo": "yf-v1",
     "yahoo-finance": "yf-v1",
     "alpaca": "alpaca-stock-bars-v1",
-    "openbb": "openbb-v1",
-    "openbb-server": "openbb-api-v1",
 }
 
 

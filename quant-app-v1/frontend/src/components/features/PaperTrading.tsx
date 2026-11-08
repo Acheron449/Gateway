@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
-import { API_BASE, WS_BASE } from "../../lib/constants";
+import { API_BASE } from "../../lib/constants";
+import { useAuth } from "../../context/AuthContext";
+import { useAuthUI } from "../../context/AuthUIContext";
 import { useHistory } from "../../hooks/useHistory";
 import { useSocket } from "../../hooks/useSocket";
 import { useChartPrefs } from "../../lib/chartPrefs";
@@ -266,6 +268,7 @@ function AutoTradePanel({
   buyingPower: number;
   onPlaced: () => void;
 }) {
+  const { token } = useAuth();
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
   const [pct, setPct] = useState(1);
@@ -314,9 +317,9 @@ function AutoTradePanel({
         side: action,
         order_type: "market",
         quantity: qty,
-      });
+      }, token);
       try {
-        await simulateFill(result.order_id);
+        await simulateFill(result.order_id, token);
       } catch {
         /* market closed — order stays working */
       }
@@ -470,8 +473,7 @@ const money = (value: number | null | undefined, digits = 2) =>
     ? "—"
     : value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("gateway_auth_token");
+function authHeaders(token: string | null): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -485,162 +487,16 @@ function twoWay(price: number): { sell: number; buy: number } {
   return { sell: price - half, buy: price + half };
 }
 
-async function fetchPortfolio(): Promise<Portfolio> {
-  const res = await fetch(`${API_BASE}/portfolio`, { headers: authHeaders() });
+async function fetchPortfolio(token: string | null): Promise<Portfolio> {
+  const res = await fetch(`${API_BASE}/portfolio`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error((await res.text()) || "Failed to fetch portfolio");
   return res.json();
 }
 
-// --- Live (broker) desk helpers -------------------------------------------
-
-async function readLiveError(res: Response): Promise<string> {
-  try {
-    const payload = await res.json();
-    if (typeof payload?.detail === "string") return payload.detail;
-  } catch {
-    /* fall through */
-  }
-  return `Live account unavailable (${res.status})`;
-}
-
-interface LiveAccount {
-  account_number?: string;
-  status?: string;
-  cash?: number;
-  equity?: number;
-  buying_power?: number;
-}
-
-interface LivePositionRow {
-  symbol: string;
-  qty: number;
-  avg_entry_price: number;
-  market_value: number;
-  unrealized_pl: number;
-}
-
-interface LiveOrderRow {
-  id: string;
-  symbol: string;
-  side: string;
-  order_type: string;
-  qty: number;
-  filled_qty: number;
-  filled_avg_price: number | null;
-  limit_price: number | null;
-  stop_price: number | null;
-  status: string;
-  created_at: string;
-}
-
-interface LiveActivityRow {
-  id: string;
-  symbol?: string;
-  side?: string;
-  qty?: string | number;
-  price?: string | number;
-  transaction_time?: string;
-  type?: string;
-}
-
-const LIVE_TERMINAL_STATUSES = new Set(["filled", "canceled", "expired", "rejected", "replaced", "done_for_day"]);
-
-/** Normalize the broker account/positions/orders into the desk's Portfolio shape. */
-async function fetchLivePortfolio(): Promise<Portfolio> {
-  const [acctRes, posRes, ordRes, actRes] = await Promise.all([
-    fetch(`${API_BASE}/live/account`),
-    fetch(`${API_BASE}/live/positions`),
-    fetch(`${API_BASE}/live/orders?status=open&limit=100`),
-    fetch(`${API_BASE}/live/activities?activity_type=FILL&page_size=25`),
-  ]);
-  if (!acctRes.ok) throw new Error(await readLiveError(acctRes));
-
-  const account = (await acctRes.json()) as LiveAccount;
-  const positions = posRes.ok ? ((await posRes.json()) as LivePositionRow[]) : [];
-  const orders = ordRes.ok ? ((await ordRes.json()) as LiveOrderRow[]) : [];
-  const activities = actRes.ok ? ((await actRes.json()) as LiveActivityRow[]) : [];
-
-  return {
-    portfolio_id: `live:${account.account_number ?? "account"}`,
-    cash: account.cash ?? 0,
-    equity: account.equity ?? 0,
-    buying_power: account.buying_power ?? 0,
-    positions: positions.map((p) => ({
-      instrument_id: p.symbol,
-      quantity: Number(p.qty),
-      avg_cost: Number(p.avg_entry_price),
-      market_value: Number(p.market_value),
-      unrealized_pnl: Number(p.unrealized_pl),
-      realized_pnl: 0,
-    })),
-    open_orders: orders
-      .filter((o) => !LIVE_TERMINAL_STATUSES.has(o.status))
-      .map((o) => ({
-        id: o.id,
-        instrument_id: o.symbol,
-        side: o.side,
-        type: o.order_type,
-        qty: Number(o.qty),
-        limit_price: o.limit_price,
-        stop_price: o.stop_price,
-        status: o.status,
-        filled_qty: Number(o.filled_qty),
-        avg_fill_price: o.filled_avg_price,
-        created_at: o.created_at,
-      })),
-    recent_fills: activities
-      .filter((a) => a.symbol)
-      .map((a) => ({
-        id: a.id,
-        order_id: a.id,
-        instrument_id: a.symbol ?? "",
-        side: String(a.side ?? "buy").toLowerCase(),
-        qty: Number(a.qty ?? 0),
-        price: Number(a.price ?? 0),
-        commission: 0,
-        timestamp: a.transaction_time ?? new Date().toISOString(),
-        liquidity: null,
-      })),
-  };
-}
-
-/** Place a real order through the broker (Live Trading section). */
-async function submitLiveOrder(
-  order: OrderRequest,
-): Promise<{ order_id: string; status: string; message: string }> {
-  const res = await fetch(`${API_BASE}/live/orders`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      symbol: order.instrument,
-      qty: order.quantity,
-      side: order.side,
-      order_type: order.order_type,
-      time_in_force: "day",
-      limit_price: order.limit_price ?? undefined,
-      stop_price: order.stop_price ?? undefined,
-    }),
-  });
-  if (!res.ok) throw new Error(await readLiveError(res));
-  const payload = (await res.json()) as { id: string; status: string };
-  return {
-    order_id: payload.id,
-    status: payload.status,
-    message: `Live order ${payload.status}`,
-  };
-}
-
-async function cancelLiveOrder(orderId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/live/orders/${encodeURIComponent(orderId)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) throw new Error(await readLiveError(res));
-}
-
-async function submitOrder(order: OrderRequest): Promise<{ order_id: string; status: string; message: string }> {
+async function submitOrder(order: OrderRequest, token: string | null): Promise<{ order_id: string; status: string; message: string }> {
   const res = await fetch(`${API_BASE}/portfolio/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(order),
   });
   if (!res.ok) {
@@ -656,10 +512,10 @@ async function submitOrder(order: OrderRequest): Promise<{ order_id: string; sta
   return res.json();
 }
 
-async function simulateFill(orderId: string): Promise<{ filled: boolean; price?: number }> {
+async function simulateFill(orderId: string, token: string | null): Promise<{ filled: boolean; price?: number }> {
   const res = await fetch(`${API_BASE}/portfolio/orders/${encodeURIComponent(orderId)}/simulate-fill`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: authHeaders(token),
   });
   if (!res.ok) throw new Error("Fill simulation failed");
   return res.json();
@@ -674,11 +530,13 @@ export function PaperTrading({
   mode = "paper",
 }: {
   selectedSymbol?: string;
-  /** "paper" = simulated desk (default); "live" = real broker account (Alpaca). */
+  /** "paper" = simulated desk (default); "live" = disabled broker view retained for legacy callers. */
   mode?: "paper" | "live";
 }) {
-  const queryClient = useQueryClient();
+  const { token, isAuthenticated } = useAuth();
+  const { openAuth } = useAuthUI();
   const isLive = mode === "live";
+  const brokerExecutionUnavailable = isLive;
   // User-selected poll rate (Settings → Data refresh): quotes, statistics and
   // chart candles all refetch this often so the selected provider stays fresh.
   const refreshMs = useRefreshMs();
@@ -702,10 +560,8 @@ export function PaperTrading({
   const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
   const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
   const [fillBusyId, setFillBusyId] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Draggable column widths (drag a section's edge; double-click resets).
   const [railW, setRailW] = useState<number | null>(() =>
@@ -828,11 +684,10 @@ export function PaperTrading({
   const tf = TF_CHIPS.find((_, i) => i === tfIndex) ?? DEFAULT_TF;
 
   const { data: portfolio, isLoading, error: loadError, refetch } = useQuery({
-    queryKey: ["portfolio", mode],
-    queryFn: isLive ? fetchLivePortfolio : fetchPortfolio,
-    // Live: poll at the user's refresh rate. Paper: the authenticated
-    // WebSocket streams updates (and auto-fills) while connected.
-    refetchInterval: isLive ? refreshMs : live ? false : 5000,
+    queryKey: ["portfolio", mode, token],
+    queryFn: () => fetchPortfolio(token),
+    refetchInterval: isLive ? false : 5000,
+    enabled: isAuthenticated && !isLive,
   });
 
   // Batch quotes for the active watchlist (server caches per symbol).
@@ -951,10 +806,14 @@ export function PaperTrading({
 
   // Market session badge.
   useEffect(() => {
+    if (!token) {
+      setMarketOpen(null);
+      return undefined;
+    }
     let cancelled = false;
     const load = async () => {
       try {
-        const res = await fetch(`${API_BASE}/portfolio/market-status`);
+        const res = await fetch(`${API_BASE}/portfolio/market-status`, { headers: authHeaders(token) });
         if (!res.ok) return;
         const data = await res.json();
         if (!cancelled) setMarketOpen(Boolean(data.is_open));
@@ -968,58 +827,7 @@ export function PaperTrading({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, []);
-
-  // Authenticated live stream (paper desk only): server pushes portfolio
-  // state each second and auto-fills accepted orders while connected.
-  useEffect(() => {
-    if (isLive) return undefined;
-    if (!localStorage.getItem("gateway_auth_token")) return undefined;
-
-    let closed = false;
-    let socket: WebSocket | null = null;
-    let retryTimer: number | null = null;
-
-    const connect = () => {
-      if (closed) return;
-      // Read the token per attempt (not once per effect): after a Supabase
-      // token refresh the stored value changes, and a retry loop pinned to a
-      // stale token would be rejected forever.
-      const token = localStorage.getItem("gateway_auth_token");
-      if (!token) return;
-      try {
-        socket = new WebSocket(`${WS_BASE}/portfolio/stream?token=${encodeURIComponent(token)}`);
-      } catch {
-        return;
-      }
-      wsRef.current = socket;
-      socket.onopen = () => setLive(true);
-      socket.onmessage = (event: MessageEvent) => {
-        try {
-          const msg = JSON.parse(event.data as string) as { type?: string; data?: Portfolio };
-          if (msg.type === "portfolio_update" && msg.data) {
-            queryClient.setQueryData(["portfolio", "paper"], msg.data);
-          }
-        } catch {
-          /* ignore malformed frames */
-        }
-      };
-      socket.onclose = () => {
-        setLive(false);
-        if (!closed) retryTimer = window.setTimeout(connect, 4000);
-      };
-      socket.onerror = () => socket?.close();
-    };
-
-    connect();
-    return () => {
-      closed = true;
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
-      socket?.close();
-      wsRef.current = null;
-      setLive(false);
-    };
-  }, [queryClient, isLive]);
+  }, [token]);
 
   const positions = useMemo(() => portfolio?.positions ?? [], [portfolio]);
   const openOrders = useMemo(() => portfolio?.open_orders ?? [], [portfolio]);
@@ -1073,6 +881,14 @@ export function PaperTrading({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLive || brokerExecutionUnavailable) {
+      setError("Live execution unavailable");
+      return;
+    }
+    if (!isAuthenticated) {
+      openAuth();
+      return;
+    }
     setError(null);
     setNotice(null);
     setSubmitting(true);
@@ -1085,22 +901,19 @@ export function PaperTrading({
         limit_price: orderForm.order_type === "limit" ? Number(orderForm.limit_price) : undefined,
         stop_price: orderForm.order_type === "stop" ? Number(orderForm.stop_price) : undefined,
       };
-      const result = isLive ? await submitLiveOrder(request) : await submitOrder(request);
+      const result = await submitOrder(request, token);
 
-      // Paper desk: market orders (and marketable limits/stops) fill straight
-      // away so the Buy/Sell ticket actually opens the position instead of
-      // resting as an unfilled order. Live orders fill at the broker.
+      // Simulated market/marketable orders may fill immediately against the
+      // simulator; broker execution has no path through this desk.
       let fillNote = "";
-      if (!isLive) {
-        try {
-          const fill = await simulateFill(result.order_id);
-          if (fill.filled) {
-            fillNote = ` · filled @ ${money(fill.price)}`;
-            setSection("positions");
-          }
-        } catch {
-          /* no quote or market closed — the order stays working */
+      try {
+        const fill = await simulateFill(result.order_id, token);
+        if (fill.filled) {
+          fillNote = ` · filled @ ${money(fill.price)}`;
+          setSection("positions");
         }
+      } catch {
+        /* no quote or market closed — the simulated order stays working */
       }
 
       setNotice(`${result.message} — order ${result.order_id.slice(0, 8)}${fillNote}`);
@@ -1112,53 +925,12 @@ export function PaperTrading({
     }
   };
 
-  const handleCancelOrder = async (orderId: string) => {
-    setFillBusyId(orderId);
-    setError(null);
-    setNotice(null);
-    try {
-      await cancelLiveOrder(orderId);
-      setNotice(`Order ${orderId.slice(0, 8)} canceled`);
-      void refetch();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Cancel failed");
-    } finally {
-      setFillBusyId(null);
-    }
-  };
-
-  /** Broker-level kill switch: blocks new live orders until reset. */
-  const handleKillSwitch = async () => {
-    setError(null);
-    setNotice(null);
-    try {
-      const statusRes = await fetch(`${API_BASE}/live/kill-switch/status`);
-      const status = statusRes.ok ? ((await statusRes.json()) as { active?: boolean }) : {};
-      if (status.active) {
-        const res = await fetch(`${API_BASE}/live/kill-switch/deactivate`, { method: "POST" });
-        if (!res.ok) throw new Error(await readLiveError(res));
-        setNotice("Kill switch deactivated — live orders allowed again.");
-      } else {
-        if (!window.confirm("Activate the kill switch? New live orders will be blocked until you reset it.")) return;
-        const res = await fetch(`${API_BASE}/live/kill-switch/activate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: "Activated from the live trading desk" }),
-        });
-        if (!res.ok) throw new Error(await readLiveError(res));
-        setNotice("Kill switch ACTIVATED — new live orders are blocked.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Kill switch failed");
-    }
-  };
-
   const handleSimulateFill = async (orderId: string) => {
     setFillBusyId(orderId);
     setError(null);
     setNotice(null);
     try {
-      const result = await simulateFill(orderId);
+      const result = await simulateFill(orderId, token);
       setNotice(result.filled ? `Order filled at ${money(result.price)}` : "Order not fillable yet (no quote or market closed)");
       void refetch();
     } catch (err) {
@@ -1168,14 +940,33 @@ export function PaperTrading({
     }
   };
 
+  if (isLive) {
+    return (
+      <section className="paper-error" role="status" aria-label="Broker execution unavailable">
+        <h2>Live execution unavailable</h2>
+        <p>Broker account and order access are disabled pending account ownership and durable recovery.</p>
+      </section>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <section className="paper-error" role="status" aria-label="Sign in to paper trade">
+        <h2>Sign in to paper trade</h2>
+        <p>Your simulated portfolio is private to your account. Sign in to load it and place paper orders.</p>
+        <button className="btn-primary" onClick={() => openAuth()}>Sign in</button>
+      </section>
+    );
+  }
+
   if (isLoading) {
-    return <div className="paper-loading">{isLive ? "Loading live account…" : "Loading paper portfolio…"}</div>;
+    return <div className="paper-loading">Loading simulated paper portfolio…</div>;
   }
 
   if (loadError) {
     return (
       <div className="paper-error" role="alert">
-        {isLive ? "Live account unavailable" : "Paper portfolio unavailable"}:{" "}
+        {isLive ? "Live execution unavailable" : "Simulated paper portfolio unavailable"}:{" "}
         {loadError instanceof Error ? loadError.message : "unknown error"}
         <button className="btn-secondary" onClick={() => void refetch()}>
           Retry
@@ -1186,8 +977,7 @@ export function PaperTrading({
 
   const activeMeta = meta(symbol);
 
-  return (
-    <div className="paper-trading">
+  return (          <div className="paper-trading" data-portfolio-id={portfolio?.portfolio_id}>
       {(notice || error) && (
         <div className={error ? "paper-alert error" : "paper-alert"} role="status">
           <span>{error ?? notice}</span>
@@ -1212,20 +1002,11 @@ export function PaperTrading({
             </button>
           ))}
           <div className="desk-rail-foot">
-            <span className={`paper-live ${live ? "on" : ""}`}>
-              {isLive ? "Broker" : live ? "Live" : "Poll"}
+            <span className="paper-live">Polling every 5s</span>
+            <span className={`paper-session ${marketOpen ? "open" : "closed"}`} aria-label="Market status">
+              {marketOpen === null ? "Market status: Unknown" : marketOpen ? "Market status: Open" : "Market status: Closed"}
             </span>
-            <span className={`paper-session ${marketOpen ? "open" : "closed"}`}>
-              {marketOpen === null ? "…" : marketOpen ? "Open" : "Closed"}
-            </span>
-            <span className={`mode-badge ${isLive ? "live" : "paper"}`}>
-              {isLive ? "LIVE" : "Paper"}
-            </span>
-            {isLive && (
-              <button className="desk-kill-switch" onClick={() => void handleKillSwitch()} title="Broker kill switch — block new live orders">
-                🛑 Kill switch
-              </button>
-            )}
+            <span className="mode-badge paper">Simulated paper</span>
           </div>
         </nav>
 
@@ -1242,10 +1023,7 @@ export function PaperTrading({
                 {g.label}
               </button>
             ))}
-            <h3 className="desk-wl-title desk-wl-title-gap">
-              My Watchlists
-              <button className="desk-wl-edit" title="Watchlist editing is decorative" aria-hidden="true">✎</button>
-            </h3>
+            <h3 className="desk-wl-title desk-wl-title-gap">Collections</h3>
             {WATCHLIST_GROUPS.filter((g) => g.section === "mine").map((g) => (
               <button
                 key={g.id}
@@ -1451,7 +1229,7 @@ export function PaperTrading({
 
           {section === "orders" && (
             <section className="desk-card">
-              <h3>Open orders</h3>
+              <h3>Open simulated-paper orders</h3>
               {openOrders.length === 0 ? (
                 <p className="paper-empty">No working orders.</p>
               ) : (
@@ -1469,23 +1247,13 @@ export function PaperTrading({
                         <td>{o.limit_price ? money(o.limit_price) : o.stop_price ? money(o.stop_price) : "—"}</td>
                         <td>{o.status}</td>
                         <td>
-                          {isLive ? (
-                            <button
-                              className="btn-secondary paper-fill-btn"
-                              onClick={() => void handleCancelOrder(o.id)}
-                              disabled={fillBusyId === o.id}
-                            >
-                              {fillBusyId === o.id ? "…" : "Cancel"}
-                            </button>
-                          ) : (
-                            <button
-                              className="btn-secondary paper-fill-btn"
-                              onClick={() => void handleSimulateFill(o.id)}
-                              disabled={fillBusyId === o.id}
-                            >
-                              {fillBusyId === o.id ? "…" : "Simulate fill"}
-                            </button>
-                          )}
+                          <button
+                            className="btn-secondary paper-fill-btn"
+                            onClick={() => void handleSimulateFill(o.id)}
+                            disabled={fillBusyId === o.id}
+                          >
+                            {fillBusyId === o.id ? "…" : "Simulate fill"}
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1571,9 +1339,7 @@ export function PaperTrading({
                 </div>
               </div>
               <p className="paper-empty">
-                {isLive
-                  ? "Real funds in your linked broker account — orders route to the exchange. Positions and fills refresh from the broker feed."
-                  : "Simulated cash only — orders fill against live quotes with a \u201cpaper\u201d spread and commission."}
+                Simulated cash only — orders fill against market quotes with a simulated spread and commission.
               </p>
             </section>
           )}
@@ -1735,10 +1501,11 @@ export function PaperTrading({
 
                 <div className="paper-order-foot">
                   {estimatedCost !== null && <span className="paper-est">Est. ≈ ${money(estimatedCost)}</span>}
+                  {brokerExecutionUnavailable && <span role="status">Live execution unavailable</span>}
                   <button
                     type="submit"
                     className={`btn-primary paper-submit ${orderForm.side}`}
-                    disabled={submitting || orderForm.quantity < 1 || two === null}
+                    disabled={brokerExecutionUnavailable || submitting || orderForm.quantity < 1 || two === null}
                   >
                     {submitting
                       ? "Submitting…"
