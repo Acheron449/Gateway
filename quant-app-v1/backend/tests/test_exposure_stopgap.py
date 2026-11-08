@@ -50,7 +50,6 @@ async def test_private_routes_require_authentication_before_shared_state(path: s
 @pytest.mark.parametrize(
     ("path", "method"),
     [
-        ("/vault", "GET"),
         ("/llm/providers", "GET"),
     ],
 )
@@ -75,6 +74,21 @@ async def test_authenticated_journal_is_owner_scoped_instead_of_gated() -> None:
     response = await _request("/journal", token=_token())
     assert response.status_code == 200
     assert response.json() == {"entries": []}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_vault_is_owner_scoped_instead_of_gated(tmp_path, monkeypatch) -> None:
+    """The vault stamps and filters by owner, so it is no longer a shared store."""
+    from app.services import secrets_vault
+
+    monkeypatch.setattr(secrets_vault, "_SETTINGS_DIR", tmp_path)
+    monkeypatch.setattr(secrets_vault, "_VAULT_FILE", tmp_path / "secrets.vault")
+    monkeypatch.setattr(secrets_vault, "_VAULT_KEY_FILE", tmp_path / "secrets.vault.key")
+    monkeypatch.setenv("GATEWAY_PROVIDER_KEY", "")
+
+    response = await _request("/vault", token=_token())
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 @pytest.mark.asyncio

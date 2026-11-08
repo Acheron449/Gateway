@@ -154,6 +154,7 @@ class TestJournalApiSourceFilter:
 class TestSecretsVault:
     @pytest.fixture(autouse=True)
     def isolated_vault(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(secrets_vault, "_SETTINGS_DIR", tmp_path)
         monkeypatch.setattr(secrets_vault, "_VAULT_FILE", tmp_path / "secrets.vault")
         monkeypatch.setattr(secrets_vault, "_VAULT_KEY_FILE", tmp_path / "secrets.vault.key")
         # Force the locally generated key so the test never depends on env.
@@ -161,9 +162,10 @@ class TestSecretsVault:
         monkeypatch.setenv("GATEWAY_PROVIDER_KEY_FILE", "")
 
     def test_roundtrip_is_encrypted_at_rest(self):
+        owner = "vault-tests"
         name = f"test/{uuid4().hex[:8]}"
         secret_value = f"sk-live-{uuid4().hex}"
-        meta = secrets_vault.set_secret(name, secret_value, note="pytest")
+        meta = secrets_vault.set_secret(owner, name, secret_value, note="pytest")
         assert meta["name"] == name
 
         # Ciphertext on disk — plaintext never appears in the file.
@@ -171,19 +173,20 @@ class TestSecretsVault:
         assert secret_value not in raw
         assert "cipher" in raw
 
-        assert secrets_vault.get_secret(name) == secret_value
-        listed = secrets_vault.list_secrets()
+        assert secrets_vault.get_secret(owner, name) == secret_value
+        listed = secrets_vault.list_secrets(owner)
         entry = next(s for s in listed if s["name"] == name)
         assert "cipher" not in entry and "value" not in entry
         assert entry["length"] == len(secret_value)
+        assert secrets_vault.list_secrets("another-owner") == []
 
-        assert secrets_vault.delete_secret(name) is True
-        assert secrets_vault.get_secret(name) is None
-        assert secrets_vault.delete_secret(name) is False
+        assert secrets_vault.delete_secret(owner, name) is True
+        assert secrets_vault.get_secret(owner, name) is None
+        assert secrets_vault.delete_secret(owner, name) is False
 
     def test_empty_value_rejected(self):
         with pytest.raises(secrets_vault.VaultError):
-            secrets_vault.set_secret("bad", "   ")
+            secrets_vault.set_secret("owner", "bad", "   ")
 
 
 class TestAiTradingScoring:

@@ -7,9 +7,10 @@ provider registry uses) and, when neither is set, from a locally generated
 key file kept next to the vault — so keys are never stored in plaintext
 regardless of configuration.
 
-Entries are namespaced free-form secrets (e.g. ``supabase/url``,
-``cloudflare/api-token``); names and timestamps are stored in the clear so
-the UI can list them, values never are.
+Entries are scoped to the account that stored them. The owner is part of the
+internal key so two accounts can each own a secret with the same display name.
+Pre-ownership entries have no ``owner_id`` and stay quarantined: they are never
+listed, revealed or deleted by any account.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from cryptography.fernet import Fernet
 _SETTINGS_DIR = Path(__file__).resolve().parents[1] / "settings"
 _VAULT_FILE = _SETTINGS_DIR / "secrets.vault"
 _VAULT_KEY_FILE = _SETTINGS_DIR / "secrets.vault.key"
+
+# Internal separator: the stored dictionary is keyed by (owner, display name).
+_OWNER_SEPARATOR = "\x1f"
 
 
 class VaultError(RuntimeError):
@@ -103,29 +107,52 @@ def _normalized(name: str) -> str:
     return clean
 
 
-def list_secrets() -> list[dict[str, Any]]:
-    """Metadata only — never values."""
-    data = _load()
-    secrets = data["secrets"]
-    return [
-        {
-            "name": name,
-            "note": str(entry.get("note") or ""),
-            "length": int(entry.get("length") or 0),
-            "created_at": entry.get("created_at"),
-            "updated_at": entry.get("updated_at"),
-        }
-        for name, entry in sorted(secrets.items())
-        if isinstance(entry, dict)
-    ]
+def _owner(owner_id: str) -> str:
+    clean = str(owner_id).strip()
+    if not clean or _OWNER_SEPARATOR in clean:
+        raise VaultError("Secret owner is required")
+    return clean
 
 
-def get_secret(name: str) -> str | None:
-    """Decrypt and return one secret value."""
-    key = _normalized(name)
+def _entry_key(owner_id: str, name: str) -> str:
+    return f"{owner_id}{_OWNER_SEPARATOR}{name}"
+
+
+def _metadata(name: str, entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": name,
+        "note": str(entry.get("note") or ""),
+        "length": int(entry.get("length") or 0),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+    }
+
+
+def list_secrets(owner_id: str) -> list[dict[str, Any]]:
+    """Metadata only for this owner — never values, never another owner's rows."""
+    owner = _owner(owner_id)
     data = _load()
-    entry = data["secrets"].get(key)
-    if not isinstance(entry, dict):
+    out: list[dict[str, Any]] = []
+    for entry in data["secrets"].values():
+        if not isinstance(entry, dict) or entry.get("owner_id") != owner:
+            continue
+        name = entry.get("name")
+        if isinstance(name, str) and name:
+            out.append(_metadata(name, entry))
+    return sorted(out, key=lambda item: item["name"].casefold())
+
+
+def get_secret(owner_id: str, name: str) -> str | None:
+    """Decrypt and return one secret owned by this account."""
+    owner = _owner(owner_id)
+    display = _normalized(name)
+    data = _load()
+    entry = data["secrets"].get(_entry_key(owner, display))
+    if (
+        not isinstance(entry, dict)
+        or entry.get("owner_id") != owner
+        or entry.get("name") != display
+    ):
         return None
     cipher = entry.get("cipher")
     if not isinstance(cipher, str):
@@ -133,41 +160,45 @@ def get_secret(name: str) -> str | None:
     try:
         return Fernet(_resolve_key()).decrypt(cipher.encode("ascii")).decode("utf-8")
     except Exception as exc:
-        raise VaultError(f"Unable to decrypt '{key}': {exc}") from exc
+        raise VaultError(f"Unable to decrypt '{display}': {exc}") from exc
 
 
-def set_secret(name: str, value: str, note: str = "") -> dict[str, Any]:
-    """Encrypt and persist one secret."""
-    key = _normalized(name)
+def set_secret(owner_id: str, name: str, value: str, note: str = "") -> dict[str, Any]:
+    """Encrypt and persist one secret for this owner."""
+    owner = _owner(owner_id)
+    display = _normalized(name)
     plain = value.strip()
     if not plain:
         raise VaultError("Secret value must not be empty")
     data = _load()
     now = datetime.now(timezone.utc).isoformat()
-    existing = data["secrets"].get(key)
-    created_at = existing.get("created_at") if isinstance(existing, dict) else None
-    data["secrets"][key] = {
+    internal = _entry_key(owner, display)
+    existing = data["secrets"].get(internal)
+    if not isinstance(existing, dict) or existing.get("owner_id") != owner:
+        existing = None
+    created_at = existing.get("created_at") if existing else None
+    entry = {
+        "owner_id": owner,
+        "name": display,
         "cipher": Fernet(_resolve_key()).encrypt(plain.encode("utf-8")).decode("ascii"),
         "length": len(plain),
         "note": note.strip()[:200],
         "created_at": created_at or now,
         "updated_at": now,
     }
+    data["secrets"][internal] = entry
     _save(data)
-    return {
-        "name": key,
-        "note": note.strip()[:200],
-        "length": len(plain),
-        "created_at": created_at or now,
-        "updated_at": now,
-    }
+    return _metadata(display, entry)
 
 
-def delete_secret(name: str) -> bool:
-    key = _normalized(name)
+def delete_secret(owner_id: str, name: str) -> bool:
+    """Delete one secret owned by this account; another owner's name is a miss."""
+    owner = _owner(owner_id)
+    internal = _entry_key(owner, _normalized(name))
     data = _load()
-    if key not in data["secrets"]:
+    entry = data["secrets"].get(internal)
+    if not isinstance(entry, dict) or entry.get("owner_id") != owner:
         return False
-    del data["secrets"][key]
+    del data["secrets"][internal]
     _save(data)
     return True

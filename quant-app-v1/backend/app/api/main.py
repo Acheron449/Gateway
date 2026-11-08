@@ -394,11 +394,11 @@ class PrivateDataGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Authenticate and fail closed for shared stores until ownership ships."""
         path = request.url.path.rstrip("/") or "/"
-        # /strategies, /journal, /portfolio and /ai-trading are deliberately
-        # absent: every one of their routes derives its owner from CurrentUser,
-        # so they are scoped per request rather than fail-closed behind the
-        # shared-store gate.
-        private_prefixes = ("/vault", "/llm")
+        # /strategies, /journal, /portfolio, /ai-trading and /vault are
+        # deliberately absent: every one of their routes derives its owner from
+        # CurrentUser, so they are scoped per request rather than fail-closed
+        # behind the shared-store gate.
+        private_prefixes = ("/llm",)
         operator_prefixes = ("/risk", "/settings/providers")
         private = any(path == prefix or path.startswith(prefix + "/") for prefix in private_prefixes)
         operator_only = any(path == prefix or path.startswith(prefix + "/") for prefix in operator_prefixes)
@@ -508,7 +508,7 @@ app.include_router(journal_router)  # Trade Journal (owner-scoped per request)
 app.include_router(risk_router)  # Risk Dashboard (operator-gated global configuration)
 app.include_router(divergence_router)  # Divergence Scorecards
 app.include_router(settings_router)  # Global provider settings (operator-gated)
-app.include_router(vault_router, dependencies=[Depends(get_current_user_optional)])  # Encrypted secrets vault (also gated until owner isolation)
+app.include_router(vault_router)  # Encrypted secrets vault (owner-scoped per request)
 app.include_router(ai_trading_router)  # AI auto-trading (owner-scoped per request)
 app.include_router(llm_router)  # BYOK/chat gated until durable owner store is deployed
 app.include_router(agentic_lab_router)  # Agentic Trading Lab (backtests + stats)

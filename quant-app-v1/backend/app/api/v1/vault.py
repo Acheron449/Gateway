@@ -24,27 +24,27 @@ class SecretValueResponse(BaseModel):
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_secrets(user: CurrentUser) -> List[Dict[str, Any]]:
-    """List stored secret names/metadata (values are never returned)."""
+    """List this account's stored secret names/metadata (values are never returned)."""
     try:
-        return secrets_vault.list_secrets()
+        return secrets_vault.list_secrets(user.id)
     except secrets_vault.VaultError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.put("/{name:path}", response_model=Dict[str, Any])
 async def put_secret(name: str, payload: SecretUpsert, user: CurrentUser) -> Dict[str, Any]:
-    """Create or replace a secret (encrypted with Fernet at rest)."""
+    """Create or replace one of this account's secrets (Fernet-encrypted at rest)."""
     try:
-        return secrets_vault.set_secret(name, payload.value, payload.note)
+        return secrets_vault.set_secret(user.id, name, payload.value, payload.note)
     except secrets_vault.VaultError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{name:path}/reveal", response_model=SecretValueResponse)
 async def reveal_secret(name: str, user: CurrentUser) -> SecretValueResponse:
-    """Decrypt one secret for the authenticated user."""
+    """Decrypt one secret owned by the authenticated account."""
     try:
-        value = secrets_vault.get_secret(name)
+        value = secrets_vault.get_secret(user.id, name)
     except secrets_vault.VaultError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if value is None:
@@ -54,8 +54,9 @@ async def reveal_secret(name: str, user: CurrentUser) -> SecretValueResponse:
 
 @router.delete("/{name:path}", status_code=204)
 async def delete_secret(name: str, user: CurrentUser):
+    """Delete one secret owned by the authenticated account."""
     try:
-        deleted = secrets_vault.delete_secret(name)
+        deleted = secrets_vault.delete_secret(user.id, name)
     except secrets_vault.VaultError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not deleted:
